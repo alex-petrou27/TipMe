@@ -65,7 +65,8 @@ final class AuthorizationGateTests: XCTestCase {
 
         _ = try await gate.authorize(makeIntent(clock: clock))
 
-        let reason = try XCTUnwrap(await authorizer.capturedReasons().first)
+        let reasons = await authorizer.capturedReasons()
+        let reason = try XCTUnwrap(reasons.first)
         XCTAssertTrue(reason.contains("£1.03"), "prompt must state the total charged, not the tip alone")
         XCTAssertTrue(reason.contains("@creator"))
     }

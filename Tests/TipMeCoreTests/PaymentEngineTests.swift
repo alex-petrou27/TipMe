@@ -279,7 +279,8 @@ final class PaymentEngineTests: XCTestCase {
         XCTAssertTrue(decision.isAllowed, "one attempt of three")
 
         for _ in 0..<2 { await harness.rateLimiter.record(handleKey: creator.handle.registryKey) }
-        XCTAssertFalse(await harness.rateLimiter.evaluate(handleKey: creator.handle.registryKey).isAllowed)
+        let afterThree = await harness.rateLimiter.evaluate(handleKey: creator.handle.registryKey)
+        XCTAssertFalse(afterThree.isAllowed)
     }
 
     // MARK: - Cross-asset settlement

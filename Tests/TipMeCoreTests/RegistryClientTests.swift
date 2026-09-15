@@ -145,7 +145,8 @@ final class CachingCreatorResolverTests: XCTestCase {
         _ = try await resolver.resolve(handle)
         _ = try await resolver.resolve(handle)
 
-        XCTAssertEqual(await upstream.callCount(), 1)
+        let calls = await upstream.callCount()
+        XCTAssertEqual(calls, 1)
     }
 
     func testCacheExpires() async throws {
@@ -158,7 +159,8 @@ final class CachingCreatorResolverTests: XCTestCase {
         clock.advance(by: 601)
         _ = try await resolver.resolve(handle)
 
-        XCTAssertEqual(await upstream.callCount(), 2,
+        let calls = await upstream.callCount()
+        XCTAssertEqual(calls, 2,
                        "a creator may have changed wallet; the cache must not be permanent")
     }
 
@@ -174,6 +176,7 @@ final class CachingCreatorResolverTests: XCTestCase {
         }
         // "a" should have been evicted, so resolving it again hits upstream.
         _ = try await resolver.resolve(CreatorHandle(platform: .tiktok, rawUsername: "a")!)
-        XCTAssertEqual(await upstream.callCount(), 4)
+        let calls = await upstream.callCount()
+        XCTAssertEqual(calls, 4)
     }
 }

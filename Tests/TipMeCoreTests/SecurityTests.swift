@@ -45,10 +45,12 @@ final class SendCapTests: XCTestCase {
         let (ledger, _) = makeLedger(clock: clock)
 
         for _ in 0..<5 { await ledger.record(spent: .gbp(pence: 2_000)) }
-        XCTAssertFalse(await ledger.evaluate(requested: .gbp(pence: 100)).isAllowed)
+        let atCap = await ledger.evaluate(requested: .gbp(pence: 100))
+        XCTAssertFalse(atCap.isAllowed)
 
         clock.advance(by: 24 * 60 * 60 + 1)
-        XCTAssertTrue(await ledger.evaluate(requested: .gbp(pence: 100)).isAllowed,
+        let afterRollOff = await ledger.evaluate(requested: .gbp(pence: 100))
+        XCTAssertTrue(afterRollOff.isAllowed,
                       "the daily window is rolling, not calendar-based")
     }
 
@@ -87,7 +89,8 @@ final class SendCapTests: XCTestCase {
 
         // A freshly constructed ledger, as the share extension would build.
         let shareExtension = SendCapLedger(store: store, clock: clock)
-        XCTAssertFalse(await shareExtension.evaluate(requested: .gbp(pence: 100)).isAllowed,
+        let decision = await shareExtension.evaluate(requested: .gbp(pence: 100))
+        XCTAssertFalse(decision.isAllowed,
                        "spending from one surface must count against the other")
     }
 }
@@ -99,10 +102,12 @@ final class RateLimiterTests: XCTestCase {
         let limiter = TipRateLimiter(store: InMemoryKeyValueStore(), clock: clock)
 
         for _ in 0..<3 {
-            XCTAssertTrue(await limiter.evaluate(handleKey: "tiktok:creator").isAllowed)
+            let allowed = await limiter.evaluate(handleKey: "tiktok:creator")
+            XCTAssertTrue(allowed.isAllowed)
             await limiter.record(handleKey: "tiktok:creator")
         }
-        XCTAssertFalse(await limiter.evaluate(handleKey: "tiktok:creator").isAllowed)
+        let fourth = await limiter.evaluate(handleKey: "tiktok:creator")
+        XCTAssertFalse(fourth.isAllowed)
     }
 
     func testThrottlingIsPerHandle() async {
@@ -111,8 +116,10 @@ final class RateLimiterTests: XCTestCase {
 
         for _ in 0..<3 { await limiter.record(handleKey: "tiktok:creator_a") }
 
-        XCTAssertFalse(await limiter.evaluate(handleKey: "tiktok:creator_a").isAllowed)
-        XCTAssertTrue(await limiter.evaluate(handleKey: "tiktok:creator_b").isAllowed,
+        let sameCreator = await limiter.evaluate(handleKey: "tiktok:creator_a")
+        let otherCreator = await limiter.evaluate(handleKey: "tiktok:creator_b")
+        XCTAssertFalse(sameCreator.isAllowed)
+        XCTAssertTrue(otherCreator.isAllowed,
                       "hitting the limit for one creator must not block a different one")
     }
 
@@ -121,10 +128,12 @@ final class RateLimiterTests: XCTestCase {
         let limiter = TipRateLimiter(store: InMemoryKeyValueStore(), clock: clock)
 
         for _ in 0..<3 { await limiter.record(handleKey: "tiktok:creator") }
-        XCTAssertFalse(await limiter.evaluate(handleKey: "tiktok:creator").isAllowed)
+        let withinWindow = await limiter.evaluate(handleKey: "tiktok:creator")
+        XCTAssertFalse(withinWindow.isAllowed)
 
         clock.advance(by: 601)
-        XCTAssertTrue(await limiter.evaluate(handleKey: "tiktok:creator").isAllowed)
+        let afterWindow = await limiter.evaluate(handleKey: "tiktok:creator")
+        XCTAssertTrue(afterWindow.isAllowed)
     }
 
     func testGlobalLimitCatchesSpreadOutBursts() async {

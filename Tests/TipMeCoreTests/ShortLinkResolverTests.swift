@@ -85,7 +85,8 @@ final class ShortLinkResolverTests: XCTestCase {
             .resolve(try shortLink("https://vm.tiktok.com/ZMabc/"))
 
         XCTAssertEqual(resolved.handle?.username, "creator")
-        XCTAssertEqual(await probe.probedURLs().count, 3)
+        let hops = await probe.probedURLs()
+        XCTAssertEqual(hops.count, 3)
     }
 
     func testResolvedTrackingParametersDoNotBreakParsing() async throws {
@@ -106,7 +107,8 @@ final class ShortLinkResolverTests: XCTestCase {
         let resolved = try await ShortLinkResolver(probe: probe).resolve(direct)
 
         XCTAssertEqual(resolved.handle?.username, "creator")
-        XCTAssertTrue(await probe.probedURLs().isEmpty, "a canonical link needs no network round trip")
+        let hops = await probe.probedURLs()
+        XCTAssertTrue(hops.isEmpty, "a canonical link needs no network round trip")
     }
 
     // MARK: - Refusals
@@ -150,7 +152,8 @@ final class ShortLinkResolverTests: XCTestCase {
                 .resolve(try shortLink("https://vm.tiktok.com/ZMa/"))
             XCTFail("a redirect loop must not hang the share sheet")
         } catch ShortLinkError.tooManyRedirects {
-            XCTAssertEqual(await probe.probedURLs().count, 4, "capped, not unbounded")
+            let hops = await probe.probedURLs()
+            XCTAssertEqual(hops.count, 4, "capped, not unbounded")
         }
     }
 

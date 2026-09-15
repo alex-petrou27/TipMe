@@ -73,9 +73,17 @@ jobs:
   # so it is kept separate, and code signing is disabled since CI has no team.
   app:
     name: App + share extension (build only)
-    runs-on: macos-14
+    # macos-15 rather than macos-14: current XcodeGen emits project format 77,
+    # which Xcode 15.4 (the macos-14 default) refuses to open.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          ls /Applications | grep -i "^Xcode" || true
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1 || echo /Applications/Xcode.app)"
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen
