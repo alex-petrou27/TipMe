@@ -146,12 +146,19 @@ logic level:
 
 | Share | Expected |
 |---|---|
-| TikTok post by a registered creator | Amount picker, creator named |
-| TikTok "Copy link" → Safari → share | Same, via a `vm.tiktok.com` redirect |
-| Instagram Reel (`/reel/<code>/`) | Manual entry, with the honest explanation |
-| Instagram post from a profile grid | Amount picker — that URL carries the handle |
+| TikTok post, share directly to TipMe | Amount picker, creator named |
+| TikTok "Copy link" → paste → share | Same, via a `vm.tiktok.com` redirect |
+| TikTok share sheet → **More** → TipMe | Same — this is the common real path |
+| TikTok profile | Amount picker |
+| Instagram profile | Amount picker |
+| Instagram story | Amount picker |
+| Instagram Reel (`/reel/<code>/`) | Manual entry, pointing at profile/story |
 | A news article | Manual entry fallback |
 | Tip twice in quick succession, then a third | Third is rate-limited |
+
+TikTok short links are the path most worth walking on a device, because it is
+what TikTok's own share sheet produces and it is the one step that depends on a
+live network round trip.
 
 ### Memory
 
@@ -162,26 +169,37 @@ see `docs/SHARE_EXTENSION.md`.
 
 ---
 
-## The Instagram constraint
+## Platform coverage
 
-TikTok URLs contain the handle (`tiktok.com/@user/video/123`), and short links
-resolve through one unauthenticated redirect. Instagram post URLs do not:
-`/p/<shortcode>/` and `/reel/<shortcode>/` are keyed by shortcode with no
-username anywhere in them, and there is **no unauthenticated way to map one to
-the other** — the web page is behind a login wall and the official oEmbed
-endpoint requires an app token gated behind Meta App Review.
+Current scope is **TikTok, plus Instagram profiles and stories.** Instagram
+shortcode posts are deferred.
 
-So Instagram parity is partial by necessity, not by omission:
+| Share | Status |
+|---|---|
+| TikTok post (`/@user/video/…`, `/photo/…`) | Supported |
+| TikTok short link (`vm.`/`vt.tiktok.com`, `/t/…`) | Supported — resolved via redirect |
+| TikTok profile | Supported |
+| Instagram profile | Supported |
+| Instagram story (`/stories/<user>/…`) | Supported |
+| Instagram post from a profile grid (`/<user>/p/…`) | Supported — that URL carries the handle |
+| Instagram shortcode post (`/p/…`, `/reel/…`, `/share/…`) | **Deferred** — manual entry fallback |
 
-- **Parsed:** `/<user>/p/<code>/`, `/<user>/reel/<code>/`, `/stories/<user>/…`,
-  profile links.
-- **Falls back to manual entry:** `/p/<code>/`, `/reel/<code>/`, `/share/…`.
+TikTok is the well-covered case: the handle is in the path, and short links —
+which is what TikTok's own share sheet actually emits — resolve through
+unauthenticated redirects. The parser is exercised against a 39-case corpus of
+real URL shapes plus 7 hostile ones.
 
-The fallback explains why, rather than showing a generic failure. Scraping the
-profile page would breach both platforms' terms and break on the login wall, so
-it is not implemented.
+Instagram shortcode URLs (`/p/<code>/`, `/reel/<code>/`) are keyed by shortcode
+with no username in them, and mapping one to the other needs an app token gated
+behind Meta App Review. Rather than dead-ending those users, the fallback points
+them at the shares that do work:
 
----
+> Instagram post links don't include the creator's username. Share their profile
+> or story instead — or enter their Lightning address below.
+
+Picking this back up later means obtaining Instagram oEmbed access; the
+`CreatorResolver` seam is where a shortcode lookup would attach, and nothing on
+the payment path changes.
 
 ## Fees
 
@@ -235,27 +253,21 @@ Even the test suite cannot construct an `AuthorizedIntent` directly.
 
 ---
 
-## Policy risks
+## Policy notes
 
-These can block or delay shipping regardless of the code.
+Nothing here blocks current work; recorded so it is not rediscovered late.
 
-- **App Store Guideline 3.1.1 / crypto wallets.** Wallet apps must be published
-  by a developer enrolled as an **organization**, not an individual. If the
-  TipMe developer account is an individual enrolment, iOS ships nowhere. Worth
-  confirming before further investment.
+- **App Store Guideline 3.1.1 / crypto wallets** requires an *organization*
+  developer enrolment rather than an individual one. Confirmed as available and
+  not a current focus — it becomes load-bearing only at submission.
 - **Handle verification is manual.** Proving that whoever registered `@someone`
-  really is `@someone` needs either a profile read (no third-party API exists
-  for either platform; scraping breaches both sets of terms) or platform OAuth
-  (TikTok Login Kit, Instagram Graph API — both require App Review). Until
-  then, records are marked unverified and the confirm screen says so.
-- **Phase 2 App Clip** review is discretionary and App Clips have their own
-  size and capability limits.
-- **Phase 2 Instagram comment triggers** require a Business/Creator account,
-  Graph API OAuth, and App Review for comment-webhook permissions. There is no
-  TikTok equivalent. See `docs/PHASE2.md`, which also covers the deeper problem:
-  a server cannot hold a non-custodial sender's keys.
-
----
+  really is `@someone` needs either a profile read (no third-party API for
+  either platform; scraping breaches both sets of terms) or platform OAuth
+  (TikTok Login Kit, Instagram Graph API — both require App Review). Until then
+  records are marked unverified and the confirm screen says so. This is the one
+  item on this list with a live product consequence.
+- **Instagram shortcode posts** need oEmbed access behind Meta App Review — see
+  *Platform coverage*. Deferred.
 
 ## Build and verification status
 
@@ -266,9 +278,12 @@ Honest accounting of what has and has not been executed.
 - Registry service — 52 tests pass, plus a live end-to-end smoke test
   (registration, handle normalisation, signed lookup, signature verification,
   Swift-compatible timestamp format).
-- The URL parse rules — the 26-case fixture corpus and 5 hostile URLs were
-  executed against an oracle implementing the same rules, including the
-  lookalike-host case (`tiktok.com.evil.co`).
+- The URL parse rules — a 39-case fixture corpus and 7 hostile URLs were
+  executed against an oracle implementing the same rules, including three
+  lookalike-host cases (`tiktok.com.evil.co`, `www.tiktok.com.attacker.io`,
+  `faketiktok.com`). TikTok coverage includes tracking parameters, trailing
+  slashes, photo posts, live links, profile variants and all three short-link
+  forms.
 - `Scripts/make-xcconfig.sh` — run against `.env.example`.
 - `project.yml` — validated as well-formed.
 
@@ -284,6 +299,9 @@ version. The logic they express is what the tests describe.
 
 - **Android.** The `PaymentBackend`/`TipFlow` split is designed so an Android
   port reimplements the UI and the wallet binding, not the rules.
-- **Phase 2** App Clip, Instant App, and Instagram comment triggers — designed
-  for, not built. See `docs/PHASE2.md`.
-- **Automated handle verification** — see *Policy risks*.
+- **Instagram shortcode posts** — deferred; the fallback points users at
+  profile and story shares, which do work.
+- **Comment-triggered tips** — parked. See `docs/PHASE2.md` for why this one is
+  harder than it looks even with Meta approval.
+- **Phase 2** App Clip and Instant App — designed for, not built.
+- **Automated handle verification** — see *Policy notes*.

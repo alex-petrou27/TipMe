@@ -2,25 +2,28 @@ import Foundation
 
 /// Extracts a creator handle from a shared TikTok or Instagram URL.
 ///
-/// ## What is and isn't recoverable
+/// ## Coverage
 ///
-/// TikTok puts the handle in the path (`/@user/video/123`), so almost every
-/// TikTok share resolves. Short links (`vm.tiktok.com`, `vt.tiktok.com`,
-/// `tiktok.com/t/...`) resolve after one redirect, which `ShortLinkResolver`
-/// follows without authentication.
+/// TikTok is the primary case and is covered thoroughly: the handle is in the
+/// path (`/@user/video/123`), and short links (`vm.tiktok.com`,
+/// `vt.tiktok.com`, `tiktok.com/t/…`) resolve through unauthenticated
+/// redirects, which `ShortLinkResolver` follows. Short links matter more than
+/// they look — TikTok's own share sheet emits them rather than canonical URLs,
+/// so they are the common path rather than an edge case.
 ///
-/// Instagram is the hard case, and it is a product constraint rather than a
-/// parsing bug: `instagram.com/p/<shortcode>/` and `/reel/<shortcode>/` are
-/// keyed by shortcode and contain **no username at all**. There is no
-/// unauthenticated way to map one to the other — the web page is behind a login
-/// wall and the official oEmbed endpoint requires an app token gated behind
-/// Meta App Review. Those shares fall through to manual entry by design.
-///
-/// Instagram shares that *do* carry the handle, and which we therefore parse:
+/// Instagram is partially covered, by decision rather than oversight. These
+/// carry the handle and are parsed:
+///   - bare profile links
+///   - `/stories/<user>/<id>/`
 ///   - `/<user>/p/<code>/` and `/<user>/reel/<code>/` (the "copy link" form
 ///     produced from a profile grid)
-///   - `/stories/<user>/<id>/`
-///   - bare profile links
+///
+/// Shortcode posts — `/p/<code>/`, `/reel/<code>/`, `/share/…` — are **deferred**.
+/// They are keyed by shortcode and contain no username at all, and there is no
+/// unauthenticated way to map one to the other: the page is behind a login wall
+/// and the official oEmbed endpoint needs an app token gated behind Meta App
+/// Review. They report `handleNotPresent`, and `TipFlow` points the user at a
+/// profile or story share instead of dead-ending them.
 public struct SharedLinkParser: Sendable {
 
     public init() {}

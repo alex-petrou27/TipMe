@@ -109,14 +109,19 @@ public actor TipFlow {
         }
     }
 
-    /// Instagram's shortcode URLs are the common case here, and the honest
-    /// explanation is better than a generic failure.
+    /// The honest explanation beats a generic failure, and pointing at the
+    /// share that *does* work beats either.
+    ///
+    /// Instagram shortcode posts (`/p/`, `/reel/`) are out of scope for now:
+    /// they carry no username and resolving one needs Meta App Review. Profile
+    /// and story shares do carry the handle, so the message names them rather
+    /// than sending every Instagram user straight to manual entry.
     private static func noHandleExplanation(for link: SharedLink) -> String {
         switch link.platform {
         case .instagram:
-            return "Instagram post links don't include the creator's username, so we can't identify them automatically. Enter their Lightning address to tip."
+            return "Instagram post links don't include the creator's username. Share their profile or story instead — or enter their Lightning address below."
         case .tiktok:
-            return "That TikTok link doesn't include the creator's username. Enter their Lightning address to tip."
+            return "That TikTok link doesn't include the creator's username. Try sharing the video itself, or enter their Lightning address below."
         }
     }
 

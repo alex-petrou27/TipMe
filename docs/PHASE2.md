@@ -1,8 +1,12 @@
 # Phase 2 — designed for, not built
 
-Status: **pending platform review.** Nothing here is implemented. This document
-records the design the Phase 1 code was shaped to accommodate, and the two
-obstacles that are harder than packaging.
+Status: **parked.** Nothing here is implemented, and comment-triggered tips are
+explicitly out of scope for now — current work is TikTok plus Instagram profiles
+and stories.
+
+This document is kept because the analysis below is the expensive part, and
+because one of its conclusions should inform any later decision to pick
+comment triggers back up: the obstacle is not Meta's API, it is custody.
 
 ## What Phase 1 already provides
 
@@ -20,7 +24,8 @@ for a reason worth being clear about now rather than at implementation time.
 ## Obstacle 1: a server cannot spend a non-custodial sender's money
 
 This is the deeper of the two problems and it is architectural, not a matter of
-API access.
+API access. It is the reason to be wary of comment triggers even in a world
+where Meta approves the integration tomorrow.
 
 Comment-triggered tips mean: someone comments `@tipme send 50 sats`, a webhook
 fires on our server, and a payment happens. But the sender's keys live in the
@@ -106,14 +111,18 @@ Moot until Android exists. Same size and wallet-availability questions apply.
 
 ---
 
-## Suggested order
+## If this is picked back up
 
-1. **Confirm the developer account is an organization enrolment.** Everything
-   else is wasted if it is not.
-2. **Decide the comment-trigger custody question** (Obstacle 1) before applying
-   for anything. The answer determines what you are even asking Meta for.
-3. **Prototype the App Clip size** with Breez linked. A number here beats a
-   plan.
-4. **Submit Meta App Review** only once 2 is settled, since the review asks what
-   the integration does.
+In this order, and only once the current scope has shipped:
+
+1. **Decide the custody question** (Obstacle 1) before applying for anything.
+   The answer determines what you would even be asking Meta for, and whether
+   the feature is still the product you set out to build.
+2. **Prototype the App Clip size** with Breez linked. A real number beats a
+   plan; it may force the App Clip to be quote-and-handoff rather than a full
+   payment surface.
+3. **Instagram shortcode posts** are a smaller, more valuable ask than comment
+   webhooks — oEmbed access would close the one real gap in current share
+   coverage. Worth pursuing first if any Meta review is going to be attempted.
+4. **Submit Meta App Review** once 1 is settled.
 5. Android port, if the iOS numbers justify it.

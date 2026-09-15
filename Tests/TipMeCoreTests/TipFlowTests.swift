@@ -12,9 +12,19 @@ final class TipFlowTests: XCTestCase {
         let audit: InMemoryAuditLog
     }
 
+    /// Scripted redirect chain, so the TikTok short-link path is exercised
+    /// here rather than only in ShortLinkResolverTests.
+    private struct StubProbe: RedirectProbing {
+        let chain: [String: String]
+        func nextHop(from url: URL) async throws -> URL? {
+            chain[url.absoluteString].map { URL(string: $0)! }
+        }
+    }
+
     private func makeHarness(records: [CreatorRecord] = [.stub()],
                              authorizer: BiometricAuthorizer = FakeAuthorizer(),
-                             lookupError: CreatorLookupError? = nil) -> Harness {
+                             lookupError: CreatorLookupError? = nil,
+                             redirects: [String: String] = [:]) -> Harness {
         let clock = MutableClock()
         let backend = FakePaymentBackend(clock: clock)
         let audit = InMemoryAuditLog()
@@ -27,7 +37,7 @@ final class TipFlowTests: XCTestCase {
         let rateLimiter = TipRateLimiter(store: store, clock: clock)
 
         let flow = TipFlow(
-            shortLinkResolver: ShortLinkResolver(),
+            shortLinkResolver: ShortLinkResolver(probe: StubProbe(chain: redirects)),
             creatorResolver: FakeCreatorResolver(records: table, error: lookupError),
             backend: backend,
             quoteBuilder: TipQuoteBuilder(feePolicy: .standard),
@@ -79,6 +89,8 @@ final class TipFlowTests: XCTestCase {
             return XCTFail("expected manual entry, got \(state)")
         }
         XCTAssertTrue(reason.contains("don't include the creator's username"))
+        XCTAssertTrue(reason.contains("profile or story"),
+                      "the fallback should name the shares that do work, not just the one that doesn't")
     }
 
     func testInstagramLinkCarryingTheHandleIsIdentified() async {
@@ -91,6 +103,82 @@ final class TipFlowTests: XCTestCase {
             return XCTFail("expected a ready state, got \(state)")
         }
         XCTAssertEqual(record.handle.username, "natgeo")
+    }
+
+    /// The most common real TikTok share: the app's own share sheet emits a
+    /// vm.tiktok.com link, not a canonical one.
+    func testTikTokShortLinkShareIdentifiesTheCreator() async {
+        let harness = makeHarness(redirects: [
+            "https://vm.tiktok.com/ZMhvJqKXn/": "https://www.tiktok.com/@creator/video/123"
+        ])
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://vm.tiktok.com/ZMhvJqKXn/")!],
+            sharedText: [])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "creator")
+    }
+
+    /// TikTok's "copy link" pasted into a message: a short link wrapped in text.
+    func testTikTokShortLinkInsideSharedTextIdentifiesTheCreator() async {
+        let harness = makeHarness(redirects: [
+            "https://vm.tiktok.com/ZMhvJqKXn/": "https://www.tiktok.com/@creator/video/123"
+        ])
+        let state = await harness.flow.identify(
+            attachedURLs: [],
+            sharedText: ["Check this out https://vm.tiktok.com/ZMhvJqKXn/ 😂"])
+
+        guard case .ready = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+    }
+
+    /// A short link that cannot be followed must not dead-end the user.
+    func testUnresolvableShortLinkFallsBackToManualEntry() async {
+        let harness = makeHarness(redirects: [:]) // nothing resolves
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://vm.tiktok.com/ZMhvJqKXn/")!],
+            sharedText: [])
+
+        guard case .needsManualEntry = state else {
+            return XCTFail("expected manual entry, got \(state)")
+        }
+    }
+
+    func testTikTokProfileShareIdentifiesTheCreator() async {
+        let harness = makeHarness()
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.tiktok.com/@creator")!],
+            sharedText: [])
+
+        guard case .ready = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+    }
+
+    func testInstagramStoryShareIdentifiesTheCreator() async {
+        let harness = makeHarness(records: [.stub(username: "natgeo", platform: .instagram)])
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/stories/natgeo/3512345678901234567/")!],
+            sharedText: [])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "natgeo")
+    }
+
+    func testInstagramProfileShareIdentifiesTheCreator() async {
+        let harness = makeHarness(records: [.stub(username: "natgeo", platform: .instagram)])
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/natgeo/")!],
+            sharedText: [])
+
+        guard case .ready = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
     }
 
     func testUnregisteredCreatorIsItsOwnState() async {

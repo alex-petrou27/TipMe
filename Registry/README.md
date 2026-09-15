@@ -89,8 +89,9 @@ suites covering the same cases.
 
 ## Phase 2
 
-The Instagram comment webhook receiver belongs here — it is HTTP, server-side,
-and next to the records that gate opt-in. Read `../docs/PHASE2.md` first: the
-Meta App Review is the lesser obstacle. The larger one is that a server cannot
-hold a non-custodial sender's keys, so a server-side trigger cannot itself move
-a sender's money.
+Parked. Comment-triggered tips are out of scope for now; if they are ever picked
+back up, the webhook receiver belongs here — it is HTTP, server-side, and next
+to the records that gate opt-in. Read `../docs/PHASE2.md` first: Meta App Review
+is the lesser obstacle. The larger one is that a server cannot hold a
+non-custodial sender's keys, so a server-side trigger cannot itself move a
+sender's money.
