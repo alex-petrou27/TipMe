@@ -126,8 +126,14 @@ public actor JSONLinesAuditLog: AuditLog {
             try? line.write(to: fileURL, options: [.atomic])
             // Audit lines can name creators and amounts; keep them out of
             // reach of other processes and out of unencrypted backups.
+            //
+            // Data protection classes are an iOS concept — `FileProtectionType`
+            // does not exist on macOS, where the core is compiled only so its
+            // tests can run on a CI runner.
+            #if os(iOS)
             try? fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                                   ofItemAtPath: fileURL.path)
+            #endif
         }
     }
 

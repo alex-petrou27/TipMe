@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The important one. TipMeCore is Foundation-only, so it compiles and its
+  # tests run on a macOS runner without Xcode project generation, code signing,
+  # or a device. This is where the parsing, fee, cap, rate-limit, engine and
+  # registry-client logic is actually verified.
+  core:
+    name: TipMeCore (build + test)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Build
+        run: swift build -v
+
+      - name: Test
+        run: swift test --parallel
+
+  # Static checks that need no Swift toolchain, so they report even when the
+  # macOS job is queued or unavailable.
+  sanity:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Swift sanity checks
+        run: python3 Scripts/swift-sanity.py
+      - name: xcconfig generator works against the example env
+        run: |
+          cp .env.example .env
+          ./Scripts/make-xcconfig.sh
+          # Server-side secrets must never reach the app bundle.
+          if grep -qE '^REGISTRY_' Config/Secrets.xcconfig; then
+            echo "::error::registry secrets leaked into the app xcconfig"
+            exit 1
+          fi
+
+  registry:
+    name: Registry service
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Registry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Test
+        run: pytest -q
+
+  # The app and extension targets. More fragile than the core job — it resolves
+  # the Breez and BIP-39 packages over the network and generates the project —
+  # so it is kept separate, and code signing is disabled since CI has no team.
+  app:
+    name: App + share extension (build only)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate configuration
+        run: |
+          cp .env.example .env
+          ./Scripts/make-xcconfig.sh
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build
+        run: |
+          xcodebuild build \
+            -project TipMe.xcodeproj \
+            -scheme TipMe \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
