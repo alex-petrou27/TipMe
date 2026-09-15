@@ -204,6 +204,22 @@ final class TipFlowTests: XCTestCase {
         }
     }
 
+    /// End to end for the clipboard path: the user taps TikTok's own "Copy
+    /// link", opens TipMe, and pastes. Same flow, different origin.
+    func testPastedTikTokLinkIdentifiesTheCreator() async {
+        let harness = makeHarness(redirects: [
+            "https://vm.tiktok.com/ZMhvJqKXn/": "https://www.tiktok.com/@creator/video/123"
+        ])
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://vm.tiktok.com/ZMhvJqKXn/")!],
+            sharedText: [])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "creator")
+    }
+
     // MARK: - Manual entry
 
     func testManualLightningAddressIsAccepted() async {

@@ -35,6 +35,7 @@ final class ShareViewController: UIViewController {
                 return present(message: "Open TipMe once to set up your wallet, then try again.")
             }
             let viewModel = TipSheetViewModel(services: services,
+                                              origin: .shareExtension,
                                               onFinish: { [weak self] in self?.finish() })
             embed(AnyView(TipSheetView(viewModel: viewModel)))
             Task { await viewModel.start(with: await loadSharedPayload()) }
@@ -107,11 +108,6 @@ final class ShareViewController: UIViewController {
     private func finish() {
         extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
     }
-}
-
-struct SharedPayload: Sendable {
-    let urls: [URL]
-    let text: [String]
 }
 
 /// Shown when we cannot proceed at all (no wallet, bad configuration).

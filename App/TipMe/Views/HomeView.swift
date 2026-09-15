@@ -37,6 +37,15 @@ struct HomeView: View {
                     }
                 }
 
+                // Shown only when the clipboard probably holds a link. This is
+                // the companion to the share-sheet path: "Copy link" sits in
+                // TikTok's and Instagram's own share row, where TipMe cannot,
+                // so being the next thing the user does is the best available
+                // position.
+                Section {
+                    PasteTipCard(services: services)
+                }
+
                 Section("Today") {
                     LabeledContent("Tipped", value: spentToday.formatted)
                     LabeledContent("Daily limit",
@@ -58,12 +67,11 @@ struct HomeView: View {
                 }
 
                 Section {
-                    // The one instruction most users need, since the app itself
-                    // is not where tipping happens.
-                    Label("Tip from TikTok or Instagram by tapping Share, then \"Tip via TipMe\".",
-                          systemImage: "square.and.arrow.up")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    NavigationLink {
+                        HowToTipView()
+                    } label: {
+                        Label("How to tip", systemImage: "square.and.arrow.up")
+                    }
                 }
             }
             .navigationTitle("TipMe")

@@ -2,7 +2,12 @@
 
 Lightning micro-tipping triggered from the iOS share sheet. A viewer shares a
 TikTok or Instagram post, taps **Tip via TipMe**, and the creator is paid
-directly — without leaving their feed for more than a couple of seconds.
+directly — without leaving their feed for more than a few seconds.
+
+In practice that is *Share → More → Tip via TipMe*, because third-party apps
+cannot appear in TikTok's or Instagram's own share row. See
+[Where TipMe actually appears](#where-tipme-actually-appears) — it is the single
+most important thing to understand about this product's reach.
 
 Non-custodial: TipMe never holds a balance. Every tip settles from the sender's
 own on-device wallet to the creator's own Lightning address.
@@ -57,7 +62,8 @@ Sources/TipMeCore/     Foundation-only core. No UIKit, no SwiftUI, no SDK.
   Security/            Send caps, rate limits, audit log, authorization gate
   Flow/                The share-sheet sequence, start to receipt
 Tests/TipMeCoreTests/  Including a fixture corpus of real share URLs
-App/TipMe/             Host app: onboarding, funding, settings, activity
+App/Shared/TipSheet/   The tip sheet UI, used by both surfaces below
+App/TipMe/             Host app: onboarding, funding, paste-to-tip, settings
 App/TipMeShare/        The share extension
 Registry/              Creator registry service (Python/FastAPI)
 docs/                  Share-extension testing, Phase 2, security model
@@ -65,6 +71,9 @@ docs/                  Share-extension testing, Phase 2, security model
 
 `TipMeCore` is deliberately free of UI and SDK imports so the app, the
 extension, and any future Phase 2 trigger all drive the identical logic.
+`App/Shared/TipSheet` is shared for the same reason at the UI layer: the
+share-sheet path and the paste path present the same sheet, so they cannot
+drift apart.
 
 ---
 
@@ -120,6 +129,52 @@ most common setup mistake on this project.
 
 ---
 
+## Where TipMe actually appears
+
+Worth being precise about, because it is not where people first look and it
+sets the real interaction cost.
+
+When you tap Share on a TikTok video or an Instagram post, the pop-up you get
+is **TikTok's or Instagram's own UI**: Repost, SMS, WhatsApp, Messenger,
+Telegram, Email, Copy link, Add to story. Those slots are hardcoded first-party
+integrations. There is no API, no registration, and no commercial route for a
+third-party app to appear among them. **TipMe cannot be in that row.**
+
+What we get is the **More** / **Share to…** button at the end of it, which is
+what opens the iOS system share sheet. TipMe appears in the app row there.
+
+So the honest path is:
+
+> Share → **More** → **Tip via TipMe**
+
+and on first use iOS hides new extensions at the end of that row, so a new user
+must tap **More → Edit**, enable TipMe, and drag it to the top. After that it
+sits near the front and the flow is two taps.
+
+That is 2–3 taps rather than the one the original brief implied. The in-app
+`HowToTipView` walks users through it, including the first-run enable step —
+without it, a new user taps Share, does not see TipMe, and reasonably concludes
+the app is broken.
+
+### The clipboard companion
+
+**Copy link** *is* in that prominent first row on both apps. TipMe cannot be in
+the row, but it can be what the user does next: copy the link, open TipMe, and
+the tip is already waiting on the home screen.
+
+This is deliberately built to avoid the obvious privacy problem. Reading
+`UIPasteboard.general.string` triggers the system "TipMe pasted from TikTok"
+banner and hands over the content whether we needed it or not — bad behaviour
+for an app that opens straight onto a wallet. Instead:
+
+1. `detectPatterns(for: [.probableWebURL])` answers only *"is there probably a
+   link?"* — no banner, no content.
+2. The card appears only if the answer is yes.
+3. The content arrives solely through a system `PasteButton` the user taps.
+
+If the pasted link is not one of ours, the card says so rather than opening a
+tip sheet that immediately dead-ends.
+
 ## Testing the share extension
 
 **The OS share sheet integration cannot be meaningfully tested in the
@@ -155,6 +210,9 @@ logic level:
 | Instagram Reel (`/reel/<code>/`) | Manual entry, pointing at profile/story |
 | A news article | Manual entry fallback |
 | Tip twice in quick succession, then a third | Third is rate-limited |
+| **First run:** Share → More → Edit → enable TipMe | Appears in the row afterwards |
+| **Copy link** in TikTok, then open TipMe | Paste card on the home screen |
+| Copy an unrelated link, then open TipMe | Card says it isn't recognised |
 
 TikTok short links are the path most worth walking on a device, because it is
 what TikTok's own share sheet produces and it is the one step that depends on a

@@ -2,6 +2,18 @@ import Foundation
 import SwiftUI
 import TipMeCore
 
+/// Whatever a surface managed to collect about what the user is tipping on.
+///
+/// Shared because two surfaces produce one: the share extension (from
+/// `NSExtensionItem` attachments) and the host app's paste flow (from a link
+/// the user copied with TikTok's or Instagram's own "Copy link" button).
+struct SharedPayload: Sendable {
+    let urls: [URL]
+    let text: [String]
+
+    static let empty = SharedPayload(urls: [], text: [])
+}
+
 /// Drives the share sheet.
 ///
 /// Holds no payment logic of its own — every decision comes from `TipFlow` in
@@ -34,9 +46,11 @@ final class TipSheetViewModel: ObservableObject {
     private let onFinish: () -> Void
     private var sourceLink: URL?
 
-    init(services: TipMeServices, onFinish: @escaping () -> Void) {
+    init(services: TipMeServices,
+         origin: PaymentIntent.Origin,
+         onFinish: @escaping () -> Void) {
         self.services = services
-        self.flow = services.makeFlow(origin: .shareExtension)
+        self.flow = services.makeFlow(origin: origin)
         self.onFinish = onFinish
     }
 

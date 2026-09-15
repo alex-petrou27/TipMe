@@ -39,6 +39,7 @@ targets:
     platform: iOS
     sources:
       - path: App/TipMe
+      - path: App/Shared
     info:
       path: App/TipMe/Info.plist
     entitlements:
@@ -78,6 +79,7 @@ targets:
       - sdk: LocalAuthentication.framework
     sources:
       - path: App/TipMeShare
+      - path: App/Shared
       - path: App/TipMe/Wallet
       - path: App/TipMe/Support
     settings:

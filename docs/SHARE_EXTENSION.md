@@ -3,9 +3,32 @@
 Everything the product promises happens in about two seconds inside a process
 the OS is willing to kill at any moment. This is what that constrains.
 
+## Reach: the row we cannot be in
+
+TikTok's and Instagram's share pop-ups are their own UI. The icon row — Repost,
+SMS, WhatsApp, Messenger, Telegram, Email, Copy link, Add to story — is a
+hardcoded set of first-party integrations. No public API exposes it, and no
+third-party app can appear there.
+
+The entry point available to us is the **More** / **Share to…** button, which
+presents `UIActivityViewController` — the iOS system share sheet — where share
+extensions live. Two consequences worth designing around:
+
+- **The real path is Share → More → TipMe**, not Share → TipMe.
+- **First run is worse.** iOS places newly installed extensions at the end of
+  the app row, often behind a second **More**. Until the user enables and
+  favourites TipMe (More → Edit → toggle → drag to top), it is effectively
+  invisible. `HowToTipView` in the host app exists solely to walk them through
+  this; without it, users conclude the extension is broken.
+
+There is one lever we do have: **Copy link** sits in the first-party row on both
+apps. The host app's paste card (`ClipboardLinkDetector`, `PasteTipCard`) turns
+that into a tipping entry point without reading anyone's clipboard uninvited.
+
 ## Lifecycle
 
-1. User taps **Share** in TikTok/Instagram/Safari and picks **Tip via TipMe**.
+1. User taps **Share** in TikTok/Instagram, then **More**, and picks
+   **Tip via TipMe**.
 2. iOS launches `TipMeShare` and presents `ShareViewController` as a sheet over
    the host app. No app switch — this is the native behaviour of a
    `com.apple.share-services` extension, and it is the core mechanic.

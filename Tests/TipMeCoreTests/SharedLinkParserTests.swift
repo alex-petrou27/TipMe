@@ -121,6 +121,38 @@ final class SharedPayloadExtractorTests: XCTestCase {
         XCTAssertEqual(candidates.count, 1)
     }
 
+    /// The clipboard path: TikTok's and Instagram's own share rows both have a
+    /// "Copy link" button, which is the one prominent slot TipMe can act on
+    /// even though it cannot appear in that row itself. What lands on the
+    /// clipboard is exactly what these cases cover.
+    func testCopiedTikTokLinkIsRecognised() {
+        for copied in ["https://vm.tiktok.com/ZMhvJqKXn/",
+                       "https://www.tiktok.com/@creator/video/123",
+                       "https://www.tiktok.com/@creator/video/123?_r=1&_t=8abc"] {
+            let url = URL(string: copied)!
+            let candidates = extractor.candidateURLs(attachedURLs: [url], sharedText: [])
+            XCTAssertNotNil(extractor.bestLink(from: candidates), "should recognise \(copied)")
+        }
+    }
+
+    func testCopiedInstagramProfileLinkIsRecognised() {
+        let url = URL(string: "https://www.instagram.com/natgeo/")!
+        let candidates = extractor.candidateURLs(attachedURLs: [url], sharedText: [])
+        XCTAssertEqual(extractor.bestLink(from: candidates)?.handle?.username, "natgeo")
+    }
+
+    /// Guards the paste card against offering to tip on an unrelated link the
+    /// user happened to have copied.
+    func testCopiedUnrelatedLinkIsNotOfferedAsATip() {
+        for copied in ["https://news.example.com/article",
+                       "https://github.com/anthropics/claude-code",
+                       "https://tiktok.com.evil.co/@victim/video/1"] {
+            let url = URL(string: copied)!
+            let candidates = extractor.candidateURLs(attachedURLs: [url], sharedText: [])
+            XCTAssertNil(extractor.bestLink(from: candidates), "should not offer a tip for \(copied)")
+        }
+    }
+
     func testEmptyShareYieldsNothing() {
         XCTAssertTrue(extractor.candidateURLs(attachedURLs: [], sharedText: []).isEmpty)
         XCTAssertNil(extractor.bestLink(from: []))
