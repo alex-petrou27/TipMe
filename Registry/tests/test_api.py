@@ -82,23 +82,135 @@ def test_verify_requires_the_admin_token(client, registered):
     assert decode(client, client.get("/v1/creators/tiktok/creator"))["verified"] is True
 
 
-def test_changing_wallet_clears_verification(client, registered):
+def test_a_registered_handle_cannot_be_taken_over(client, registered):
+    """The attack this closes: re-register a registered creator's handle
+    pointing at your own wallet, and collect their tips. Clearing the verified
+    flag warns users but does not stop the payment, so the write itself has to
+    be refused."""
+    response = client.post("/v1/creators", json={
+        "platform": "tiktok",
+        "username": "creator",
+        "lightning_address": "attacker@evil.example",
+    })
+    assert response.status_code == 403
+
+    record = decode(client, client.get("/v1/creators/tiktok/creator"))
+    assert record["lightning_address"] == "creator@getalby.com", "destination must be unchanged"
+
+
+def test_wrong_management_token_is_refused(client, registered):
+    response = client.post(
+        "/v1/creators",
+        json={
+            "platform": "tiktok",
+            "username": "creator",
+            "lightning_address": "attacker@evil.example",
+        },
+        headers={"X-Management-Token": "tipme-manage-wrong"},
+    )
+    assert response.status_code == 403
+
+
+def test_creator_can_change_their_own_wallet(client, management_token):
+    response = client.post(
+        "/v1/creators",
+        json={
+            "platform": "tiktok",
+            "username": "creator",
+            "lightning_address": "creator@strike.me",
+        },
+        headers={"X-Management-Token": management_token},
+    )
+    assert response.status_code == 201
+
+    record = decode(client, client.get("/v1/creators/tiktok/creator"))
+    assert record["lightning_address"] == "creator@strike.me"
+
+
+def test_admin_can_change_a_record_without_the_management_token(client, registered):
+    response = client.post(
+        "/v1/creators",
+        json={
+            "platform": "tiktok",
+            "username": "creator",
+            "lightning_address": "creator@strike.me",
+        },
+        headers={"X-Admin-Token": "test-admin-token"},
+    )
+    assert response.status_code == 201
+
+
+def test_management_token_is_issued_once_and_not_reissued(client, management_token):
+    """Re-issuing it on every update would let anyone who can read one response
+    take the record over."""
+    assert management_token.startswith("tipme-manage-")
+
+    response = client.post(
+        "/v1/creators",
+        json={
+            "platform": "tiktok",
+            "username": "creator",
+            "lightning_address": "creator@strike.me",
+        },
+        headers={"X-Management-Token": management_token},
+    )
+    assert response.json()["management_token"] is None
+
+
+def test_changing_wallet_clears_verification(client, management_token):
     """Verification attests that a person controls a specific wallet. Changing
-    the wallet invalidates that, and a hijacked account must not inherit a
-    badge it did not earn."""
+    the wallet invalidates that, so the badge must not carry over."""
     client.post("/v1/creators/tiktok/creator/verify",
                 headers={"X-Admin-Token": "test-admin-token"})
     assert decode(client, client.get("/v1/creators/tiktok/creator"))["verified"] is True
 
-    client.post("/v1/creators", json={
-        "platform": "tiktok",
-        "username": "creator",
-        "lightning_address": "someone-else@getalby.com",
-    })
+    client.post(
+        "/v1/creators",
+        json={
+            "platform": "tiktok",
+            "username": "creator",
+            "lightning_address": "creator@strike.me",
+        },
+        headers={"X-Management-Token": management_token},
+    )
 
     record = decode(client, client.get("/v1/creators/tiktok/creator"))
-    assert record["lightning_address"] == "someone-else@getalby.com"
+    assert record["lightning_address"] == "creator@strike.me"
     assert record["verified"] is False
+
+
+def test_registration_is_rate_limited(client):
+    """Without a limit, a script could claim every popular handle before their
+    owners do and point them all at one wallet."""
+    for index in range(10):
+        response = client.post("/v1/creators", json={
+            "platform": "tiktok",
+            "username": f"creator{index}",
+            "lightning_address": f"creator{index}@getalby.com",
+        })
+        assert response.status_code == 201, f"registration {index} should succeed"
+
+    response = client.post("/v1/creators", json={
+        "platform": "tiktok",
+        "username": "creator_too_many",
+        "lightning_address": "another@getalby.com",
+    })
+    assert response.status_code == 429
+
+
+def test_updating_an_existing_record_does_not_consume_the_new_claim_budget(client, management_token):
+    """Rate limiting targets handle-squatting, not a creator fixing a typo."""
+    for _ in range(15):
+        response = client.post(
+            "/v1/creators",
+            json={
+                "platform": "tiktok",
+                "username": "creator",
+                "lightning_address": "creator@getalby.com",
+            },
+            headers={"X-Management-Token": management_token},
+        )
+        assert response.status_code == 201
 
 
 def test_register_rejects_bad_lightning_address(client):

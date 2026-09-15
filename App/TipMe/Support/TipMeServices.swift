@@ -19,6 +19,7 @@ public struct TipMeServices: Sendable {
     public let gate: AuthorizationGate
     public let quoteBuilder: TipQuoteBuilder
     public let keychain: WalletKeychain
+    public let creatorTokens: CreatorTokenStore
 
     public static func make(origin: PaymentIntent.Origin,
                             bundle: Bundle = .main,
@@ -74,7 +75,8 @@ public struct TipMeServices: Sendable {
                                     clock: clock,
                                     auditLog: auditLog),
             quoteBuilder: TipQuoteBuilder(feePolicy: configuration.feePolicy),
-            keychain: keychain)
+            keychain: keychain,
+            creatorTokens: CreatorTokenStore(accessGroup: configuration.keychainAccessGroup))
     }
 
     public func makeFlow(origin: PaymentIntent.Origin, clock: Clock = SystemClock()) -> TipFlow {

@@ -63,7 +63,7 @@ Sources/TipMeCore/     Foundation-only core. No UIKit, no SwiftUI, no SDK.
   Flow/                The share-sheet sequence, start to receipt
 Tests/TipMeCoreTests/  Including a fixture corpus of real share URLs
 App/Shared/TipSheet/   The tip sheet UI, used by both surfaces below
-App/TipMe/             Host app: onboarding, funding, paste-to-tip, settings
+App/TipMe/             Host app: onboarding, funding, paste-to-tip, creator setup
 App/TipMeShare/        The share extension
 Registry/              Creator registry service (Python/FastAPI)
 docs/                  Share-extension testing, Phase 2, security model
@@ -95,6 +95,9 @@ xcodegen generate             # produces TipMe.xcodeproj
 
 # 3. Core tests (no Xcode needed)
 swift test
+
+# 3b. Static checks that do not need a Swift toolchain at all
+python3 Scripts/swift-sanity.py
 
 # 4. Registry service
 cd Registry
@@ -280,6 +283,47 @@ sheet's header, so copying an Instagram Reel link still falls back to manual
 entry, while *sharing* the same Reel identifies it. Worth knowing when choosing
 which flow to promote.
 
+## The creator side
+
+A sender can only tip someone who has told TipMe where their money goes.
+**Get tipped** in the host app (`CreatorSetupView`) links a handle to a wallet,
+once, permanently until the creator changes it.
+
+Any Lightning address works — Alby, Strike, Wallet of Satoshi, Coinos, a
+self-hosted node. TipMe never holds the funds.
+
+### The address is verified before it is stored
+
+`LightningAddressVerifier` resolves the LNURL-pay endpoint and checks the
+response really is a `payRequest` with an https callback and a sane sendable
+range, before registration is allowed.
+
+This is not a nicety. Consider a creator who registers `charli@getably.com`
+instead of `charli@getalby.com`. Nothing rejects it, senders share her videos,
+and every tip fails — or lands with whoever owns the typo'd domain. She finds
+out weeks later, wondering why she has never been paid. One HTTP request turns
+an invisible, slow, expensive failure into an immediate legible one.
+
+### Claiming versus changing
+
+**Claiming an unclaimed handle is open.** There is no identity to check against
+yet, which is why a fresh record is always `verified: false` and the confirm
+screen says so.
+
+**Changing an existing record is not open.** The first claim issues a
+`management_token`, required for any later change. Without that distinction,
+anyone could re-register a registered creator's handle, point it at their own
+wallet, and collect that creator's tips — clearing the verified flag would warn
+users but would not stop the payment.
+
+The app stores that token in the keychain (`CreatorTokenStore`, same protection
+class as the wallet key). Showing it once and hoping the creator writes it down
+would mean most of them silently lose the ability to ever move wallets.
+
+New claims are also rate limited per client, because handle-squatting is
+otherwise cheap: a script could claim every popular handle before their owners
+do and point them all at one wallet.
+
 ## Fees
 
 Sender-side only, added on top. The creator always receives the full tip amount.
@@ -355,7 +399,7 @@ Honest accounting of what has and has not been executed.
 
 **Verified by running it:**
 
-- Registry service — 52 tests pass, plus a live end-to-end smoke test
+- Registry service — 59 tests pass, plus a live end-to-end smoke test
   (registration, handle normalisation, signed lookup, signature verification,
   Swift-compatible timestamp format).
 - The URL parse rules — a 39-case fixture corpus and 7 hostile URLs were
@@ -366,6 +410,12 @@ Honest accounting of what has and has not been executed.
   forms.
 - `Scripts/make-xcconfig.sh` — run against `.env.example`.
 - `project.yml` — validated as well-formed.
+
+- `Scripts/swift-sanity.py` — static checks over all 59 Swift files: delimiter
+  balance, duplicate non-private type declarations, and references to types
+  that are neither declared nor known framework types. It is not a compiler,
+  but it catches renames left half-applied and helpers referenced but never
+  written. Currently clean.
 
 **Not compiled:** the Swift. This repository was assembled in a Linux container
 where `download.swift.org` is blocked by egress policy, so no Swift toolchain

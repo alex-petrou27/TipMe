@@ -72,6 +72,13 @@ struct HomeView: View {
                     } label: {
                         Label("How to tip", systemImage: "square.and.arrow.up")
                     }
+                    // The creator side of the product: until someone links
+                    // their handle to a wallet, nobody can tip them.
+                    NavigationLink {
+                        CreatorSetupView(services: services)
+                    } label: {
+                        Label("Get tipped", systemImage: "person.badge.plus")
+                    }
                 }
             }
             .navigationTitle("TipMe")

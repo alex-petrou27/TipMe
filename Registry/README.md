@@ -36,7 +36,7 @@ pytest
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/v1/creators/{platform}/{username}` | Signed lookup. The hot path. |
-| `POST` | `/v1/creators` | Creator onboarding. Open; always unverified. |
+| `POST` | `/v1/creators` | Claim a handle (open) or change one (needs `X-Management-Token`). |
 | `POST` | `/v1/creators/{platform}/{username}/verify` | Admin only. |
 | `DELETE` | `/v1/creators/{platform}/{username}` | Admin only. |
 | `GET` | `/v1/public-key` | Setup convenience only — see below. |
@@ -60,6 +60,27 @@ Timestamps are emitted as RFC3339 with **no fractional seconds**, because
 Swift's `JSONDecoder.dateDecodingStrategy = .iso8601` uses `ISO8601DateFormatter`
 with `.withInternetDateTime` only and rejects them outright. There is a test
 pinning this.
+
+## Claiming versus changing
+
+Claiming an **unclaimed** handle is open: there is no identity to check against
+yet, so a fresh record is always `verified: false` and the app labels it.
+
+Changing an **existing** record is not. The first claim returns a
+`management_token`, required for any later change (the admin token also works).
+Without this, anyone could re-register a registered creator's handle, point it
+at their own wallet, and collect their tips — clearing the verified flag warns
+users but does not stop the payment.
+
+The token is returned **only** on first claim; re-issuing it on every update
+would let anyone who can read one response take the record over. Records
+predating management tokens fail closed and need an admin to change.
+
+New claims are rate limited per client (`REGISTRY_REGISTRATIONS_PER_HOUR`,
+default 10). The limiter is in-memory, and the client key comes from
+`X-Forwarded-For` when present — that header is client-controlled, so this
+throttles casual handle-squatting and is not a security control. A
+multi-process deployment needs it in shared storage.
 
 ## Verification is manual, and why
 

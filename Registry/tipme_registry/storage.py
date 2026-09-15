@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS creators (
     display_name        TEXT,
     verified            INTEGER NOT NULL DEFAULT 0,
     claim_token         TEXT,
+    -- Secret issued on first registration. Required to change an existing
+    -- record, so a handle cannot be taken over by whoever asks last.
+    management_token    TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
     PRIMARY KEY (platform, username)
@@ -65,21 +68,32 @@ class Storage:
         minimum_tip_minor: int | None,
         display_name: str | None,
         claim_token: str | None,
+        management_token: str | None = None,
     ) -> CreatorRecord:
+        """Create or update a record.
+
+        Callers must have already authorised the write — see
+        ``authorise_write`` in app.py. This method does not check tokens; it
+        only stores them.
+        """
         now = datetime.now(timezone.utc)
         with self.connect() as conn:
             # Re-registering an existing handle deliberately clears `verified`.
             # Verification attests that a specific person controls a specific
             # wallet; changing the wallet invalidates that, and carrying the
-            # badge over would let a hijacked account inherit trust it has not
+            # badge over would let a changed record inherit trust it has not
             # earned.
+            #
+            # The management token is preserved on update (COALESCE keeps the
+            # existing one) so a creator does not get a new secret every time
+            # they change their wallet.
             conn.execute(
                 """
                 INSERT INTO creators (platform, username, lightning_address,
                                       preferred_asset, minimum_tip_minor,
                                       display_name, verified, claim_token,
-                                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                                      management_token, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
                 ON CONFLICT(platform, username) DO UPDATE SET
                     lightning_address = excluded.lightning_address,
                     preferred_asset   = excluded.preferred_asset,
@@ -87,15 +101,25 @@ class Storage:
                     display_name      = excluded.display_name,
                     verified          = 0,
                     claim_token       = excluded.claim_token,
+                    management_token  = COALESCE(creators.management_token,
+                                                 excluded.management_token),
                     updated_at        = excluded.updated_at
                 """,
                 (
                     handle.platform, handle.username, lightning_address,
                     preferred_asset, minimum_tip_minor, display_name,
-                    claim_token, now.isoformat(), now.isoformat(),
+                    claim_token, management_token, now.isoformat(), now.isoformat(),
                 ),
             )
         return self.get(handle)
+
+    def management_token(self, handle: Handle) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT management_token FROM creators WHERE platform = ? AND username = ?",
+                (handle.platform, handle.username),
+            ).fetchone()
+        return row["management_token"] if row else None
 
     def get(self, handle: Handle) -> CreatorRecord | None:
         with self.connect() as conn:

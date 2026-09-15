@@ -127,6 +127,47 @@ Integer minor units throughout, with overflow-checked operations. No floating
 point anywhere on the payment path: `0.1 + 0.2` problems become real money
 problems. Adding amounts of different assets traps rather than coercing.
 
+## Creator records are write-protected after first claim
+
+`POST /v1/creators` upserts, which made an obvious attack possible in an
+earlier revision: re-register a registered creator's handle pointing at your
+own wallet and collect their tips. Clearing the `verified` flag warned users
+but did not stop the payment.
+
+Now the first claim issues a `management_token`, and changing an existing
+record requires it (or the admin token). Claiming an *unclaimed* handle stays
+open, because there is no identity to check against yet — that is what the
+unverified badge is for.
+
+Two supporting details:
+
+- The token is issued **once**. Re-issuing it on every update would let anyone
+  who can read a single response take the record over.
+- A record predating management tokens **fails closed**: it cannot be changed
+  anonymously. For a payment destination that is the only safe default.
+
+New claims are rate limited per client (default 10/hour). The limiter is
+in-memory and the client key comes from `X-Forwarded-For` when present, which
+is client-controlled — it throttles casual handle-squatting and is explicitly
+not a security control. A multi-process deployment needs it moved to shared
+storage, or the effective limit is the configured limit times the worker count.
+
+## Lightning addresses are verified before they are stored
+
+`LightningAddressVerifier` resolves the LNURL-pay endpoint at registration and
+rejects anything that is not a `payRequest` with an https callback and a
+consistent sendable range. An http callback is refused specifically because it
+could be rewritten in flight to return an attacker's invoice.
+
+## Recovery phrases are checked, not just acknowledged
+
+Onboarding asks the user to pick three specific words back out of their phrase
+before the wallet is considered set up, with decoys drawn from the same phrase
+so writing the words down in the wrong order is also caught. A checkbox saying
+"I've written these down" is not a backup, and this is the one irreversible
+moment in the app — a user who taps past it has funds that nobody, including
+us, can ever recover, and will not find out until they need them.
+
 ## What is deliberately *not* protected
 
 - **A user with an unlocked phone and the passcode** can spend up to the caps.

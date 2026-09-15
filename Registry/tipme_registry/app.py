@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from . import lightning, signing
@@ -45,6 +47,11 @@ class Settings:
         # difference between a tip and a redirect, so it is never self-service.
         self.admin_token = os.environ.get("REGISTRY_ADMIN_TOKEN")
 
+        # Registrations per client per hour. Handle-squatting is cheap without
+        # this: a script could claim every popular handle before their owners
+        # do, pointing them all at one wallet.
+        self.registrations_per_hour = int(os.environ.get("REGISTRY_REGISTRATIONS_PER_HOUR", "10"))
+
 
 def get_settings() -> Settings:
     global _settings
@@ -55,6 +62,25 @@ def get_settings() -> Settings:
 
 _settings: Settings | None = None
 _storage: Storage | None = None
+
+# In-memory sliding window. Adequate for a single process; a multi-process
+# deployment needs this moved to shared storage, or the effective limit becomes
+# the configured limit multiplied by the worker count.
+_registration_attempts: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _rate_limit_registration(client: str, settings: Settings) -> None:
+    window = 3600.0
+    now = time.monotonic()
+    attempts = _registration_attempts[client]
+    while attempts and now - attempts[0] > window:
+        attempts.popleft()
+    if len(attempts) >= settings.registrations_per_hour:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many registrations from this address. Try again later.",
+        )
+    attempts.append(now)
 
 
 def get_storage(settings: Settings = Depends(get_settings)) -> Storage:
@@ -84,6 +110,9 @@ class RegisterResponse(BaseModel):
     verified: bool
     claim_token: str
     verification_instructions: str
+    # Returned only when the handle is claimed for the first time. Required to
+    # change the record afterwards, so the creator must keep it.
+    management_token: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -157,14 +186,23 @@ def _signed_payload(record: CreatorRecord, settings: Settings) -> dict:
 @app.post("/v1/creators", response_model=RegisterResponse, status_code=201)
 def register(
     request: RegisterRequest,
+    http_request: Request,
+    x_management_token: str | None = Header(default=None),
+    x_admin_token: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
     storage: Storage = Depends(get_storage),
 ) -> RegisterResponse:
     """Creator onboarding: link a handle to a wallet.
 
-    Registration is open, verification is not. Anyone may claim any handle, so
-    a fresh record is always unverified and the app labels it as such. Without
-    that distinction, registering ``@charlidamelio`` would be enough to collect
-    her tips.
+    Claiming an *unclaimed* handle is open — there is no identity to check
+    against yet, which is why a fresh record is always unverified and the app
+    labels it as such.
+
+    Changing an *existing* record is not open. Without that distinction anyone
+    could re-register a registered creator's handle, point it at their own
+    wallet, and collect that creator's tips; clearing the verified flag would
+    warn users but would not stop the payment. So updates require the
+    management token issued at first registration (or the admin token).
     """
     try:
         handle = normalise_handle(request.platform, request.username)
@@ -182,6 +220,16 @@ def register(
             detail=f"preferred_asset must be one of {', '.join(ASSETS)}",
         )
 
+    existing = storage.get(handle)
+    is_new_claim = existing is None
+
+    if is_new_claim:
+        _rate_limit_registration(_client_key(http_request), settings)
+        management_token = f"tipme-manage-{secrets.token_urlsafe(24)}"
+    else:
+        _authorise_update(handle, storage, x_management_token, x_admin_token, settings)
+        management_token = None  # preserved by the storage layer
+
     token = f"tipme-verify-{secrets.token_urlsafe(8)}"
     record = storage.upsert(
         handle=handle,
@@ -190,6 +238,7 @@ def register(
         minimum_tip_minor=request.minimum_tip_minor_units,
         display_name=request.display_name,
         claim_token=token,
+        management_token=management_token,
     )
 
     return RegisterResponse(
@@ -198,6 +247,9 @@ def register(
         lightning_address=record.lightning_address,
         verified=record.verified,
         claim_token=token,
+        # Shown once, on first claim only. Re-issuing it on every update would
+        # let anyone who can read one response take the record over.
+        management_token=management_token,
         verification_instructions=(
             f"Add '{token}' to your {handle.platform} bio, then contact support to "
             "complete verification. Automated bio checks are not available: neither "
@@ -205,6 +257,44 @@ def register(
             "would breach their terms. See docs/PHASE2.md."
         ),
     )
+
+
+def _client_key(request: Request) -> str:
+    """Best-effort client identity for rate limiting.
+
+    Behind a proxy the socket address is the proxy's, so the forwarded header is
+    used when present. That header is client-controlled and trivially spoofed —
+    it is adequate for throttling casual abuse and is not a security control.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _authorise_update(
+    handle,
+    storage: Storage,
+    management_token: str | None,
+    admin_token: str | None,
+    settings: Settings,
+) -> None:
+    if settings.admin_token and admin_token and secrets.compare_digest(admin_token, settings.admin_token):
+        return
+
+    stored = storage.management_token(handle)
+    if stored is None:
+        # A record predating management tokens cannot be updated anonymously;
+        # failing closed is the only safe default for a payment destination.
+        raise HTTPException(
+            status_code=403,
+            detail="This handle is already registered and cannot be changed here. Contact support.",
+        )
+    if not management_token or not secrets.compare_digest(management_token, stored):
+        raise HTTPException(
+            status_code=403,
+            detail="This handle is already registered. Provide its management token to change it.",
+        )
 
 
 @app.delete("/v1/creators/{platform}/{username}", status_code=204)

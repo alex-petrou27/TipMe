@@ -13,10 +13,17 @@ struct OnboardingView: View {
     @State private var mode: Mode = .intro
     @State private var mnemonic: String = ""
     @State private var restoreInput: String = ""
-    @State private var confirmedBackup = false
     @State private var errorMessage: String?
 
-    private enum Mode { case intro, created, restore }
+    /// Indices (0-based) of the words the user must pick back out, and their
+    /// answers so far.
+    @State private var challengeIndices: [Int] = []
+    @State private var challengeAnswers: [Int: String] = [:]
+    @State private var challengeFailed = false
+
+    private enum Mode { case intro, created, verify, restore }
+
+    private var words: [String] { mnemonic.split(separator: " ").map(String.init) }
 
     var body: some View {
         NavigationStack {
@@ -24,6 +31,7 @@ struct OnboardingView: View {
                 switch mode {
                 case .intro: intro
                 case .created: created
+                case .verify: verify
                 case .restore: restore
                 }
             }
@@ -69,35 +77,131 @@ struct OnboardingView: View {
                 .foregroundStyle(.secondary)
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                ForEach(Array(mnemonic.split(separator: " ").enumerated()), id: \.offset) { index, word in
-                    HStack(spacing: 6) {
-                        Text("\(index + 1).")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                        Text(String(word))
-                            .font(.callout.weight(.medium))
-                        Spacer()
-                    }
+                ForEach(Array(words.enumerated()), id: \.offset) { index, word in
+                    wordRow(index: index, word: word)
                 }
             }
             .padding(14)
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
 
-            Toggle("I've written these down somewhere safe", isOn: $confirmedBackup)
-                .font(.footnote)
+            Spacer()
+
+            Button("I've written them down") { beginVerification() }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Checks the user actually recorded the phrase, rather than tapping past a
+    /// checkbox.
+    ///
+    /// This is the one irreversible moment in the app. A user who taps "I've
+    /// written them down" without doing so has created a wallet whose funds
+    /// nobody — including us — can ever recover, and they will not discover it
+    /// until they need it. Asking for three specific words costs a few seconds
+    /// and is the standard every serious wallet applies.
+    private var verify: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Check your backup")
+                .font(.title2.weight(.semibold))
+            Text("Tap the right word for each position.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            ForEach(challengeIndices, id: \.self) { index in
+                challengeRow(for: index)
+            }
+
+            if challengeFailed {
+                Label("That's not right. Check your written copy and try again.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
 
             Spacer()
 
-            Button("Continue") {
-                // The phrase is deliberately dropped from memory here; it lives
-                // only in the keychain from this point on.
-                mnemonic = ""
-                Task { await onComplete() }
+            Button("Confirm") { completeVerification() }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+                .disabled(challengeAnswers.count < challengeIndices.count)
+
+            Button("Show me the words again") {
+                challengeAnswers = [:]
+                challengeFailed = false
+                mode = .created
             }
-            .buttonStyle(.borderedProminent)
+            .font(.footnote)
             .frame(maxWidth: .infinity)
-            .disabled(!confirmedBackup)
         }
+    }
+
+    private func wordRow(index: Int, word: String) -> some View {
+        HStack(spacing: 6) {
+            Text("\(index + 1).")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.tertiary)
+            Text(word)
+                .font(.callout.weight(.medium))
+            Spacer()
+        }
+    }
+
+    private func challengeRow(for index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Word \(index + 1)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                ForEach(options(for: index), id: \.self) { option in
+                    Button {
+                        challengeAnswers[index] = option
+                        challengeFailed = false
+                    } label: {
+                        Text(option)
+                            .font(.footnote)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(challengeAnswers[index] == option ? .accentColor : .secondary)
+                }
+            }
+        }
+    }
+
+    /// Three choices per position: the real word plus two decoys drawn from the
+    /// same phrase, so a user who wrote the words down but in the wrong order
+    /// is also caught.
+    private func options(for index: Int) -> [String] {
+        guard words.indices.contains(index) else { return [] }
+        let correct = words[index]
+        let decoys = words.filter { $0 != correct }.shuffled().prefix(2)
+        // Seeded by the index so the row does not reshuffle on every redraw.
+        return ([correct] + decoys).sorted()
+    }
+
+    private func beginVerification() {
+        guard words.count == 12 else { return }
+        // Three positions spread across the phrase.
+        challengeIndices = Array(words.indices).shuffled().prefix(3).sorted()
+        challengeAnswers = [:]
+        challengeFailed = false
+        mode = .verify
+    }
+
+    private func completeVerification() {
+        let allCorrect = challengeIndices.allSatisfy { index in
+            challengeAnswers[index] == words[index]
+        }
+        guard allCorrect else {
+            challengeFailed = true
+            challengeAnswers = [:]
+            return
+        }
+        // Drop the phrase from memory; from here it lives only in the keychain.
+        mnemonic = ""
+        Task { await onComplete() }
     }
 
     private var restore: some View {
