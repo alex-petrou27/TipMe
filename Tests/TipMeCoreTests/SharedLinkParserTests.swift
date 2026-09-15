@@ -56,12 +56,20 @@ final class SharedLinkParserTests: XCTestCase {
                        "casing must not split a creator into two rate-limit buckets")
     }
 
-    func testTrailingDotsAreStrippedFromHandles() {
-        let handle = CreatorHandle(platform: .tiktok, rawUsername: "someone..")
-        XCTAssertNil(handle, "consecutive dots must not survive into a registry URL")
+    /// The property that matters is that `..` never survives into a URL we
+    /// build. Trailing dots are simply not part of the handle, so they are
+    /// stripped — including several of them — and what remains is clean.
+    /// Consecutive dots *inside* a handle are a different matter and are
+    /// rejected outright.
+    func testTrailingDotsAreStrippedAndInternalDoubleDotsRejected() {
+        XCTAssertEqual(CreatorHandle(platform: .tiktok, rawUsername: "someone.")?.username, "someone")
+        XCTAssertEqual(CreatorHandle(platform: .tiktok, rawUsername: "someone..")?.username, "someone")
+        XCTAssertEqual(CreatorHandle(platform: .tiktok, rawUsername: "someone...")?.username, "someone")
 
-        let trailing = CreatorHandle(platform: .tiktok, rawUsername: "someone.")
-        XCTAssertEqual(trailing?.username, "someone")
+        XCTAssertNil(CreatorHandle(platform: .tiktok, rawUsername: "some..one"),
+                     "consecutive dots must not survive into a registry URL")
+        XCTAssertNil(CreatorHandle(platform: .tiktok, rawUsername: ".."))
+        XCTAssertNil(CreatorHandle(platform: .tiktok, rawUsername: "."))
     }
 
     func testReservedSegmentsAreNotTreatedAsCreators() {

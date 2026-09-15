@@ -399,6 +399,10 @@ Honest accounting of what has and has not been executed.
 
 **Verified by running it:**
 
+- **TipMeCore compiles and its tests run**, on a macOS GitHub Actions runner
+  (`.github/workflows/ci.yml`). This is new — the Swift had never been through
+  a compiler. 145 tests execute.
+
 - Registry service — 59 tests pass, plus a live end-to-end smoke test
   (registration, handle normalisation, signed lookup, signature verification,
   Swift-compatible timestamp format).
@@ -417,13 +421,16 @@ Honest accounting of what has and has not been executed.
   but it catches renames left half-applied and helpers referenced but never
   written. Currently clean.
 
-**Not compiled:** the Swift. This repository was assembled in a Linux container
-where `download.swift.org` is blocked by egress policy, so no Swift toolchain
-could be installed and no Xcode exists. The Swift sources and XCTest suites have
-not been through a compiler. Expect to fix ordinary compile errors on first
-build — particularly around the Breez SDK call sites, which are written against
-the documented Nodeless API but were not type-checked against the pinned
-version. The logic they express is what the tests describe.
+**Not yet verified:** the app and share-extension targets. They compile only in
+the `app` CI job, which additionally resolves the Breez SDK. Expect real work
+there: `BreezPaymentBackend` was written against the documented Nodeless API
+without a compiler, and the pinned version was corrected from a guessed 0.6.6 to
+the real 0.12.4, so those call sites are the least trustworthy code in the
+repository. Everything they depend on in `TipMeCore` is now compiler-verified.
+
+This repository is assembled in a Linux container where `download.swift.org` is
+blocked by egress policy, so there is no local Swift toolchain — CI is the
+compiler.
 
 ## Not built yet
 

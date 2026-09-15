@@ -195,12 +195,21 @@ final class PaymentEngineTests: XCTestCase {
     /// The specific failure this prevents: the sheet shows "£1.00 + £0.03", the
     /// user leaves it open, the Bitcoin price moves, and Face ID then authorises
     /// a sat amount that no longer matches the pounds they agreed to.
+    ///
+    /// Note the shape of the window this has to construct. An approval lives 60s
+    /// but a rate may be spent up to 120s old, so a quote that was *fresh* when
+    /// confirmed can never trip the rate check — the token expires first, and
+    /// expiry is the protection in that case. The rate check covers the other
+    /// case: a quote that was already ageing on screen (up to `displayTolerance`,
+    /// 90s) before the user confirmed it.
     func testStaleExchangeRateIsRejectedAtSpendTime() async throws {
         let harness = makeHarness()
         let quote = try await makeQuote(harness)
-        let authorized = try await authorize(harness, quote: quote)
 
-        harness.clock.advance(by: RateFreshness.spendTolerance + 1)
+        // The sheet sat open long enough for the price to be stale, and only
+        // then did the user confirm.
+        harness.clock.advance(by: RateFreshness.spendTolerance + 10)
+        let authorized = try await authorize(harness, quote: quote)
 
         do {
             _ = try await harness.engine.execute(authorized)
@@ -208,6 +217,25 @@ final class PaymentEngineTests: XCTestCase {
         } catch PaymentEngineError.rateStale {
             let sends = await harness.backend.recordedSends()
             XCTAssertTrue(sends.isEmpty, "nothing may be spent against a stale price")
+        }
+    }
+
+    /// The complementary case, which documents why the two tolerances differ:
+    /// a quote confirmed while fresh is protected by approval expiry rather
+    /// than by the rate check.
+    func testApprovalExpiryCoversAQuoteThatWasFreshWhenConfirmed() async throws {
+        let harness = makeHarness()
+        let quote = try await makeQuote(harness)
+        let authorized = try await authorize(harness, quote: quote)
+
+        harness.clock.advance(by: AuthorizationGate.approvalValidity + 1)
+
+        do {
+            _ = try await harness.engine.execute(authorized)
+            XCTFail("expected the approval to have expired")
+        } catch PaymentEngineError.intentExpired {
+            let sends = await harness.backend.recordedSends()
+            XCTAssertTrue(sends.isEmpty)
         }
     }
 

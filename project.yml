@@ -26,7 +26,7 @@ packages:
     url: https://github.com/breez/breez-sdk-liquid-swift
     # Pin exactly. Breez has changed request/response shapes across minor
     # versions; BreezPaymentBackend's call sites must be re-checked on upgrade.
-    exactVersion: 0.6.6
+    exactVersion: 0.12.4
   MnemonicSwift:
     url: https://github.com/zcash-hackworks/MnemonicSwift
     from: 2.2.4
