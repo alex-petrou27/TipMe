@@ -1,0 +1,39 @@
+# Secrets — never commit a real one
+.env
+.env.local
+*.p12
+*.mobileprovision
+*.cer
+BreezApiKey.xcconfig
+
+# Swift / SwiftPM
+.build/
+.swiftpm/
+Packages/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Registry service (Python)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.sqlite3
+*.db
+
+# Runtime artifacts
+*.jsonl
+audit/
+.DS_Store
