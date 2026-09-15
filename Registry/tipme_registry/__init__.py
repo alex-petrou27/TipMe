@@ -1,0 +1,1 @@
+"""TipMe creator registry."""

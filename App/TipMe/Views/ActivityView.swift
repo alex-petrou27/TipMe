@@ -11,7 +11,14 @@ struct ActivityView: View {
     let services: TipMeServices
 
     @State private var events: [AuditEvent] = []
-    @State private var exportURL: URL?
+    @State private var export: ExportFile?
+
+    /// Wrapper rather than an `extension URL: Identifiable`, which would
+    /// collide with the SDK's own conformance.
+    private struct ExportFile: Identifiable {
+        let url: URL
+        var id: String { url.absoluteString }
+    }
 
     private var settled: [AuditEvent] {
         events.filter { $0.stage == .settled }.reversed()
@@ -52,7 +59,7 @@ struct ActivityView: View {
             }
 
             Section {
-                Button("Export audit log") { export() }
+                Button("Export audit log") { beginExport() }
                 Text("A JSON-lines record of every payment attempt and its outcome, including the ones that were refused.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -60,8 +67,8 @@ struct ActivityView: View {
         }
         .navigationTitle("Activity")
         .task { await reload() }
-        .sheet(item: $exportURL) { url in
-            ShareLink(item: url) { Text("Share audit log") }
+        .sheet(item: $export) { file in
+            ShareLink(item: file.url) { Text("Share audit log") }
         }
     }
 
@@ -91,11 +98,8 @@ struct ActivityView: View {
         events = await log.readAll()
     }
 
-    private func export() {
-        exportURL = try? SharedContainer.auditLogURL(appGroup: services.configuration.appGroup)
+    private func beginExport() {
+        guard let url = try? SharedContainer.auditLogURL(appGroup: services.configuration.appGroup) else { return }
+        export = ExportFile(url: url)
     }
-}
-
-extension URL: Identifiable {
-    public var id: String { absoluteString }
 }

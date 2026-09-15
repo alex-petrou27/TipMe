@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "TipMeCore",
-    platforms: [.iOS(.v16), .macOS(.v13)],
+    platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         // Foundation-only. Deliberately free of UIKit/SwiftUI so it can be linked
         // by the app, the share extension, and (Phase 2) a server-side trigger.

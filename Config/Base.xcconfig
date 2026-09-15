@@ -3,7 +3,7 @@
 // gitignored. This file includes it if present.
 #include? "Secrets.xcconfig"
 
-IPHONEOS_DEPLOYMENT_TARGET = 16.0
+IPHONEOS_DEPLOYMENT_TARGET = 17.0
 SWIFT_VERSION = 5.9
 CODE_SIGN_STYLE = Automatic
 

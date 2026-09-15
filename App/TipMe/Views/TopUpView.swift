@@ -23,7 +23,7 @@ struct TopUpView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: method) { _, _ in destination = nil }
+                .onChange(of: method) { destination = nil }
             }
 
             if let destination {
