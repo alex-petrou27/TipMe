@@ -1,0 +1,42 @@
+{
+  "_comment": "Real-world share payload shapes. Keep additions here rather than inline in the test file so the corpus can grow without touching test logic.",
+  "cases": [
+    { "url": "https://www.tiktok.com/@charlidamelio/video/7234567890123456789", "platform": "tiktok", "handle": "charlidamelio", "kind": "post" },
+    { "url": "https://www.tiktok.com/@charli.damelio/video/123?is_from_webapp=1&sender_device=pc", "platform": "tiktok", "handle": "charli.damelio", "kind": "post" },
+    { "url": "https://www.tiktok.com/@khaby.lame/photo/7300000000000000000", "platform": "tiktok", "handle": "khaby.lame", "kind": "post" },
+    { "url": "https://m.tiktok.com/@bella_p/video/999", "platform": "tiktok", "handle": "bella_p", "kind": "post" },
+    { "url": "https://tiktok.com/@zachking", "platform": "tiktok", "handle": "zachking", "kind": "profile" },
+    { "url": "https://www.tiktok.com/@user_name/live", "platform": "tiktok", "handle": "user_name", "kind": "post" },
+    { "url": "HTTPS://WWW.TIKTOK.COM/@MixedCase/video/1", "platform": "tiktok", "handle": "mixedcase", "kind": "post" },
+
+    { "url": "https://vm.tiktok.com/ZMhvJqKXn/", "platform": "tiktok", "handle": null, "kind": "shortLink" },
+    { "url": "https://vt.tiktok.com/ZSJqKXnab/", "platform": "tiktok", "handle": null, "kind": "shortLink" },
+    { "url": "https://www.tiktok.com/t/ZTRxyz123/", "platform": "tiktok", "handle": null, "kind": "shortLink" },
+
+    { "url": "https://m.tiktok.com/v/7234567890123456789.html", "platform": "tiktok", "handle": null, "kind": "handleNotPresent" },
+    { "url": "https://www.tiktok.com/embed/v2/7234567890123456789", "platform": "tiktok", "handle": null, "kind": "handleNotPresent" },
+    { "url": "https://www.tiktok.com/music/Some-Song-123", "platform": "tiktok", "handle": null, "kind": "handleNotPresent" },
+
+    { "url": "https://www.instagram.com/natgeo/", "platform": "instagram", "handle": "natgeo", "kind": "profile" },
+    { "url": "https://www.instagram.com/natgeo/p/DFxYzAbCdEf/", "platform": "instagram", "handle": "natgeo", "kind": "post" },
+    { "url": "https://www.instagram.com/natgeo/reel/DFxYzAbCdEf/?igsh=xyz", "platform": "instagram", "handle": "natgeo", "kind": "post" },
+    { "url": "https://www.instagram.com/stories/natgeo/3512345678901234567/", "platform": "instagram", "handle": "natgeo", "kind": "story" },
+    { "url": "https://instagram.com/cristiano", "platform": "instagram", "handle": "cristiano", "kind": "profile" },
+
+    { "url": "https://www.instagram.com/p/DFxYzAbCdEf/", "platform": "instagram", "handle": null, "kind": "handleNotPresent" },
+    { "url": "https://www.instagram.com/reel/DFxYzAbCdEf/?igsh=abc", "platform": "instagram", "handle": null, "kind": "handleNotPresent" },
+    { "url": "https://www.instagram.com/reels/DFxYzAbCdEf/", "platform": "instagram", "handle": null, "kind": "handleNotPresent" },
+    { "url": "https://www.instagram.com/tv/ABC123/", "platform": "instagram", "handle": null, "kind": "handleNotPresent" },
+    { "url": "https://www.instagram.com/share/reel/_xyzAbc", "platform": "instagram", "handle": null, "kind": "handleNotPresent" },
+    { "url": "https://instagr.am/p/ABC/", "platform": "instagram", "handle": null, "kind": "handleNotPresent" },
+    { "url": "https://www.instagram.com/accounts/login/", "platform": "instagram", "handle": null, "kind": "handleNotPresent" },
+    { "url": "https://www.instagram.com/../etc/passwd", "platform": "instagram", "handle": null, "kind": "handleNotPresent" }
+  ],
+  "rejected": [
+    "https://tiktok.com.evil.co/@victim/video/1",
+    "https://not-instagram.com/natgeo/",
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "https://evil.co/?u=https://www.tiktok.com/@victim/video/1"
+  ]
+}
