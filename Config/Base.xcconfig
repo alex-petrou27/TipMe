@@ -1,0 +1,12 @@
+// Non-secret build settings shared by both targets.
+// Secrets come from Secrets.xcconfig, which is generated from .env and
+// gitignored. This file includes it if present.
+#include? "Secrets.xcconfig"
+
+IPHONEOS_DEPLOYMENT_TARGET = 16.0
+SWIFT_VERSION = 5.9
+CODE_SIGN_STYLE = Automatic
+
+// The keychain access group in the entitlements is built from the team's
+// AppIdentifierPrefix plus this suffix, so the same source works across teams.
+TIPME_KEYCHAIN_GROUP_SUFFIX = technology.tipme.shared

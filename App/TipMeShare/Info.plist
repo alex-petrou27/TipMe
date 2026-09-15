@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Tip via TipMe</string>
+	<key>CFBundleName</key>
+	<string>TipMeShare</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.share-services</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
+
+		<!--
+		  Activation rules decide where "Tip via TipMe" appears in the share
+		  sheet. We accept a single web URL, or plain text.
+
+		  The text rule is not optional padding: TikTok frequently shares
+		  marketing copy with the link embedded rather than a clean URL
+		  attachment, and a URL-only rule would make TipMe invisible in the
+		  share sheet for a large share of real TikTok shares.
+
+		  Note this is a *presence* filter, not a host filter — iOS activation
+		  predicates cannot match on the URL's host, so TipMe appears for any
+		  shared link. Deciding whether a link is one of ours is done in
+		  SharedLinkParser, which is also where the manual-entry fallback comes
+		  from for links we do not recognise.
+		-->
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>NSExtensionActivationRule</key>
+			<dict>
+				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsWebPageWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsText</key>
+				<true/>
+				<key>NSExtensionActivationSupportsAttachmentsWithMaxCount</key>
+				<integer>1</integer>
+			</dict>
+		</dict>
+	</dict>
+
+	<!--
+	  Populated from Config/Secrets.xcconfig, which is generated from .env.
+	  AppConfiguration reads these and throws at launch if any are missing.
+	-->
+	<key>BREEZ_API_KEY</key>
+	<string>$(BREEZ_API_KEY)</string>
+	<key>BREEZ_NETWORK</key>
+	<string>$(BREEZ_NETWORK)</string>
+	<key>TIPME_REGISTRY_BASE_URL</key>
+	<string>$(TIPME_REGISTRY_BASE_URL)</string>
+	<key>TIPME_REGISTRY_PUBLIC_KEY</key>
+	<string>$(TIPME_REGISTRY_PUBLIC_KEY)</string>
+	<key>TIPME_FEE_LIGHTNING_ADDRESS</key>
+	<string>$(TIPME_FEE_LIGHTNING_ADDRESS)</string>
+	<key>TIPME_FEE_BASIS_POINTS</key>
+	<string>$(TIPME_FEE_BASIS_POINTS)</string>
+	<key>TIPME_CAP_PER_TIP_GBP_PENCE</key>
+	<string>$(TIPME_CAP_PER_TIP_GBP_PENCE)</string>
+	<key>TIPME_CAP_PER_DAY_GBP_PENCE</key>
+	<string>$(TIPME_CAP_PER_DAY_GBP_PENCE)</string>
+	<key>TIPME_CAP_PER_WEEK_GBP_PENCE</key>
+	<string>$(TIPME_CAP_PER_WEEK_GBP_PENCE)</string>
+	<key>TIPME_RATELIMIT_SAME_HANDLE_COUNT</key>
+	<string>$(TIPME_RATELIMIT_SAME_HANDLE_COUNT)</string>
+	<key>TIPME_RATELIMIT_SAME_HANDLE_WINDOW_S</key>
+	<string>$(TIPME_RATELIMIT_SAME_HANDLE_WINDOW_S)</string>
+	<key>TIPME_RATELIMIT_GLOBAL_COUNT</key>
+	<string>$(TIPME_RATELIMIT_GLOBAL_COUNT)</string>
+	<key>TIPME_RATELIMIT_GLOBAL_WINDOW_S</key>
+	<string>$(TIPME_RATELIMIT_GLOBAL_WINDOW_S)</string>
+	<key>TIPME_APP_GROUP</key>
+	<string>$(TIPME_APP_GROUP)</string>
+	<key>TIPME_KEYCHAIN_ACCESS_GROUP</key>
+	<string>$(TIPME_KEYCHAIN_ACCESS_GROUP)</string>
+</dict>
+</plist>

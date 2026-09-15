@@ -1,0 +1,100 @@
+# XcodeGen manifest. Generate the project with:
+#   brew install xcodegen && xcodegen generate
+#
+# The project file is generated rather than committed so that target
+# membership, entitlements and the extension's embedding cannot drift out of
+# sync through merge conflicts in a 10,000-line pbxproj.
+name: TipMe
+options:
+  bundleIdPrefix: technology.tipme
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+configs:
+  Debug: debug
+  Release: release
+
+# Secrets.xcconfig is generated from .env by Scripts/make-xcconfig.sh and is
+# gitignored. Base.xcconfig holds everything that is not a secret.
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+
+packages:
+  BreezSDKLiquid:
+    url: https://github.com/breez/breez-sdk-liquid-swift
+    # Pin exactly. Breez has changed request/response shapes across minor
+    # versions; BreezPaymentBackend's call sites must be re-checked on upgrade.
+    exactVersion: 0.6.6
+  MnemonicSwift:
+    url: https://github.com/zcash-hackworks/MnemonicSwift
+    from: 2.2.4
+  TipMeCore:
+    path: .
+
+targets:
+  TipMe:
+    type: application
+    platform: iOS
+    sources:
+      - path: App/TipMe
+    info:
+      path: App/TipMe/Info.plist
+    entitlements:
+      path: App/TipMe/TipMe.entitlements
+    dependencies:
+      - target: TipMeShare
+        embed: true
+      - package: BreezSDKLiquid
+        product: BreezSDKLiquid
+      - package: MnemonicSwift
+      - package: TipMeCore
+        product: TipMeCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: technology.tipme.app
+        SWIFT_VERSION: "5.9"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # Strict concurrency catches the actor-isolation mistakes that would
+        # otherwise show up as a race in the payment path.
+        SWIFT_STRICT_CONCURRENCY: complete
+
+  TipMeShare:
+    type: app-extension
+    platform: iOS
+    info:
+      path: App/TipMeShare/Info.plist
+    entitlements:
+      path: App/TipMeShare/TipMeShare.entitlements
+    dependencies:
+      - package: BreezSDKLiquid
+        product: BreezSDKLiquid
+      - package: MnemonicSwift
+      - package: TipMeCore
+        product: TipMeCore
+      # The extension reuses the app's wallet/support sources rather than
+      # duplicating them, so both processes build the identical object graph.
+      - sdk: LocalAuthentication.framework
+    sources:
+      - path: App/TipMeShare
+      - path: App/TipMe/Wallet
+      - path: App/TipMe/Support
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: technology.tipme.app.share
+        SWIFT_VERSION: "5.9"
+        SWIFT_STRICT_CONCURRENCY: complete
+
+schemes:
+  TipMe:
+    build:
+      targets:
+        TipMe: all
+        TipMeShare: all
+    run:
+      config: Debug
+    # TipMeCore's tests are a SwiftPM test target, not an Xcode one.
+    # Run them with `swift test` from the repo root — see README.
+    test:
+      config: Debug

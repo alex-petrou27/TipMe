@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>TipMe</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>UILaunchScreen</key>
+	<dict/>
+
+	<key>NSFaceIDUsageDescription</key>
+	<string>TipMe uses Face ID to confirm every payment before it is sent.</string>
+
+	<!-- Populated from Config/Secrets.xcconfig; see .env.example and README. -->
+	<key>BREEZ_API_KEY</key>
+	<string>$(BREEZ_API_KEY)</string>
+	<key>BREEZ_NETWORK</key>
+	<string>$(BREEZ_NETWORK)</string>
+	<key>TIPME_REGISTRY_BASE_URL</key>
+	<string>$(TIPME_REGISTRY_BASE_URL)</string>
+	<key>TIPME_REGISTRY_PUBLIC_KEY</key>
+	<string>$(TIPME_REGISTRY_PUBLIC_KEY)</string>
+	<key>TIPME_FEE_LIGHTNING_ADDRESS</key>
+	<string>$(TIPME_FEE_LIGHTNING_ADDRESS)</string>
+	<key>TIPME_FEE_BASIS_POINTS</key>
+	<string>$(TIPME_FEE_BASIS_POINTS)</string>
+	<key>TIPME_CAP_PER_TIP_GBP_PENCE</key>
+	<string>$(TIPME_CAP_PER_TIP_GBP_PENCE)</string>
+	<key>TIPME_CAP_PER_DAY_GBP_PENCE</key>
+	<string>$(TIPME_CAP_PER_DAY_GBP_PENCE)</string>
+	<key>TIPME_CAP_PER_WEEK_GBP_PENCE</key>
+	<string>$(TIPME_CAP_PER_WEEK_GBP_PENCE)</string>
+	<key>TIPME_RATELIMIT_SAME_HANDLE_COUNT</key>
+	<string>$(TIPME_RATELIMIT_SAME_HANDLE_COUNT)</string>
+	<key>TIPME_RATELIMIT_SAME_HANDLE_WINDOW_S</key>
+	<string>$(TIPME_RATELIMIT_SAME_HANDLE_WINDOW_S)</string>
+	<key>TIPME_RATELIMIT_GLOBAL_COUNT</key>
+	<string>$(TIPME_RATELIMIT_GLOBAL_COUNT)</string>
+	<key>TIPME_RATELIMIT_GLOBAL_WINDOW_S</key>
+	<string>$(TIPME_RATELIMIT_GLOBAL_WINDOW_S)</string>
+	<key>TIPME_APP_GROUP</key>
+	<string>$(TIPME_APP_GROUP)</string>
+	<key>TIPME_KEYCHAIN_ACCESS_GROUP</key>
+	<string>$(TIPME_KEYCHAIN_ACCESS_GROUP)</string>
+</dict>
+</plist>
