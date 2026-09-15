@@ -68,7 +68,11 @@ Inconsistent across platforms and versions, so both shapes are handled:
 - **Safari / Chrome** provide a clean `public.url` attachment.
 - **TikTok** frequently provides `public.plain-text` containing marketing copy
   with the link embedded: `"Check out this video! https://vm.tiktok.com/… #fyp"`.
-- **Instagram** varies by version.
+- **Instagram** varies by version, and crucially supplies the creator in the
+  **title** rather than the URL: the share sheet header reads "Reel from
+  @username", arriving as `attributedTitle` or inside `LPLinkMetadata`. For a
+  shortcode Reel or post that is the only place the handle appears, so an
+  extension that reads only attachments identifies nobody.
 
 `SharedPayloadExtractor` collects URL attachments and text, scans the text with
 `NSDataDetector`, de-duplicates, and ranks candidates: an explicit attachment

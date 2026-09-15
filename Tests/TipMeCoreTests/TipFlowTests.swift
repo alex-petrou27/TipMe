@@ -76,21 +76,78 @@ final class TipFlowTests: XCTestCase {
         }
     }
 
-    /// The known Instagram gap, surfaced as a graceful fallback rather than an
-    /// error. Shortcode URLs contain no username and no unauthenticated lookup
-    /// exists, so manual entry is the honest answer.
-    func testInstagramShortcodeFallsBackToManualEntryWithAnHonestExplanation() async {
+    /// The share-sheet header reads "Reel from @username", so a shortcode Reel
+    /// URL that names nobody is still identifiable from the title. This is the
+    /// common real Instagram share.
+    func testInstagramReelIsIdentifiedFromTheShareTitle() async {
+        let harness = makeHarness(records: [.stub(username: "natgeo", platform: .instagram)])
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/reel/DFxYzAbCdEf/")!],
+            sharedText: [],
+            titles: ["Reel from @natgeo"])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "natgeo")
+    }
+
+    func testInstagramShortcodePostIsIdentifiedFromTheShareTitle() async {
+        let harness = makeHarness(records: [.stub(username: "natgeo", platform: .instagram)])
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/p/DFxYzAbCdEf/")!],
+            sharedText: [],
+            titles: ["Post from @natgeo"])
+
+        guard case .ready = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+    }
+
+    /// The URL is the more trustworthy source, so it must win when both name
+    /// someone — a title is prose and could name a tagged account.
+    func testURLHandleWinsOverTheTitle() async {
+        let harness = makeHarness(records: [
+            .stub(username: "natgeo", platform: .instagram),
+            .stub(username: "nasa", platform: .instagram)
+        ])
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/natgeo/reel/DFxYzAbCdEf/")!],
+            sharedText: [],
+            titles: ["Reel from @nasa"])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "natgeo", "the URL is the stronger signal")
+    }
+
+    /// Without a title naming anyone, a shortcode Reel still has to fall back.
+    func testInstagramShortcodeWithoutAUsableTitleFallsBackToManualEntry() async {
         let harness = makeHarness()
         let state = await harness.flow.identify(
             attachedURLs: [URL(string: "https://www.instagram.com/reel/DFxYzAbCdEf/")!],
-            sharedText: [])
+            sharedText: [],
+            titles: ["Instagram"])
 
         guard case .needsManualEntry(let reason) = state else {
             return XCTFail("expected manual entry, got \(state)")
         }
-        XCTAssertTrue(reason.contains("don't include the creator's username"))
-        XCTAssertTrue(reason.contains("profile or story"),
-                      "the fallback should name the shares that do work, not just the one that doesn't")
+        XCTAssertTrue(reason.contains("couldn't tell whose Reel"))
+    }
+
+    /// An ambiguous title must not be guessed at — paying the wrong creator is
+    /// unrecoverable.
+    func testAmbiguousTitleFallsBackRatherThanGuessing() async {
+        let harness = makeHarness()
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/reel/DFxYzAbCdEf/")!],
+            sharedText: [],
+            titles: ["@natgeo tagged @nasa and @esa"])
+
+        guard case .needsManualEntry = state else {
+            return XCTFail("expected manual entry, got \(state)")
+        }
     }
 
     func testInstagramLinkCarryingTheHandleIsIdentified() async {

@@ -40,9 +40,11 @@ struct HowToTipView: View {
                     .font(.callout)
             }
 
-            Section("Instagram posts and Reels") {
-                Text("Instagram post and Reel links don't include the creator's username, so we can't identify them yet. Share their **profile** or a **story** instead — those work.")
+            Section("Instagram Reels") {
+                Text("Reels work from the share sheet — Instagram tells us whose Reel it is.")
                     .font(.callout)
+                Text("Copying a Reel link instead doesn't carry that, so use **Share to…** rather than **Copy link** for Reels.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }

@@ -51,7 +51,11 @@ public enum ClipboardLinkDetector {
     /// the link inside a sentence rather than on its own, and because a user
     /// may paste from Notes or a message thread.
     public static func payload(fromPastedURLs urls: [URL], text: [String]) -> SharedPayload {
-        SharedPayload(urls: urls, text: text)
+        // No titles: a copied link arrives without the share sheet's header, so
+        // the paste path depends on the URL naming the creator. Copying an
+        // Instagram Reel link therefore still falls back to manual entry, while
+        // sharing the same Reel identifies it from "Reel from @username".
+        SharedPayload(urls: urls, text: text, titles: [])
     }
 
     /// Whether a payload contains something worth opening the tip sheet for.

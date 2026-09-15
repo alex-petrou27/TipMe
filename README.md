@@ -207,7 +207,8 @@ logic level:
 | TikTok profile | Amount picker |
 | Instagram profile | Amount picker |
 | Instagram story | Amount picker |
-| Instagram Reel (`/reel/<code>/`) | Manual entry, pointing at profile/story |
+| Instagram Reel — share sheet | Identified from "Reel from @user" title |
+| Instagram Reel — **copied link** | Manual entry (no title on the clipboard) |
 | A news article | Manual entry fallback |
 | Tip twice in quick succession, then a third | Third is rate-limited |
 | **First run:** Share → More → Edit → enable TipMe | Appears in the row afterwards |
@@ -229,35 +230,55 @@ see `docs/SHARE_EXTENSION.md`.
 
 ## Platform coverage
 
-Current scope is **TikTok, plus Instagram profiles and stories.** Instagram
-shortcode posts are deferred.
-
 | Share | Status |
 |---|---|
-| TikTok post (`/@user/video/…`, `/photo/…`) | Supported |
-| TikTok short link (`vm.`/`vt.tiktok.com`, `/t/…`) | Supported — resolved via redirect |
-| TikTok profile | Supported |
-| Instagram profile | Supported |
-| Instagram story (`/stories/<user>/…`) | Supported |
-| Instagram post from a profile grid (`/<user>/p/…`) | Supported — that URL carries the handle |
-| Instagram shortcode post (`/p/…`, `/reel/…`, `/share/…`) | **Deferred** — manual entry fallback |
+| TikTok post (`/@user/video/…`, `/photo/…`) | Handle from URL |
+| TikTok short link (`vm.`/`vt.tiktok.com`, `/t/…`) | Handle from URL, after redirect |
+| TikTok profile | Handle from URL |
+| Instagram profile | Handle from URL |
+| Instagram story (`/stories/<user>/…`) | Handle from URL |
+| Instagram post from a profile grid (`/<user>/p/…`) | Handle from URL |
+| **Instagram Reel (`/reel/<code>/`)** | **Handle from share title** |
+| **Instagram post (`/p/<code>/`)** | **Handle from share title** |
 
-TikTok is the well-covered case: the handle is in the path, and short links —
-which is what TikTok's own share sheet actually emits — resolve through
-unauthenticated redirects. The parser is exercised against a 39-case corpus of
-real URL shapes plus 7 hostile ones.
+### Two places the creator's name can hide
 
-Instagram shortcode URLs (`/p/<code>/`, `/reel/<code>/`) are keyed by shortcode
-with no username in them, and mapping one to the other needs an app token gated
-behind Meta App Review. Rather than dead-ending those users, the fallback points
-them at the shares that do work:
+The obvious one is the URL. TikTok puts the handle in the path
+(`tiktok.com/@user/video/123`), and short links — which is what TikTok's own
+share sheet actually emits — resolve to the same through unauthenticated
+redirects.
 
-> Instagram post links don't include the creator's username. Share their profile
-> or story instead — or enter their Lightning address below.
+The less obvious one, and the reason Instagram Reels are supported rather than
+deferred: **the handle is in the share sheet's title.** An Instagram Reel URL is
+shortcode-keyed and names nobody, but when you share a Reel the system share
+sheet header reads:
 
-Picking this back up later means obtaining Instagram oEmbed access; the
-`CreatorResolver` seam is where a shortcode lookup would attach, and nothing on
-the payment path changes.
+> **Reel from @natgeo**
+
+That string arrives in the extension as the item's `attributedTitle` or inside
+its `LPLinkMetadata`, so a Reel is identifiable with no API access at all. It
+was only unreachable while we were looking exclusively at the URL.
+
+`ShareTitleParser` handles the attribution forms ("Reel from @user", "Post by
+@user", "@user on Instagram") and is deliberately conservative, because a title
+is prose rather than a structured field:
+
+- An explicit attribution wins even when other accounts are mentioned —
+  "Reel from @natgeo ft. @nasa" is about `@natgeo`.
+- A **single** unambiguous mention is accepted.
+- **Several distinct mentions yield nothing.** A caption that tags other
+  accounts must not be guessed at; paying the wrong creator is unrecoverable,
+  so the user gets manual entry instead.
+- Emails are not mentions. Without a lookbehind on the `@`,
+  `support@instagram.com` produces a "creator" called `instagram.com`.
+
+The URL always wins when both sources name someone, since the platform put the
+handle there deliberately.
+
+**The paste path is weaker here.** A copied link arrives without the share
+sheet's header, so copying an Instagram Reel link still falls back to manual
+entry, while *sharing* the same Reel identifies it. Worth knowing when choosing
+which flow to promote.
 
 ## Fees
 
@@ -324,8 +345,9 @@ Nothing here blocks current work; recorded so it is not rediscovered late.
   (TikTok Login Kit, Instagram Graph API — both require App Review). Until then
   records are marked unverified and the confirm screen says so. This is the one
   item on this list with a live product consequence.
-- **Instagram shortcode posts** need oEmbed access behind Meta App Review — see
-  *Platform coverage*. Deferred.
+- **Instagram oEmbed** is no longer needed for share-sheet identification —
+  the title carries the handle. It would only help the copied-link path, where
+  no title is available.
 
 ## Build and verification status
 
@@ -357,8 +379,8 @@ version. The logic they express is what the tests describe.
 
 - **Android.** The `PaymentBackend`/`TipFlow` split is designed so an Android
   port reimplements the UI and the wallet binding, not the rules.
-- **Instagram shortcode posts** — deferred; the fallback points users at
-  profile and story shares, which do work.
+- **Identifying a copied Instagram Reel link** — the clipboard carries no
+  title, so that path still falls back to manual entry.
 - **Comment-triggered tips** — parked. See `docs/PHASE2.md` for why this one is
   harder than it looks even with Meta approval.
 - **Phase 2** App Clip and Instant App — designed for, not built.

@@ -1,6 +1,7 @@
 import UIKit
 import SwiftUI
 import UniformTypeIdentifiers
+import LinkPresentation
 import TipMeCore
 
 /// Entry point for the OS share sheet.
@@ -48,25 +49,37 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Reading what was shared
 
-    /// Pulls URLs and text out of the extension context.
+    /// Pulls URLs, text and **titles** out of the extension context.
     ///
-    /// Both are collected because the platforms are inconsistent: Safari and
-    /// Chrome hand over a clean `public.url`, while TikTok frequently provides
-    /// `public.plain-text` with the link embedded in marketing copy. Assuming
-    /// only the well-formed shape would drop a large share of real TikTok
-    /// shares on the floor.
+    /// All three are collected because the platforms are inconsistent:
+    ///
+    /// - Safari and Chrome hand over a clean `public.url`.
+    /// - TikTok frequently provides `public.plain-text` with the link embedded
+    ///   in marketing copy, so assuming the well-formed shape would drop a
+    ///   large share of real TikTok shares on the floor.
+    /// - **Instagram puts the creator in the title.** A Reel's URL is
+    ///   shortcode-keyed and names nobody, but the share sheet header reads
+    ///   "Reel from @username", and that string arrives here as the item's
+    ///   `attributedTitle` or inside its `LPLinkMetadata`. It is the only place
+    ///   the handle appears, so failing to read it is the difference between
+    ///   identifying a Reel's creator and sending the user to manual entry.
     private func loadSharedPayload() async -> SharedPayload {
         guard let items = extensionContext?.inputItems as? [NSExtensionItem] else {
-            return SharedPayload(urls: [], text: [])
+            return .empty
         }
 
         var urls: [URL] = []
         var text: [String] = []
+        var titles: [String] = []
 
         for item in items {
+            if let title = item.attributedTitle?.string, !title.isEmpty {
+                titles.append(title)
+            }
             if let attributed = item.attributedContentText?.string, !attributed.isEmpty {
                 text.append(attributed)
             }
+
             for provider in item.attachments ?? [] {
                 if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier),
                    let url = try? await provider.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL {
@@ -75,10 +88,16 @@ final class ShareViewController: UIViewController {
                           let string = try? await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) as? String {
                     text.append(string)
                 }
+
+                // Link metadata carries the title the share sheet header shows.
+                if let metadata = await provider.loadLinkMetadata() {
+                    if let title = metadata.title, !title.isEmpty { titles.append(title) }
+                    if let url = metadata.originalURL { urls.append(url) }
+                }
             }
         }
 
-        return SharedPayload(urls: urls, text: text)
+        return SharedPayload(urls: urls, text: text, titles: titles)
     }
 
     // MARK: - Presentation
@@ -135,6 +154,16 @@ struct ShareBlockedView: View {
 /// `NSItemProvider.loadItem` is callback-based; this keeps the call sites above
 /// readable without pulling in a helper library.
 private extension NSItemProvider {
+    /// Reads `LPLinkMetadata` if the provider carries any.
+    ///
+    /// Returns `nil` rather than throwing: link metadata is a bonus source for
+    /// the creator's handle, and a share with none is entirely normal.
+    func loadLinkMetadata() async -> LPLinkMetadata? {
+        let identifier = "com.apple.linkpresentation.metadata"
+        guard hasItemConformingToTypeIdentifier(identifier) else { return nil }
+        return try? await loadItem(forTypeIdentifier: identifier) as? LPLinkMetadata
+    }
+
     func loadItem(forTypeIdentifier identifier: String) async throws -> NSSecureCoding? {
         try await withCheckedThrowingContinuation { continuation in
             loadItem(forTypeIdentifier: identifier, options: nil) { item, error in

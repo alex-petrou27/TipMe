@@ -23,6 +23,7 @@ public enum TipFlowState: Sendable {
 /// Clip, without any of them re-implementing the ordering of the gates.
 public actor TipFlow {
     private let parser: SharedLinkParser
+    private let titleParser = ShareTitleParser()
     private let shortLinkResolver: ShortLinkResolver
     private let creatorResolver: CreatorResolver
     private let backend: PaymentBackend
@@ -63,11 +64,18 @@ public actor TipFlow {
     /// Resolves whatever the share sheet gave us into a creator, following one
     /// redirect for short links.
     ///
+    /// - Parameter titles: the share item's own title and any link-metadata
+    ///   title. These matter more than they look: Instagram's share sheet
+    ///   header reads "Reel from @username", which is the only place the handle
+    ///   appears for a shortcode Reel or post.
+    ///
     /// Never throws for the ordinary sad paths — an unparseable link and an
     /// unregistered creator are both expected outcomes with their own UI, not
     /// errors. The share sheet should never show the user a stack of jargon
     /// because they tipped from a Reel.
-    public func identify(attachedURLs: [URL], sharedText: [String]) async -> TipFlowState {
+    public func identify(attachedURLs: [URL],
+                         sharedText: [String],
+                         titles: [String] = []) async -> TipFlowState {
         let extractor = SharedPayloadExtractor()
         let candidates = extractor.candidateURLs(attachedURLs: attachedURLs, sharedText: sharedText)
 
@@ -85,14 +93,26 @@ public actor TipFlow {
             }
         }
 
+        // The URL is the preferred source, but a shortcode Reel or post has no
+        // handle in it. The share title usually does — "Reel from @natgeo" —
+        // so fall back to that before giving up on identifying the creator.
+        if link.handle == nil,
+           let fromTitle = titleParser.handle(inAnyOf: titles, platform: link.platform) {
+            link = link.adoptingHandle(fromTitle, from: .shareTitle)
+            await note(.linkParsed, .ok, platform: link.platform.rawValue,
+                       handle: fromTitle.username, detail: "handle recovered from share title")
+        }
+
         guard let handle = link.handle else {
             await note(.linkParsed, .rejected,
                        platform: link.platform.rawValue,
-                       detail: "link carried no handle (kind: \(link.kind.rawValue))")
+                       detail: "link carried no handle (kind: \(link.kind.rawValue)) and no title named one")
             return .needsManualEntry(reason: Self.noHandleExplanation(for: link))
         }
 
-        await note(.linkParsed, .ok, platform: handle.platform.rawValue, handle: handle.username)
+        if link.handleSource == .url {
+            await note(.linkParsed, .ok, platform: handle.platform.rawValue, handle: handle.username)
+        }
 
         do {
             let record = try await creatorResolver.resolve(handle)
@@ -109,17 +129,13 @@ public actor TipFlow {
         }
     }
 
-    /// The honest explanation beats a generic failure, and pointing at the
-    /// share that *does* work beats either.
-    ///
-    /// Instagram shortcode posts (`/p/`, `/reel/`) are out of scope for now:
-    /// they carry no username and resolving one needs Meta App Review. Profile
-    /// and story shares do carry the handle, so the message names them rather
-    /// than sending every Instagram user straight to manual entry.
+    /// Reached only when neither the URL nor the share title named a creator,
+    /// which is now uncommon — most shortcode Reels and posts are identified
+    /// from the title.
     private static func noHandleExplanation(for link: SharedLink) -> String {
         switch link.platform {
         case .instagram:
-            return "Instagram post links don't include the creator's username. Share their profile or story instead — or enter their Lightning address below."
+            return "We couldn't tell whose Reel that is. Try sharing from the creator's profile, or enter their Lightning address below."
         case .tiktok:
             return "That TikTok link doesn't include the creator's username. Try sharing the video itself, or enter their Lightning address below."
         }

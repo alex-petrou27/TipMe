@@ -18,12 +18,11 @@ import Foundation
 ///   - `/<user>/p/<code>/` and `/<user>/reel/<code>/` (the "copy link" form
 ///     produced from a profile grid)
 ///
-/// Shortcode posts — `/p/<code>/`, `/reel/<code>/`, `/share/…` — are **deferred**.
-/// They are keyed by shortcode and contain no username at all, and there is no
-/// unauthenticated way to map one to the other: the page is behind a login wall
-/// and the official oEmbed endpoint needs an app token gated behind Meta App
-/// Review. They report `handleNotPresent`, and `TipFlow` points the user at a
-/// profile or story share instead of dead-ending them.
+/// Shortcode posts — `/p/<code>/`, `/reel/<code>/`, `/share/…` — contain no
+/// username, so this parser reports `handleNotPresent` for them. That is not
+/// the end of the story: the handle is usually in the share sheet's *title*
+/// ("Reel from @natgeo"), which `ShareTitleParser` reads and `TipFlow` falls
+/// back to. This type's job is only the URL.
 public struct SharedLinkParser: Sendable {
 
     public init() {}

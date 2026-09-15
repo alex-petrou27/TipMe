@@ -10,8 +10,21 @@ import TipMeCore
 struct SharedPayload: Sendable {
     let urls: [URL]
     let text: [String]
+    /// The share item's own title, plus any link-metadata title.
+    ///
+    /// Carried separately from `text` because it is the only place an
+    /// Instagram Reel's creator appears — the share sheet header reads
+    /// "Reel from @username" — and because a title is a far more trustworthy
+    /// place to look for a handle than a caption, which may tag other accounts.
+    let titles: [String]
 
-    static let empty = SharedPayload(urls: [], text: [])
+    init(urls: [URL], text: [String], titles: [String] = []) {
+        self.urls = urls
+        self.text = text
+        self.titles = titles
+    }
+
+    static let empty = SharedPayload(urls: [], text: [], titles: [])
 }
 
 /// Drives the share sheet.
@@ -64,7 +77,9 @@ final class TipSheetViewModel: ObservableObject {
         // the user is watching a spinner for every millisecond we serialise
         // work that didn't need to be serialised.
         async let connected: Void = connectWallet()
-        let state = await flow.identify(attachedURLs: payload.urls, sharedText: payload.text)
+        let state = await flow.identify(attachedURLs: payload.urls,
+                                        sharedText: payload.text,
+                                        titles: payload.titles)
         await connected
 
         apply(state)
