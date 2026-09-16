@@ -129,13 +129,21 @@ public struct RegistryClient: CreatorResolver {
             throw CreatorLookupError.responseMalformed("invalid lightning address in registry record")
         }
 
+        var photoURL: URL?
+        if payload.hasPhoto {
+            var components = URLComponents(url: configuration.baseURL, resolvingAgainstBaseURL: false)
+            components?.path = "/v1/creators/\(recordHandle.platform.rawValue)/\(recordHandle.username)/photo"
+            photoURL = components?.url
+        }
+
         return CreatorRecord(handle: recordHandle,
                              lightningAddress: address,
                              preferredAsset: payload.preferredAsset,
                              minimumTipMinorUnits: payload.minimumTipMinorUnits,
                              updatedAt: payload.updatedAt,
                              displayName: payload.displayName,
-                             verified: payload.verified)
+                             verified: payload.verified,
+                             photoURL: photoURL)
     }
 
     struct SignedEnvelope: Codable, Sendable {
@@ -155,6 +163,7 @@ public struct RegistryClient: CreatorResolver {
         let minimumTipMinorUnits: Int64?
         let displayName: String?
         let verified: Bool
+        let hasPhoto: Bool
         let updatedAt: Date
         let signedAt: Date
     }

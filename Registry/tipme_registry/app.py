@@ -17,10 +17,11 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, UploadFile, File
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from . import lightning, oauth, signing
@@ -59,6 +60,13 @@ class Settings:
         # hand control back to it once Instagram/TikTok redirect here. Not a
         # secret — it is baked into every copy of the app.
         self.app_url_scheme = os.environ.get("TIPME_APP_URL_SCHEME", "tipme")
+
+        # Creator profile photos. Plain files on disk rather than the sqlite
+        # database — they are the one piece of a creator record that is purely
+        # cosmetic, never read on the payment path, and would bloat every
+        # database backup for no safety benefit.
+        self.photos_dir = Path(os.environ.get("REGISTRY_PHOTOS_DIR", "photos"))
+        self.max_photo_bytes = 2 * 1024 * 1024
 
 
 def get_settings() -> Settings:
@@ -109,10 +117,34 @@ class _OAuthSession:
     created_at: float
 
 
+@dataclass
+class _PendingIdentity:
+    """Same idea as `_PendingOAuth`, for a sign-in that only proves who the
+    *sender* is — no handle, no wallet, nothing written to `storage`."""
+    platform: str
+    created_at: float
+
+
+@dataclass
+class _IdentitySession:
+    platform: str
+    username: str
+    created_at: float
+
+
 _OAUTH_STATE_TTL = 600.0
 _OAUTH_SESSION_TTL = 300.0
 _oauth_pending: dict[str, _PendingOAuth] = {}
 _oauth_sessions: dict[str, _OAuthSession] = {}
+_identity_pending: dict[str, _PendingIdentity] = {}
+_identity_sessions: dict[str, _IdentitySession] = {}
+
+
+def _oauth_redirect(scheme: str, platform: str, status: str, **extra: str) -> RedirectResponse:
+    """The one place both `/callback` endpoints turn a result into the
+    redirect that hands control back to the app."""
+    params = {"platform": platform, "status": status, **extra}
+    return RedirectResponse(f"{scheme}://oauth-complete?{urlencode(params)}")
 
 
 def _rate_limit_registration(client: str, settings: Settings) -> None:
@@ -244,12 +276,30 @@ def _signed_payload(record: CreatorRecord, settings: Settings) -> dict:
         "minimum_tip_minor_units": record.minimum_tip_minor,
         "display_name": record.display_name,
         "verified": record.verified,
+        # Not itself signed-for-integrity the way the payment fields are — the
+        # image bytes ride a separate, ordinary HTTPS GET. This just tells the
+        # client whether that GET is worth making. Cosmetic only; nothing on
+        # the payment path reads it.
+        "has_photo": _photo_path(record.platform, record.username, settings) is not None,
         "updated_at": signing.iso8601(record.updated_at),
         # Signed-at is what makes a captured response un-replayable after a
         # creator has moved wallet; the client rejects anything too old.
         "signed_at": signing.iso8601(now),
     }
     return signing.sign_payload(settings.private_key, payload)
+
+
+_PHOTO_EXTENSIONS = (("jpg", "image/jpeg"), ("png", "image/png"))
+
+
+def _photo_path(platform: str, username: str, settings: Settings) -> Path | None:
+    """The stored photo for a handle, if any — checked by file existence
+    rather than a database column, since the file *is* the source of truth."""
+    for extension, _media_type in _PHOTO_EXTENSIONS:
+        path = settings.photos_dir / f"{platform}_{username}.{extension}"
+        if path.exists():
+            return path
+    return None
 
 
 @app.post("/v1/creators", response_model=RegisterResponse, status_code=201)
@@ -482,6 +532,73 @@ def oauth_session(session_id: str) -> OAuthSessionResponse:
     )
 
 
+@app.post("/v1/oauth/{platform}/identity/start", response_model=OAuthStartResponse)
+def oauth_identity_start(platform: str, settings: Settings = Depends(get_settings)) -> OAuthStartResponse:
+    """Begins sign-in for someone who only wants to say "this is me" — a
+    sender pairing their own handle for a "sending as" badge, not a creator
+    claiming a wallet. Nothing about a handle or a wallet is taken here; there
+    is nothing to validate before starting, unlike `/oauth/{platform}/start`.
+    """
+    config = oauth.config_for(platform)
+    if config is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{platform} sign-in is not configured on this registry yet",
+        )
+    state = secrets.token_urlsafe(24)
+    _identity_pending[state] = _PendingIdentity(platform=platform, created_at=time.monotonic())
+    return OAuthStartResponse(
+        authorize_url=oauth.build_authorize_url(config, state),
+        expires_in=int(_OAUTH_STATE_TTL),
+    )
+
+
+@app.get("/v1/oauth/{platform}/identity/callback")
+async def oauth_identity_callback(
+    platform: str,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    settings: Settings = Depends(get_settings),
+) -> RedirectResponse:
+    """Where Instagram/TikTok redirect after an identity-only sign-in. Never
+    writes to `storage` — this proves a username, nothing more."""
+    if error:
+        return _oauth_redirect(settings.app_url_scheme, platform, "error", reason=error)
+
+    pending = _identity_pending.pop(state, None) if state else None
+    if pending is None or pending.platform != platform:
+        return _oauth_redirect(settings.app_url_scheme, platform, "error", reason="expired_or_invalid_state")
+    if time.monotonic() - pending.created_at > _OAUTH_STATE_TTL:
+        return _oauth_redirect(settings.app_url_scheme, platform, "error", reason="expired")
+
+    config = oauth.config_for(platform)
+    if config is None or not code:
+        return _oauth_redirect(settings.app_url_scheme, platform, "error", reason="not_configured")
+
+    try:
+        username, _platform_user_id = await oauth.exchange_code(config, code)
+    except oauth.OAuthError:
+        return _oauth_redirect(settings.app_url_scheme, platform, "error", reason="sign_in_failed")
+
+    session_id = secrets.token_urlsafe(24)
+    _identity_sessions[session_id] = _IdentitySession(
+        platform=platform, username=username, created_at=time.monotonic(),
+    )
+    return _oauth_redirect(settings.app_url_scheme, platform, "success",
+                           username=username, session_id=session_id)
+
+
+@app.get("/v1/oauth/identity-session/{session_id}")
+def oauth_identity_session(session_id: str) -> dict:
+    """One-time collection point for an identity-only sign-in, mirroring
+    `/v1/oauth/session/{id}` but with no wallet fields to leak."""
+    session = _identity_sessions.pop(session_id, None)
+    if session is None or time.monotonic() - session.created_at > _OAUTH_SESSION_TTL:
+        raise HTTPException(status_code=404, detail="session expired or already used")
+    return {"platform": session.platform, "username": session.username}
+
+
 def _client_key(request: Request) -> str:
     """Best-effort client identity for rate limiting.
 
@@ -520,6 +637,74 @@ def _authorise_update(
         )
 
 
+@app.put("/v1/creators/{platform}/{username}/photo", status_code=204)
+async def upload_photo(
+    platform: str,
+    username: str,
+    photo: UploadFile = File(...),
+    x_management_token: str | None = Header(default=None),
+    x_admin_token: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    """Sets (or replaces) a creator's confirm-screen photo.
+
+    Cosmetic only — the payment destination is the signed record, not this.
+    Gated the same way changing the wallet is, so a stranger who does not hold
+    the management token cannot deface a creator's confirm card.
+    """
+    try:
+        handle = normalise_handle(platform, username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if storage.get(handle) is None:
+        raise HTTPException(status_code=404, detail="creator not registered")
+    _authorise_update(handle, storage, x_management_token, x_admin_token, settings)
+
+    media_types = {media: extension for extension, media in _PHOTO_EXTENSIONS}
+    if photo.content_type not in media_types:
+        raise HTTPException(status_code=400, detail="photo must be JPEG or PNG")
+
+    body = await photo.read()
+    if not body:
+        raise HTTPException(status_code=400, detail="photo is empty")
+    if len(body) > settings.max_photo_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"photo must be {settings.max_photo_bytes // (1024 * 1024)}MB or smaller",
+        )
+
+    settings.photos_dir.mkdir(parents=True, exist_ok=True)
+    # Clear whichever extension might already be stored, so switching from a
+    # PNG to a JPEG (or back) doesn't leave a stale file being served
+    # alongside the new one.
+    for extension, _media_type in _PHOTO_EXTENSIONS:
+        (settings.photos_dir / f"{handle.platform}_{handle.username}.{extension}").unlink(missing_ok=True)
+
+    extension = media_types[photo.content_type]
+    (settings.photos_dir / f"{handle.platform}_{handle.username}.{extension}").write_bytes(body)
+    return Response(status_code=204)
+
+
+@app.get("/v1/creators/{platform}/{username}/photo")
+def get_photo(
+    platform: str,
+    username: str,
+    settings: Settings = Depends(get_settings),
+) -> FileResponse:
+    try:
+        handle = normalise_handle(platform, username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    for extension, media_type in _PHOTO_EXTENSIONS:
+        path = settings.photos_dir / f"{handle.platform}_{handle.username}.{extension}"
+        if path.exists():
+            return FileResponse(path, media_type=media_type,
+                                headers={"Cache-Control": "public, max-age=3600"})
+    raise HTTPException(status_code=404, detail="no photo set for this creator")
+
+
 @app.delete("/v1/creators/{platform}/{username}", status_code=204)
 def unregister(
     platform: str,
@@ -536,6 +721,8 @@ def unregister(
 
     if not storage.delete(handle):
         raise HTTPException(status_code=404, detail="creator not registered")
+    for extension, _media_type in _PHOTO_EXTENSIONS:
+        (settings.photos_dir / f"{handle.platform}_{handle.username}.{extension}").unlink(missing_ok=True)
     return Response(status_code=204)
 
 

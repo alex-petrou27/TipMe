@@ -49,17 +49,6 @@ public struct SocialOAuthClient: Sendable {
                       preferredAsset: Asset,
                       minimumTip: Amount?,
                       displayName: String?) async throws -> StartResult {
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
-        components?.path = "/v1/oauth/\(platform.rawValue)/start"
-        guard let url = components?.url else {
-            throw SocialOAuthError.responseMalformed("could not build registry URL")
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-
         let body: [String: Any?] = [
             "platform": platform.rawValue,
             "username": username,
@@ -68,7 +57,33 @@ public struct SocialOAuthClient: Sendable {
             "minimum_tip_minor_units": minimumTip?.minorUnits,
             "display_name": displayName
         ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body.compactMapValues { $0 })
+        return try await performStart(path: "/v1/oauth/\(platform.rawValue)/start",
+                                      platform: platform, body: body)
+    }
+
+    /// Begins sign-in for someone who only wants to say "this is me" — a
+    /// sender pairing their own handle for a "sending as" badge, not a
+    /// creator claiming a wallet. No registration payload: there is nothing
+    /// to hold against the `state` except which platform.
+    public func startIdentity(platform: Platform) async throws -> StartResult {
+        try await performStart(path: "/v1/oauth/\(platform.rawValue)/identity/start",
+                               platform: platform, body: nil)
+    }
+
+    private func performStart(path: String, platform: Platform, body: [String: Any?]?) async throws -> StartResult {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        components?.path = path
+        guard let url = components?.url else {
+            throw SocialOAuthError.responseMalformed("could not build registry URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body.compactMapValues { $0 })
+        }
 
         let data: Data
         let response: URLResponse
@@ -153,6 +168,50 @@ public struct SocialOAuthClient: Sendable {
                              verified: verified,
                              claimToken: object["claim_token"] as? String,
                              managementToken: object["management_token"] as? String)
+    }
+
+    /// What an identity-only sign-in proves: nothing but the platform username.
+    public struct IdentityResult: Sendable, Equatable {
+        public let platform: Platform
+        public let username: String
+    }
+
+    /// Collects the result of an identity-only sign-in — same single-use,
+    /// call-once-right-after-the-callback contract as `fetchSession`, but for
+    /// `startIdentity` rather than `start`.
+    public func fetchIdentitySession(sessionID: String) async throws -> IdentityResult {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        components?.path = "/v1/oauth/identity-session/\(sessionID)"
+        guard let url = components?.url else {
+            throw SocialOAuthError.responseMalformed("could not build registry URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw SocialOAuthError.transport(String(describing: error))
+        }
+
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else {
+            throw SocialOAuthError.sessionExpired
+        }
+
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let platformRaw = object["platform"] as? String,
+              let platform = Platform(rawValue: platformRaw),
+              let username = object["username"] as? String
+        else {
+            throw SocialOAuthError.responseMalformed("missing fields in identity session response")
+        }
+
+        return IdentityResult(platform: platform, username: username)
     }
 
     private static func detail(in data: Data) -> String? {

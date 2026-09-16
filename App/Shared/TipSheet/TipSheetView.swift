@@ -218,10 +218,13 @@ struct TipSheetView: View {
     // MARK: - Pieces
 
     private func creatorHeader(_ creator: CreatorRecord) -> some View {
-        VStack(spacing: 4) {
-            Text(creator.handle.displayName)
+        VStack(spacing: 8) {
+            CreatorAvatarView(url: creator.photoURL, initials: creator.handle.username)
+                .frame(width: 64, height: 64)
+
+            Text(creator.displayName ?? creator.handle.displayName)
                 .font(.title3.weight(.semibold))
-            Text("on \(creator.handle.platform.displayName)")
+            Text("\(creator.handle.displayName) on \(creator.handle.platform.displayName)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -243,5 +246,41 @@ struct TipSheetView: View {
         Button("Cancel") { viewModel.dismiss() }
             .font(.footnote)
             .foregroundStyle(.secondary)
+    }
+}
+
+/// The confirm screen's face for a creator: their real photo when they've set
+/// one, a plain initial otherwise. Never blocks the flow on a slow or failed
+/// image load — the fallback renders instantly and the photo is purely
+/// cosmetic, not a trust signal (that's what `verified` is for).
+private struct CreatorAvatarView: View {
+    let url: URL?
+    let initials: String
+
+    var body: some View {
+        Group {
+            if let url {
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                    } else {
+                        placeholder
+                    }
+                }
+            } else {
+                placeholder
+            }
+        }
+        .clipShape(Circle())
+    }
+
+    private var placeholder: some View {
+        Circle()
+            .fill(.quaternary)
+            .overlay {
+                Text(initials.prefix(1).uppercased())
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
     }
 }

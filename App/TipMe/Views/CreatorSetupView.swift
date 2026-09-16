@@ -1,4 +1,6 @@
+import PhotosUI
 import SwiftUI
+import UIKit
 import TipMeCore
 
 /// Creator onboarding: link a social handle to a wallet, once.
@@ -20,6 +22,10 @@ struct CreatorSetupView: View {
 
     @State private var phase: Phase = .editing
     @State private var errorMessage: String?
+
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var isUploadingPhoto = false
+    @State private var photoUploadError: String?
 
     private enum Phase: Equatable {
         case editing
@@ -274,6 +280,24 @@ struct CreatorSetupView: View {
             }
         }
 
+        Section("Photo") {
+            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                Label(isUploadingPhoto ? "Uploading…" : "Add a photo", systemImage: "photo")
+            }
+            .disabled(isUploadingPhoto)
+
+            if let photoUploadError {
+                Text(photoUploadError).font(.caption).foregroundStyle(.red)
+            }
+
+            Text("Shown on the confirm screen when someone tips you. Optional, and never affects where tips go.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onChange(of: selectedPhotoItem) { _, newItem in
+            Task { await uploadPhoto(newItem, for: registration.handle) }
+        }
+
         Section {
             Button("Link another account") {
                 username = ""
@@ -370,5 +394,47 @@ struct CreatorSetupView: View {
             errorMessage = String(describing: error)
             phase = .editing
         }
+    }
+
+    // MARK: - Photo
+
+    /// Re-encodes whatever the photo library hands back (often HEIC) as a
+    /// size-capped JPEG, so the upload always matches what the registry's
+    /// `/photo` endpoint accepts rather than depending on the source format.
+    private func uploadPhoto(_ item: PhotosPickerItem?, for handle: CreatorHandle) async {
+        guard let item else { return }
+        photoUploadError = nil
+        isUploadingPhoto = true
+        defer { isUploadingPhoto = false }
+
+        guard let token = services.creatorTokens.token(for: handle) else {
+            photoUploadError = "Couldn't find this device's management token for this handle."
+            return
+        }
+
+        do {
+            guard let rawData = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: rawData),
+                  let jpegData = Self.resizedJPEG(image, maxDimension: 512, quality: 0.85)
+            else {
+                photoUploadError = "Couldn't read that photo."
+                return
+            }
+            let uploader = CreatorPhotoUploader(baseURL: services.configuration.registryBaseURL)
+            try await uploader.upload(handle: handle, imageData: jpegData, format: .jpeg,
+                                      managementToken: token)
+        } catch let error as SocialOAuthError {
+            photoUploadError = error.userFacingReason
+        } catch {
+            photoUploadError = String(describing: error)
+        }
+    }
+
+    private static func resizedJPEG(_ image: UIImage, maxDimension: CGFloat, quality: CGFloat) -> Data? {
+        let scale = min(1, maxDimension / max(image.size.width, image.size.height))
+        let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        let resized = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: targetSize)) }
+        return resized.jpegData(compressionQuality: quality)
     }
 }

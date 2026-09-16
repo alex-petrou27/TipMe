@@ -51,9 +51,14 @@ pytest
 | `POST` | `/v1/creators` | Claim a handle (open) or change one (needs `X-Management-Token`). |
 | `POST` | `/v1/creators/{platform}/{username}/verify` | Admin only — the manual bio-code path. |
 | `DELETE` | `/v1/creators/{platform}/{username}` | Admin only. |
-| `POST` | `/v1/oauth/{platform}/start` | Begins "Connect Instagram/TikTok". Returns an authorize URL. |
+| `POST` | `/v1/oauth/{platform}/start` | Begins "Connect Instagram/TikTok" for a creator. Returns an authorize URL. |
 | `GET` | `/v1/oauth/{platform}/callback` | Instagram/TikTok redirect here, never the app. |
 | `GET` | `/v1/oauth/session/{session_id}` | One-time collection of the callback's result. |
+| `POST` | `/v1/oauth/{platform}/identity/start` | Begins sign-in for a *sender* proving only "this is me" — no wallet, nothing stored. |
+| `GET` | `/v1/oauth/{platform}/identity/callback` | Platform redirect target for the identity-only flow. |
+| `GET` | `/v1/oauth/identity-session/{session_id}` | One-time collection of `{platform, username}` from an identity sign-in. |
+| `PUT` | `/v1/creators/{platform}/{username}/photo` | Sets a creator's confirm-screen photo. Needs `X-Management-Token`. |
+| `GET` | `/v1/creators/{platform}/{username}/photo` | Serves it. Public, cacheable, cosmetic only. |
 | `GET` | `/v1/public-key` | Setup convenience only — see below. |
 | `GET` | `/health` | |
 
@@ -155,6 +160,31 @@ Two ways to earn it back:
    `session_id`; the app immediately exchanges that for the real values via a
    direct HTTPS call to `GET /v1/oauth/session/{session_id}`, which is deleted
    the moment it is read (or after five minutes, whichever comes first).
+
+## Identity-only sign-in, for senders
+
+`/v1/oauth/{platform}/identity/start` and `.../identity/callback` are the same
+OAuth2 exchange, minus every part that touches a creator record. A sender who
+just wants a "Sending as @you" badge has no handle to claim and no wallet to
+register — sending money in this app needs no login at all — so this path
+takes no request body, writes nothing to `storage`, and its session endpoint
+(`GET /v1/oauth/identity-session/{id}`) hands back nothing but
+`{platform, username}`. Kept as separate endpoints from the creator flow
+rather than an optional mode on it, so a sender pairing their own account can
+never accidentally end up registered as a payable creator.
+
+## Creator photos are files, not database rows
+
+`PUT /v1/creators/{platform}/{username}/photo` (JPEG or PNG, 2MB cap, needs
+the management token) and the public `GET` that serves it back store the
+image as a plain file under `REGISTRY_PHOTOS_DIR` (default `./photos`), named
+by handle. Deliberately not a database column: a photo is the one part of a
+creator record that is purely cosmetic and never reaches the payment path, so
+it does not belong in the same signed, backed-up, replicated place as the
+lightning address. The signed lookup payload carries only `has_photo: bool`
+so the client knows whether the (unsigned, ordinary-HTTPS) image fetch is
+worth making — the photo itself rides no integrity guarantee beyond TLS,
+same as any avatar in any app, because it does not need one.
 
 ## Handle and address rules
 

@@ -22,6 +22,11 @@ public struct CreatorRecord: Equatable, Codable, Sendable {
     /// unverified record is still payable but the UI must say so — otherwise
     /// anyone could register `@charlidamelio` and collect her tips.
     public let verified: Bool
+    /// Where the confirm screen can fetch the creator's photo, if they set
+    /// one. Built by `RegistryClient` from the signed record's `has_photo`
+    /// flag, not carried in the signature itself — cosmetic only, so it rides
+    /// an ordinary HTTPS GET rather than the Ed25519-verified payment fields.
+    public let photoURL: URL?
 
     public init(handle: CreatorHandle,
                 lightningAddress: LightningAddress,
@@ -29,7 +34,8 @@ public struct CreatorRecord: Equatable, Codable, Sendable {
                 minimumTipMinorUnits: Int64? = nil,
                 updatedAt: Date,
                 displayName: String? = nil,
-                verified: Bool) {
+                verified: Bool,
+                photoURL: URL? = nil) {
         self.handle = handle
         self.lightningAddress = lightningAddress
         self.preferredAsset = preferredAsset
@@ -37,6 +43,7 @@ public struct CreatorRecord: Equatable, Codable, Sendable {
         self.updatedAt = updatedAt
         self.displayName = displayName
         self.verified = verified
+        self.photoURL = photoURL
     }
 }
 

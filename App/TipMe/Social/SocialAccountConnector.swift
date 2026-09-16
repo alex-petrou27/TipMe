@@ -70,7 +70,32 @@ public final class SocialAccountConnector: NSObject, ASWebAuthenticationPresenta
             throw ConnectorError.oauth(error)
         }
 
-        let callbackURL = try await presentSession(authorizeURL: start.authorizeURL)
+        return try await presentAndCollect(authorizeURL: start.authorizeURL) { sessionID in
+            try await self.client.fetchSession(sessionID: sessionID)
+        }
+    }
+
+    /// Proves "this is me" for a sender who wants a "Sending as @handle"
+    /// badge — no wallet, no handle claimed, nothing written to the registry
+    /// beyond the sign-in itself.
+    public func connectIdentity(platform: Platform) async throws -> SocialOAuthClient.IdentityResult {
+        let start: SocialOAuthClient.StartResult
+        do {
+            start = try await client.startIdentity(platform: platform)
+        } catch let error as SocialOAuthError {
+            throw ConnectorError.oauth(error)
+        }
+
+        return try await presentAndCollect(authorizeURL: start.authorizeURL) { sessionID in
+            try await self.client.fetchIdentitySession(sessionID: sessionID)
+        }
+    }
+
+    /// Shared tail of both flows: present the browser, then hand the
+    /// resulting `session_id` to whichever endpoint the caller needs.
+    private func presentAndCollect<T>(authorizeURL: URL,
+                                      fetch: (String) async throws -> T) async throws -> T {
+        let callbackURL = try await presentSession(authorizeURL: authorizeURL)
         guard let result = OAuthCallbackResult(url: callbackURL) else {
             throw ConnectorError.oauth(.responseMalformed("could not read the sign-in result"))
         }
@@ -80,7 +105,7 @@ public final class SocialAccountConnector: NSObject, ASWebAuthenticationPresenta
             throw ConnectorError.platformDeclined(reason: reason)
         case .success(let sessionID):
             do {
-                return try await client.fetchSession(sessionID: sessionID)
+                return try await fetch(sessionID)
             } catch let error as SocialOAuthError {
                 throw ConnectorError.oauth(error)
             }
