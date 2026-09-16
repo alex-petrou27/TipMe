@@ -2,55 +2,62 @@ import SwiftUI
 
 /// TipMe's visual language in one place.
 ///
-/// The brief asked for something that reads like Strike: bold numerals doing
-/// the talking, near-black chrome, one accent color, no visual noise
-/// competing with a balance or an amount. Every screen in `App/TipMe` and
-/// `App/Shared` draws from here rather than ad hoc `.foregroundColor` calls,
-/// so the app reads as one product rather than a pile of screens.
+/// Pure black and white, Strike-style: there is no hue anywhere in this file.
+/// The "accent" used for every primary action is simply the inverse of the
+/// surface it sits on — `Theme.accent` renders as near-black on a white
+/// background and near-white on a black one, with `Theme.onAccent` as its
+/// exact complement for whatever sits on top of it (button text, an icon).
+/// Every screen in `App/TipMe` and `App/Shared` draws from here rather than
+/// ad hoc `.foregroundColor` calls, so the app reads as one product.
 enum Theme {
 
     // MARK: - Color
 
-    /// Bitcoin orange as the single accent — used sparingly, for the primary
-    /// action on each screen and nothing else. A screen with three accented
-    /// elements has no accent at all.
-    static let accent = Color(light: (0.90, 0.42, 0.02), dark: (1.00, 0.55, 0.10))
+    /// The single "accent": black in light mode, white in dark mode. Used for
+    /// the primary action on each screen and nothing else — a screen with
+    /// three accented elements has no accent at all.
+    static let accent = Color(light: (0.04, 0.04, 0.05), dark: (1.00, 1.00, 1.00))
+    /// The exact complement of `accent`, for whatever renders on top of it.
+    static let onAccent = Color(light: (1.00, 1.00, 1.00), dark: (0.04, 0.04, 0.05))
 
-    static let background = Color(light: (0.98, 0.98, 0.98), dark: (0.05, 0.05, 0.06))
-    static let surface = Color(light: (1.00, 1.00, 1.00), dark: (0.11, 0.11, 0.12))
-    static let surfaceRaised = Color(light: (0.96, 0.96, 0.97), dark: (0.16, 0.16, 0.18))
+    /// True white / true black — the flat, high-contrast ground this whole
+    /// palette is built from.
+    static let background = Color(light: (1.00, 1.00, 1.00), dark: (0.00, 0.00, 0.00))
+    static let surface = Color(light: (0.965, 0.965, 0.968), dark: (0.067, 0.067, 0.071))
+    static let surfaceRaised = Color(light: (0.925, 0.925, 0.930), dark: (0.110, 0.110, 0.117))
 
-    static let textPrimary = Color(light: (0.07, 0.07, 0.08), dark: (0.97, 0.97, 0.98))
-    static let textSecondary = Color(light: (0.45, 0.45, 0.48), dark: (0.62, 0.62, 0.66))
-    static let textTertiary = Color(light: (0.65, 0.65, 0.68), dark: (0.42, 0.42, 0.46))
+    static let textPrimary = Color(light: (0.04, 0.04, 0.05), dark: (1.00, 1.00, 1.00))
+    static let textSecondary = Color(light: (0.42, 0.42, 0.44), dark: (0.60, 0.60, 0.62))
+    static let textTertiary = Color(light: (0.67, 0.67, 0.69), dark: (0.30, 0.30, 0.31))
 
-    static let positive = Color(light: (0.13, 0.55, 0.25), dark: (0.30, 0.78, 0.42))
-    static let negative = Color(light: (0.75, 0.15, 0.15), dark: (0.92, 0.35, 0.35))
-    static let warning = Color(light: (0.70, 0.45, 0.02), dark: (0.95, 0.65, 0.15))
+    /// Semantic colors, kept deliberately muted and used only for a status
+    /// signal (an incoming amount, a warning icon) — never as decoration, and
+    /// never as a substitute for `accent`.
+    static let positive = Color(light: (0.15, 0.55, 0.28), dark: (0.24, 0.75, 0.42))
+    static let negative = Color(light: (0.72, 0.19, 0.19), dark: (0.85, 0.34, 0.34))
+    static let warning = Color(light: (0.62, 0.44, 0.05), dark: (0.85, 0.62, 0.20))
 
-    static let divider = Color(light: (0.88, 0.88, 0.90), dark: (0.22, 0.22, 0.24))
+    static let divider = Color(light: (0.90, 0.90, 0.92), dark: (0.125, 0.125, 0.130))
 
     // MARK: - Type
 
-    /// The one number the eye should land on first. Rounded design leans
-    /// friendly rather than clinical for a figure that is, after all, someone's
-    /// money.
-    static func balance(_ size: CGFloat = 52) -> Font {
-        .system(size: size, weight: .bold, design: .rounded).monospacedDigit()
+    /// The one number the eye should land on first.
+    static func balance(_ size: CGFloat = 48) -> Font {
+        .system(size: size, weight: .heavy, design: .rounded).monospacedDigit()
     }
 
-    static let amountLarge = Font.system(size: 34, weight: .semibold, design: .rounded).monospacedDigit()
-    static let amountMedium = Font.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit()
+    static let amountLarge = Font.system(size: 32, weight: .bold, design: .rounded).monospacedDigit()
+    static let amountMedium = Font.system(size: 19, weight: .bold, design: .rounded).monospacedDigit()
     static let title = Font.system(size: 22, weight: .bold)
-    static let headline = Font.system(size: 17, weight: .semibold)
-    static let body = Font.system(size: 16, weight: .regular)
-    static let caption = Font.system(size: 13, weight: .regular)
-    static let label = Font.system(size: 12, weight: .semibold).smallCaps()
+    static let headline = Font.system(size: 16, weight: .semibold)
+    static let body = Font.system(size: 15.5, weight: .regular)
+    static let caption = Font.system(size: 12.5, weight: .regular)
+    static let label = Font.system(size: 11, weight: .semibold).smallCaps()
 
     // MARK: - Metrics
 
-    static let cornerRadius: CGFloat = 20
-    static let cornerRadiusSmall: CGFloat = 12
+    static let cornerRadius: CGFloat = 22
+    static let cornerRadiusSmall: CGFloat = 14
     static let spacing: CGFloat = 16
     static let spacingSmall: CGFloat = 8
     static let spacingLarge: CGFloat = 28

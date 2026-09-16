@@ -18,8 +18,8 @@ struct QuickActionLabel: View {
     var body: some View {
         VStack(spacing: 8) {
             Image(systemName: systemImage)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(Theme.accent)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
                 .frame(width: 52, height: 52)
                 .background(Theme.surfaceRaised, in: Circle())
             Text(title)
@@ -42,19 +42,18 @@ struct PrimaryButton: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 if isLoading {
-                    ProgressView().tint(.white)
+                    ProgressView().tint(Theme.onAccent)
                 } else {
                     if let systemImage { Image(systemName: systemImage) }
                     Text(title)
                 }
             }
             .font(Theme.headline)
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.onAccent)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
+            .padding(.vertical, 17)
         }
-        .background(isDisabled ? Theme.textTertiary : Theme.accent,
-                   in: RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall, style: .continuous))
+        .background(isDisabled ? Theme.textTertiary : Theme.accent, in: Capsule())
         .disabled(isDisabled || isLoading)
     }
 }
@@ -105,7 +104,7 @@ struct AssetSwitcher: View {
         } label: {
             Text(label)
                 .font(Theme.caption.weight(.semibold))
-                .foregroundStyle(isSelected ? .white : Theme.textSecondary)
+                .foregroundStyle(isSelected ? Theme.onAccent : Theme.textSecondary)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
                 .background(isSelected ? Theme.accent : .clear, in: Capsule())
@@ -123,10 +122,10 @@ struct ActivityRow: View {
     var body: some View {
         HStack(spacing: Theme.spacingSmall) {
             Image(systemName: icon)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
                 .frame(width: 34, height: 34)
-                .background(iconBackground, in: Circle())
+                .background(Theme.surfaceRaised, in: Circle())
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -161,10 +160,6 @@ struct ActivityRow: View {
         case .receive: return "arrow.down"
         case .withdrawal: return "building.columns.fill"
         }
-    }
-
-    private var iconBackground: Color {
-        transaction.isOutgoing ? Theme.textTertiary : Theme.positive
     }
 
     private var title: String {

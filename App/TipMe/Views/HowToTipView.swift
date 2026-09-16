@@ -54,11 +54,14 @@ struct HowToTipView: View {
 
     private func step(_ number: Int, _ text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
+            // Theme.onAccent, not a hardcoded white: Theme.accent flips
+            // between black and white by appearance, so a fixed white label
+            // would disappear against the dark-mode (white) circle.
             Text("\(number)")
                 .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(.white)
+                .foregroundStyle(Theme.onAccent)
                 .frame(width: 20, height: 20)
-                .background(Color.accentColor, in: Circle())
+                .background(Theme.accent, in: Circle())
             Text(.init(text))
                 .font(.callout)
         }
