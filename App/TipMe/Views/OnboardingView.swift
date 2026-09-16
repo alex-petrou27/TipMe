@@ -21,7 +21,7 @@ struct OnboardingView: View {
     @State private var challengeAnswers: [Int: String] = [:]
     @State private var challengeFailed = false
 
-    private enum Mode { case intro, created, verify, restore }
+    private enum Mode { case intro, created, verify, shareSetup, restore }
 
     private var words: [String] { mnemonic.split(separator: " ").map(String.init) }
 
@@ -32,11 +32,13 @@ struct OnboardingView: View {
                 case .intro: intro
                 case .created: created
                 case .verify: verify
+                case .shareSetup: shareSetup
                 case .restore: restore
                 }
             }
             .padding(24)
             .navigationTitle("TipMe")
+            .tint(Theme.accent)
         }
     }
 
@@ -45,7 +47,7 @@ struct OnboardingView: View {
             Spacer()
             Image(systemName: "bolt.circle.fill")
                 .font(.system(size: 64))
-                .foregroundStyle(.yellow)
+                .foregroundStyle(Theme.textPrimary)
             Text("Tip creators from the share sheet")
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
@@ -63,7 +65,7 @@ struct OnboardingView: View {
                 .font(.footnote)
 
             if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(.red)
+                Text(errorMessage).font(.caption).foregroundStyle(Theme.negative)
             }
         }
     }
@@ -116,7 +118,7 @@ struct OnboardingView: View {
                 Label("That's not right. Check your written copy and try again.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Theme.warning)
             }
 
             Spacer()
@@ -164,7 +166,7 @@ struct OnboardingView: View {
                             .padding(.vertical, 8)
                     }
                     .buttonStyle(.bordered)
-                    .tint(challengeAnswers[index] == option ? .accentColor : .secondary)
+                    .tint(challengeAnswers[index] == option ? Theme.accent : .secondary)
                 }
             }
         }
@@ -201,7 +203,7 @@ struct OnboardingView: View {
         }
         // Drop the phrase from memory; from here it lives only in the keychain.
         mnemonic = ""
-        Task { await onComplete() }
+        mode = .shareSetup
     }
 
     private var restore: some View {
@@ -216,7 +218,7 @@ struct OnboardingView: View {
                 .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
 
             if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(.red)
+                Text(errorMessage).font(.caption).foregroundStyle(Theme.negative)
             }
 
             Button("Restore") { restoreWallet() }
@@ -227,6 +229,83 @@ struct OnboardingView: View {
                 .font(.footnote)
 
             Spacer()
+        }
+    }
+
+    /// Prompts the user to enable TipMe in the share sheet, right after their
+    /// wallet exists and before they land on Home — the same cadence apps use
+    /// for a notifications-permission prompt.
+    ///
+    /// There is no real equivalent to that prompt here. Notifications, camera,
+    /// location all have a genuine system permission API a third-party app can
+    /// trigger (`UNUserNotificationCenter.requestAuthorization`, and so on).
+    /// Whether TipMe is favourited in the share sheet is not a permission at
+    /// all — Apple exposes no API, no deep link, and no Settings.app entry for
+    /// it; it is edited only from inside the share sheet's own "More → Edit"
+    /// screen, which an app cannot open or complete on the user's behalf.
+    ///
+    /// So this does the closest real thing: it presents the *actual* system
+    /// share sheet via `ShareLink`, at the one moment we can walk someone
+    /// through what to do inside it. We cannot detect whether they actually
+    /// toggled TipMe on afterwards — there is no API for that either — so the
+    /// copy says what to do rather than confirming that it happened.
+    private var shareSetup: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            Image(systemName: "square.and.arrow.up.circle.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(.primary)
+
+            Text("Add TipMe to your share sheet")
+                .font(.title2.weight(.semibold))
+                .multilineTextAlignment(.center)
+            Text("This is a one-time setup so TipMe shows up right away next time, instead of behind “More”.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            VStack(alignment: .leading, spacing: 14) {
+                shareSetupStep(1, "Tap the button below to open the real share sheet.")
+                shareSetupStep(2, "Scroll the icon row to the end and tap **More**.")
+                shareSetupStep(3, "Turn on **TipMe**, then drag it to the top.")
+            }
+            .padding(18)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+
+            Spacer()
+
+            // The genuine system share sheet — not a lookalike. What the user
+            // shares here doesn't matter; this exists to put them inside the
+            // real "More → Edit" screen where the actual toggle lives.
+            ShareLink(item: "I just set up TipMe to tip creators straight from my share sheet ⚡️") {
+                Label("Open the share sheet", systemImage: "square.and.arrow.up")
+                    .font(.headline)
+                    .foregroundStyle(Color(uiColor: .systemBackground))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 15)
+                    .background(.primary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+
+            Button("Continue to TipMe") { Task { await onComplete() } }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+
+            Button("I'll do this later") { Task { await onComplete() } }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func shareSetupStep(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(number)")
+                .font(.caption.weight(.bold).monospacedDigit())
+                .foregroundStyle(Color(uiColor: .systemBackground))
+                .frame(width: 20, height: 20)
+                .background(.primary, in: Circle())
+            Text(.init(text))
+                .font(.callout)
         }
     }
 
@@ -244,7 +323,7 @@ struct OnboardingView: View {
         do {
             try WalletSetup(keychain: services.keychain).restoreWallet(mnemonic: restoreInput)
             restoreInput = ""
-            Task { await onComplete() }
+            mode = .shareSetup
         } catch {
             errorMessage = String(describing: error)
         }
