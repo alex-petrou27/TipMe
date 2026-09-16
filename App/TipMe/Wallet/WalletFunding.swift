@@ -56,9 +56,11 @@ public actor WalletFunding {
                                    amountSat: Int64?) async throws -> DepositDestination {
         let sdk = try await backend.connectedSDK()
 
+        // PaymentMethod has no bare `.lightning` case: a Lightning deposit is
+        // a BOLT-11 invoice.
         let paymentMethod: PaymentMethod = {
             switch method {
-            case .lightning: return .lightning
+            case .lightning: return .bolt11Invoice
             case .bitcoin: return .bitcoinAddress
             case .liquid: return .liquidAddress
             }
@@ -72,16 +74,24 @@ public actor WalletFunding {
             req: PrepareReceiveRequest(paymentMethod: paymentMethod, amount: receiveAmount))
 
         let response = try sdk.receivePayment(
-            req: ReceivePaymentRequest(prepareResponse: prepared))
+            req: ReceivePaymentRequest(prepareResponse: prepared,
+                                       description: "Top up TipMe",
+                                       descriptionHash: nil,
+                                       payerNote: nil))
 
-        let limits = try? sdk.fetchLightningLimits()
+        // The prepare response carries the limits for the method actually
+        // chosen, which is more accurate than the Lightning-only limits
+        // endpoint; fall back to that when it does not populate them.
+        let lightningLimits = method == .lightning ? try? sdk.fetchLightningLimits() : nil
 
         return DepositDestination(
             method: method,
             destination: response.destination,
             feesSat: Int64(prepared.feesSat),
-            minimumSat: limits.map { Int64($0.receive.minSat) },
-            maximumSat: limits.map { Int64($0.receive.maxSat) })
+            minimumSat: prepared.minPayerAmountSat.map(Int64.init)
+                ?? lightningLimits.map { Int64($0.receive.minSat) },
+            maximumSat: prepared.maxPayerAmountSat.map(Int64.init)
+                ?? lightningLimits.map { Int64($0.receive.maxSat) })
     }
 }
 

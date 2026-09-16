@@ -422,11 +422,17 @@ Honest accounting of what has and has not been executed.
   written. Currently clean.
 
 **Not yet verified:** the app and share-extension targets. They compile only in
-the `app` CI job, which additionally resolves the Breez SDK. Expect real work
-there: `BreezPaymentBackend` was written against the documented Nodeless API
-without a compiler, and the pinned version was corrected from a guessed 0.6.6 to
-the real 0.12.4, so those call sites are the least trustworthy code in the
-repository. Everything they depend on in `TipMeCore` is now compiler-verified.
+the `app` CI job, which additionally resolves the Breez SDK.
+
+`BreezPaymentBackend` was originally written from documentation against a
+version number I had guessed (0.6.6, which does not exist). It has since been
+rewritten field by field against the **actual generated bindings of 0.12.4**,
+read from the SDK's own source. Six concrete errors were corrected that way —
+a non-existent `PaymentMethod.lightning`, wrong argument labels on
+`PayAmount.asset`, an optional unwrap of a non-optional field, and an asset
+balance read from the wrong field. It should now be close, but "checked against
+the bindings" is not "compiled", and that distinction is the point of the CI
+job.
 
 This repository is assembled in a Linux container where `download.swift.org` is
 blocked by egress policy, so there is no local Swift toolchain — CI is the
