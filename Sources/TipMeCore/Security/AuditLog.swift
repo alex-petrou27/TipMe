@@ -23,6 +23,22 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         case feePaymentSucceeded
         case feePaymentFailed
         case settled
+
+        // General wallet operations — sends to any destination, not just a
+        // registered creator's tip address.
+        case destinationResolved
+        case walletSendAttempted
+        case walletSendSucceeded
+        case walletSendFailed
+        case receiveRequested
+
+        // Fiat off-ramp. Present so a withdrawal attempt against an
+        // unavailable provider still leaves a record, the same as any other
+        // refused payment.
+        case withdrawalRequested
+        case withdrawalUnavailable
+        case withdrawalSucceeded
+        case withdrawalFailed
     }
 
     public enum Outcome: String, Codable, Sendable {

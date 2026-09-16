@@ -169,4 +169,68 @@ public actor AuthorizationGate {
                                      validFor: Self.approvalValidity,
                                      method: method)
     }
+
+    /// Authorises a general wallet send through the identical biometric path a
+    /// tip uses — same gate, same single-use expiring token shape, same
+    /// "declined means no code path to a spend" guarantee. `reason` is what
+    /// the system biometric sheet actually displays, so callers pass something
+    /// concrete ("Send £50.00 to bc1q…"), not the type's own description of
+    /// itself.
+    public func authorize(_ send: WalletSendIntent, reason: String) async throws -> AuthorizedWalletSend {
+        await auditLog.append(AuditEvent(
+            timestamp: clock.now, intentID: send.id.uuidString,
+            stage: .authorizationRequested, outcome: .ok, origin: PaymentIntent.Origin.hostApp.rawValue,
+            destination: send.destination.displaySummary, asset: send.amount.asset.rawValue,
+            tipMinorUnits: send.amount.minorUnits, fiatCurrency: send.fiatAmount.currencyCode,
+            fiatMinorUnits: send.fiatAmount.minorUnits))
+
+        let outcome = await authorizer.evaluate(reason: reason)
+        guard case .succeeded = outcome else {
+            await auditLog.append(AuditEvent(
+                timestamp: clock.now, intentID: send.id.uuidString,
+                stage: .authorizationDenied, outcome: .rejected, origin: PaymentIntent.Origin.hostApp.rawValue,
+                detail: String(describing: outcome)))
+            throw AuthorizationError.declined(outcome)
+        }
+
+        await auditLog.append(AuditEvent(
+            timestamp: clock.now, intentID: send.id.uuidString,
+            stage: .authorizationGranted, outcome: .ok, origin: PaymentIntent.Origin.hostApp.rawValue))
+
+        return AuthorizedWalletSend.mint(intent: send, authorizedAt: clock.now,
+                                         validFor: Self.approvalValidity)
+    }
+}
+
+// MARK: - Wallet sends
+
+/// Proof that a specific general wallet send was approved by a present human,
+/// just now. The counterpart to `AuthorizedIntent` for the "send to anything"
+/// path rather than the tip path.
+///
+/// Same enforcement as `AuthorizedIntent`, for the same reason: the sole
+/// initialiser is `private` to this file, and the sole minting call
+/// (`AuthorizationGate.authorize(_:reason:)` above) lives in this same file.
+/// Nothing outside `AuthorizationGate.swift` can construct one without a live
+/// biometric check having just succeeded.
+public struct AuthorizedWalletSend: Sendable {
+    public let intent: WalletSendIntent
+    public let authorizedAt: Date
+    public let expiresAt: Date
+    public let nonce: UUID
+
+    private init(intent: WalletSendIntent, authorizedAt: Date, expiresAt: Date) {
+        self.intent = intent
+        self.authorizedAt = authorizedAt
+        self.expiresAt = expiresAt
+        self.nonce = UUID()
+    }
+
+    fileprivate static func mint(intent: WalletSendIntent, authorizedAt: Date,
+                                 validFor: TimeInterval) -> AuthorizedWalletSend {
+        AuthorizedWalletSend(intent: intent, authorizedAt: authorizedAt,
+                             expiresAt: authorizedAt.addingTimeInterval(validFor))
+    }
+
+    public func isExpired(at now: Date) -> Bool { now >= expiresAt }
 }

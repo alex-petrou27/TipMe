@@ -198,9 +198,12 @@ public actor BreezPaymentBackend: PaymentBackend {
     /// `toAsset` is what lands with the creator and `fromAsset` is what leaves
     /// the sender; passing both is what asks the SDK to swap in flight. A `nil`
     /// asset means L-BTC, the Liquid base asset.
-    private static func payAmount(tip: TipMeCore.Amount,
-                                  receiveAsset: Asset,
-                                  network: LiquidNetwork) throws -> PayAmount {
+    // Not `private`: `private` only grants same-file access (including
+    // same-file extensions of this type), and `BreezWalletBackend.swift` — a
+    // different file, same module — needs this for raw-destination sends.
+    static func payAmount(tip: TipMeCore.Amount,
+                          receiveAsset: Asset,
+                          network: LiquidNetwork) throws -> PayAmount {
         switch receiveAsset {
         case .bitcoin:
             return .bitcoin(receiverAmountSat: UInt64(max(0, tip.minorUnits)))

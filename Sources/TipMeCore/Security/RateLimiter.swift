@@ -56,16 +56,17 @@ public actor TipRateLimiter {
         let handleKey: String
     }
 
-    private static let storageKey = "tipme.ratelimit.attempts.v1"
-
     private let store: KeyValueStore
     private let clock: Clock
     private var policy: RateLimitPolicy
+    private let storageKey: String
 
-    public init(store: KeyValueStore, clock: Clock = SystemClock(), policy: RateLimitPolicy = .standard) {
+    public init(store: KeyValueStore, clock: Clock = SystemClock(),
+                policy: RateLimitPolicy = .standard, namespace: String = "tips") {
         self.store = store
         self.clock = clock
         self.policy = policy
+        self.storageKey = "tipme.ratelimit.\(namespace).v1"
     }
 
     public func updatePolicy(_ newPolicy: RateLimitPolicy) { policy = newPolicy }
@@ -109,12 +110,12 @@ public actor TipRateLimiter {
     private func load() -> [Attempt] {
         let horizon = max(policy.sameHandleWindow, policy.globalWindow)
         let cutoff = clock.now.addingTimeInterval(-horizon)
-        return (store.decode([Attempt].self, forKey: Self.storageKey) ?? []).filter { $0.at >= cutoff }
+        return (store.decode([Attempt].self, forKey: storageKey) ?? []).filter { $0.at >= cutoff }
     }
 
     private func save(_ attempts: [Attempt]) {
         let horizon = max(policy.sameHandleWindow, policy.globalWindow)
         let cutoff = clock.now.addingTimeInterval(-horizon)
-        store.encode(attempts.filter { $0.at >= cutoff }, forKey: Self.storageKey)
+        store.encode(attempts.filter { $0.at >= cutoff }, forKey: storageKey)
     }
 }

@@ -17,8 +17,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE_DIRS = ["Sources", "App", "Tests"]
 
+# Captures the indentation too. Column-0 declarations are the ones eligible for
+# the redeclaration check below; nested ones (PaymentReceipt.Status,
+# WalletTransaction.Status) are scoped to their enclosing type and Swift allows
+# the same name to repeat freely there. Every match, nested or not, still feeds
+# the "known types" set used by the reference check — a private nested test
+# double is a real, referenceable type within its file.
 DECL = re.compile(
-    r"^\s*(?:(?P<access>public|internal|private|fileprivate|open)\s+|final\s+|@\w+\s+)*"
+    r"^(?P<indent>[ \t]*)(?:(?P<access>public|internal|private|fileprivate|open)\s+|final\s+|@\w+\s+)*"
     r"(?P<kind>struct|class|enum|actor|protocol|extension|typealias)\s+(?P<name>[A-Z][A-Za-z0-9_]*)",
     re.M,
 )
@@ -55,6 +61,10 @@ KNOWN_EXTERNAL = {
     "PrepareReceiveRequest","ReceivePaymentRequest","BreezSDKLiquid",
     # MnemonicSwift
     "Mnemonic",
+    # Breez SDK types confirmed against the real 0.12.4 bindings.
+    "PrepareSendResponse","ReceivePaymentResponse","SendPaymentRequest","SendPaymentResponse",
+    "ListPaymentsRequest","PrepareReceiveResponse","PrepareSendRequest",
+    "UInt32","UInt16","UInt64","Int64","Int32",
     # XCTest
     "XCTestCase","XCTest","XCTAssertEqual","XCTAssertTrue","XCTAssertFalse","XCTAssertNil",
     "XCTAssertNotNil","XCTAssertNotEqual","XCTAssertThrowsError","XCTAssertNoThrow","XCTFail",
@@ -66,7 +76,7 @@ KNOWN_EXTERNAL = {
     # here specifically to disambiguate from BreezSDKLiquid's own Amount enum.
     "TipMeCore","BreezSDKLiquid","MnemonicSwift","UIKit","SwiftUI","Foundation",
     "LocalAuthentication","LinkPresentation","UniformTypeIdentifiers","XCTest",
-    "CryptoKit","Security",
+    "CryptoKit","Security","DateComponents",
 }
 
 def source_files() -> list[Path]:
@@ -126,9 +136,11 @@ def main() -> int:
             if kind == "extension":
                 continue
             declared.setdefault(name, []).append(str(path.relative_to(ROOT)))
-            # A file-private type may legitimately share a name with one in
-            # another file, so it is excluded from the redeclaration check.
-            if match.group("access") not in ("private", "fileprivate"):
+            # Only a column-0 (top-level), non-private declaration is eligible
+            # for the redeclaration check: a nested type is scoped to its
+            # parent regardless of access, and a file-private top-level type
+            # may legitimately share a name with one in another file.
+            if not match.group("indent") and match.group("access") not in ("private", "fileprivate"):
                 visible.setdefault(name, []).append(str(path.relative_to(ROOT)))
 
     # A non-private type declared twice in one module is a redeclaration error.

@@ -58,17 +58,23 @@ public actor SendCapLedger {
         let minorUnits: Int64
     }
 
-    private static let storageKey = "tipme.sendcaps.ledger.v1"
     private static let retention: TimeInterval = 7 * 24 * 60 * 60
 
     private let store: KeyValueStore
     private let clock: Clock
     private var policy: SendCapPolicy
+    /// Distinguishes independent ledgers sharing one `KeyValueStore` — the
+    /// tipping cap and the general wallet-send cap are deliberately separate,
+    /// so a day of ordinary wallet spending cannot exhaust a creator tip's
+    /// budget or vice versa.
+    private let storageKey: String
 
-    public init(store: KeyValueStore, clock: Clock = SystemClock(), policy: SendCapPolicy = .standard) {
+    public init(store: KeyValueStore, clock: Clock = SystemClock(),
+                policy: SendCapPolicy = .standard, namespace: String = "tips") {
         self.store = store
         self.clock = clock
         self.policy = policy
+        self.storageKey = "tipme.sendcaps.\(namespace).v1"
     }
 
     public func updatePolicy(_ newPolicy: SendCapPolicy) { policy = newPolicy }
@@ -127,11 +133,11 @@ public actor SendCapLedger {
 
     private func load() -> [Entry] {
         let cutoff = clock.now.addingTimeInterval(-Self.retention)
-        return (store.decode([Entry].self, forKey: Self.storageKey) ?? []).filter { $0.at >= cutoff }
+        return (store.decode([Entry].self, forKey: storageKey) ?? []).filter { $0.at >= cutoff }
     }
 
     private func save(_ entries: [Entry]) {
         let cutoff = clock.now.addingTimeInterval(-Self.retention)
-        store.encode(entries.filter { $0.at >= cutoff }, forKey: Self.storageKey)
+        store.encode(entries.filter { $0.at >= cutoff }, forKey: storageKey)
     }
 }
