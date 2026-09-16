@@ -4,6 +4,17 @@ Status: **parked.** Nothing here is implemented, and comment-triggered tips are
 explicitly out of scope for now — current work is TikTok plus Instagram profiles
 and stories.
 
+One thing described below is no longer parked: **platform OAuth for handle
+*ownership*** (a creator signs into Instagram/TikTok to prove `@handle` is
+theirs) shipped in `Registry/tipme_registry/oauth.py` — see `docs/SECURITY.md`.
+It is a smaller, unrelated ask from **comment-triggered payments** (a
+`@tipme send 50 sats` comment moving money on its own), which is everything
+below and is still blocked on Obstacle 1. Proving identity needs one OAuth
+scope and no App Review guarantee either platform will grant; *acting* on a
+comment needs a standing spending authority this product does not have. Do not
+read the OAuth client already existing as progress toward comment triggers —
+it answers "is this really them", not "can a webhook spend their money".
+
 This document is kept because the analysis below is the expensive part, and
 because one of its conclusions should inform any later decision to pick
 comment triggers back up: the obstacle is not Meta's API, it is custody.

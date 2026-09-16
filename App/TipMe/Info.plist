@@ -14,6 +14,22 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>TipMe uses Face ID to confirm every payment before it is sent.</string>
 
+	<!-- ASWebAuthenticationSession's callbackURLScheme for "Connect Instagram /
+	     TikTok" (CreatorSetupView -> SocialAccountConnector). The registry's
+	     own /v1/oauth/{platform}/callback redirects here once a sign-in
+	     completes; must match TIPME_APP_URL_SCHEME on the registry. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>technology.tipme.app.oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>tipme</string>
+			</array>
+		</dict>
+	</array>
+
 	<!-- Populated from Config/Secrets.xcconfig; see .env.example and README. -->
 	<key>BREEZ_API_KEY</key>
 	<string>$(BREEZ_API_KEY)</string>

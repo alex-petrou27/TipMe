@@ -27,6 +27,18 @@ export REGISTRY_SIGNING_PRIVATE_KEY=...
 export REGISTRY_DATABASE_PATH=tipme_registry.sqlite3
 export REGISTRY_ADMIN_TOKEN=...          # required for verify/delete
 
+# Optional. Only needed for self-service "Connect Instagram/TikTok"
+# verification — see "Platform sign-in" below. Either pair can be left unset;
+# that platform's /start endpoint then fails closed with a 503 instead of
+# offering a sign-in it cannot complete.
+export INSTAGRAM_CLIENT_ID=...
+export INSTAGRAM_CLIENT_SECRET=...
+export INSTAGRAM_REDIRECT_URI=https://your-registry-host/v1/oauth/instagram/callback
+export TIKTOK_CLIENT_KEY=...
+export TIKTOK_CLIENT_SECRET=...
+export TIKTOK_REDIRECT_URI=https://your-registry-host/v1/oauth/tiktok/callback
+export TIPME_APP_URL_SCHEME=tipme        # defaults to "tipme"; must match the app's CFBundleURLTypes
+
 uvicorn tipme_registry.app:app --reload
 pytest
 ```
@@ -37,8 +49,11 @@ pytest
 |---|---|---|
 | `GET` | `/v1/creators/{platform}/{username}` | Signed lookup. The hot path. |
 | `POST` | `/v1/creators` | Claim a handle (open) or change one (needs `X-Management-Token`). |
-| `POST` | `/v1/creators/{platform}/{username}/verify` | Admin only. |
+| `POST` | `/v1/creators/{platform}/{username}/verify` | Admin only — the manual bio-code path. |
 | `DELETE` | `/v1/creators/{platform}/{username}` | Admin only. |
+| `POST` | `/v1/oauth/{platform}/start` | Begins "Connect Instagram/TikTok". Returns an authorize URL. |
+| `GET` | `/v1/oauth/{platform}/callback` | Instagram/TikTok redirect here, never the app. |
+| `GET` | `/v1/oauth/session/{session_id}` | One-time collection of the callback's result. |
 | `GET` | `/v1/public-key` | Setup convenience only — see below. |
 | `GET` | `/health` | |
 
@@ -82,23 +97,64 @@ default 10). The limiter is in-memory, and the client key comes from
 throttles casual handle-squatting and is not a security control. A
 multi-process deployment needs it in shared storage.
 
-## Verification is manual, and why
+## Getting verified: platform sign-in, or a human
 
 Registration is open: anyone can claim any handle. A new record is therefore
 always `verified: false`, and the app labels it. Without that distinction,
-registering `@charlidamelio` would be enough to collect her tips.
+registering `@charlidamelio` would be enough to collect her tips. Re-registering
+a handle with a different wallet always clears verification too, so a hijacked
+account cannot inherit a badge it did not earn.
 
-Proving that whoever registered `@someone` really is `@someone` needs either:
+Two ways to earn it back:
 
-- **Reading their profile bio** for a claim token — no third-party API exists
-  for either platform, and scraping breaches both sets of terms; or
-- **Platform OAuth** — TikTok Login Kit or Instagram Graph API, both of which
-  require App Review.
+- **Platform sign-in** (`oauth.py`) — the creator authenticates directly with
+  Instagram or TikTok. We exchange the resulting code server-side, read the
+  username back from the platform's own "who am I" endpoint, and mark the
+  record verified only if it matches the handle being claimed. This is
+  self-service and immediate, and it is a strictly stronger proof than a bio
+  code: signing in as `@someone` requires actually controlling `@someone`,
+  which also means it can reclaim a handle someone else squatted first (see
+  `test_oauth_verification_can_overwrite_a_squatted_handle`).
 
-Until one of those is in place, registration issues a claim token, a human
-checks it, and an admin flips the flag. Re-registering a handle with a different
-wallet clears verification, so a hijacked account cannot inherit a badge it did
-not earn.
+  It needs real platform apps registered before it does anything — see the
+  env vars above. Two constraints that are platform limits, not something this
+  code can route around:
+  - **Instagram** OAuth login only exists for Business/Creator accounts (Meta
+    retired it for personal accounts). A personal-account creator still needs
+    the bio-code path below.
+  - **TikTok** works for any account, but a new app is capped to its own
+    registered sandbox testers until TikTok approves it for production use of
+    `user.info.basic`.
+
+- **Reading a bio code** (`POST /v1/creators/{platform}/{username}/verify`) —
+  the fallback for personal Instagram accounts, or for either platform before
+  its developer app is approved. No third-party API can read a profile bio, so
+  a human checks the claim token and an admin flips the flag by hand.
+
+## Platform sign-in flow
+
+1. App calls `POST /v1/oauth/{platform}/start` with the handle and wallet
+   details it wants to register (same shape as `POST /v1/creators`). The
+   registry stores that as a pending claim keyed by a random `state` and
+   returns Instagram/TikTok's `authorize_url`.
+2. The app opens that URL in `ASWebAuthenticationSession`. The creator signs
+   in and consents on the platform's own page — this service never sees their
+   password.
+3. The platform redirects the browser to `GET /v1/oauth/{platform}/callback`
+   on **this service** (registered as the app's redirect URI), carrying a
+   one-time `code`. We exchange it for an access token, fetch the platform's
+   own username for that token, and compare it against the pending claim.
+   Match: the handle is registered/updated and marked `verified`. No match,
+   expired state, or a declined consent: nothing is written.
+4. Either way, the callback finishes with a redirect to
+   `{TIPME_APP_URL_SCHEME}://oauth-complete?...`, which
+   `ASWebAuthenticationSession` intercepts and hands back to the app.
+5. That redirect never carries the management token — a custom URL scheme is
+   routed by the OS and a second app registering the same scheme could in
+   principle intercept it. It carries only an opaque, single-use
+   `session_id`; the app immediately exchanges that for the real values via a
+   direct HTTPS call to `GET /v1/oauth/session/{session_id}`, which is deleted
+   the moment it is read (or after five minutes, whichever comes first).
 
 ## Handle and address rules
 

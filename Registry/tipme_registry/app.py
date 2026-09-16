@@ -15,13 +15,16 @@ import os
 import secrets
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import lightning, signing
-from .handles import InvalidHandle, normalise as normalise_handle
+from . import lightning, oauth, signing
+from .handles import Handle, InvalidHandle, normalise as normalise_handle
 from .storage import CreatorRecord, Storage
 
 ASSETS = ("bitcoin", "usdt")
@@ -52,6 +55,11 @@ class Settings:
         # do, pointing them all at one wallet.
         self.registrations_per_hour = int(os.environ.get("REGISTRY_REGISTRATIONS_PER_HOUR", "10"))
 
+        # The custom URL scheme the app registers, so the OAuth callback can
+        # hand control back to it once Instagram/TikTok redirect here. Not a
+        # secret — it is baked into every copy of the app.
+        self.app_url_scheme = os.environ.get("TIPME_APP_URL_SCHEME", "tipme")
+
 
 def get_settings() -> Settings:
     global _settings
@@ -67,6 +75,44 @@ _storage: Storage | None = None
 # deployment needs this moved to shared storage, or the effective limit becomes
 # the configured limit multiplied by the worker count.
 _registration_attempts: dict[str, deque[float]] = defaultdict(deque)
+
+
+@dataclass
+class _PendingOAuth:
+    """What `/v1/oauth/{platform}/start` remembers between issuing a `state`
+    and the platform redirecting back to `/callback` with it. Same
+    single-process caveat as `_registration_attempts` above."""
+    platform: str
+    handle: Handle
+    lightning_address: str
+    preferred_asset: str
+    minimum_tip_minor: int | None
+    display_name: str | None
+    created_at: float
+
+
+@dataclass
+class _OAuthSession:
+    """What a successful callback leaves for the app to collect.
+
+    The callback's final redirect goes through the OS's URL-scheme routing —
+    a channel a second app registering the same scheme could in principle
+    intercept. So the redirect carries only this opaque, single-use id, never
+    the management token itself; the app exchanges the id for the real values
+    over a direct HTTPS call to `/v1/oauth/session/{id}`, and the entry is
+    deleted the moment it is read.
+    """
+    handle: Handle
+    lightning_address: str
+    management_token: str | None
+    claim_token: str | None
+    created_at: float
+
+
+_OAUTH_STATE_TTL = 600.0
+_OAUTH_SESSION_TTL = 300.0
+_oauth_pending: dict[str, _PendingOAuth] = {}
+_oauth_sessions: dict[str, _OAuthSession] = {}
 
 
 def _rate_limit_registration(client: str, settings: Settings) -> None:
@@ -113,6 +159,29 @@ class RegisterResponse(BaseModel):
     # Returned only when the handle is claimed for the first time. Required to
     # change the record afterwards, so the creator must keep it.
     management_token: str | None = None
+
+
+class OAuthStartRequest(BaseModel):
+    platform: str
+    username: str
+    lightning_address: str
+    preferred_asset: str = "bitcoin"
+    minimum_tip_minor_units: int | None = Field(default=None, ge=0)
+    display_name: str | None = None
+
+
+class OAuthStartResponse(BaseModel):
+    authorize_url: str
+    expires_in: int
+
+
+class OAuthSessionResponse(BaseModel):
+    platform: str
+    username: str
+    lightning_address: str
+    verified: bool
+    claim_token: str | None
+    management_token: str | None
 
 
 # --------------------------------------------------------------------------
@@ -259,6 +328,160 @@ def register(
     )
 
 
+@app.post("/v1/oauth/{platform}/start", response_model=OAuthStartResponse)
+def oauth_start(
+    platform: str,
+    request: OAuthStartRequest,
+    http_request: Request,
+    settings: Settings = Depends(get_settings),
+) -> OAuthStartResponse:
+    """Begins platform sign-in for a handle a creator is claiming or already
+    owns.
+
+    Deliberately does not require the existing record's management token:
+    the whole point of this endpoint is that a real sign-in with Instagram or
+    TikTok is *stronger* proof of ownership than holding a bearer token, and
+    is the direct fix for the handle-squatting gap the manual bio-code path
+    always had — someone who registered `@realcreator` first, pointing tips
+    at their own wallet, cannot also sign in as `@realcreator` on Instagram.
+    Only the real account owner can complete the callback that follows this.
+    """
+    if platform != request.platform:
+        raise HTTPException(status_code=400, detail="platform mismatch")
+    config = oauth.config_for(platform)
+    if config is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{platform} sign-in is not configured on this registry yet",
+        )
+    try:
+        handle = normalise_handle(platform, request.username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    try:
+        address = lightning.normalise(request.lightning_address)
+    except lightning.InvalidLightningAddress as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if request.preferred_asset not in ASSETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"preferred_asset must be one of {', '.join(ASSETS)}",
+        )
+
+    _rate_limit_registration(_client_key(http_request), settings)
+
+    state = secrets.token_urlsafe(24)
+    _oauth_pending[state] = _PendingOAuth(
+        platform=platform,
+        handle=handle,
+        lightning_address=address,
+        preferred_asset=request.preferred_asset,
+        minimum_tip_minor=request.minimum_tip_minor_units,
+        display_name=request.display_name,
+        created_at=time.monotonic(),
+    )
+    return OAuthStartResponse(
+        authorize_url=oauth.build_authorize_url(config, state),
+        expires_in=int(_OAUTH_STATE_TTL),
+    )
+
+
+@app.get("/v1/oauth/{platform}/callback")
+async def oauth_callback(
+    platform: str,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    settings: Settings = Depends(get_settings),
+    storage: Storage = Depends(get_storage),
+) -> RedirectResponse:
+    """Where Instagram/TikTok send the user's browser after they consent (or
+    decline). Never called by the app directly.
+
+    Always ends in a redirect to the app's own URL scheme — there is nothing
+    else this request could usefully return, since it is a full-page browser
+    navigation happening inside the system auth session, not an API call the
+    app is waiting on synchronously.
+    """
+    def finish(status: str, **extra: str) -> RedirectResponse:
+        params = {"platform": platform, "status": status, **extra}
+        return RedirectResponse(f"{settings.app_url_scheme}://oauth-complete?{urlencode(params)}")
+
+    if error:
+        return finish("error", reason=error)
+
+    pending = _oauth_pending.pop(state, None) if state else None
+    if pending is None or pending.platform != platform:
+        return finish("error", reason="expired_or_invalid_state")
+    if time.monotonic() - pending.created_at > _OAUTH_STATE_TTL:
+        return finish("error", reason="expired")
+
+    config = oauth.config_for(platform)
+    if config is None or not code:
+        return finish("error", reason="not_configured")
+
+    try:
+        username, platform_user_id = await oauth.exchange_code(config, code)
+    except oauth.OAuthError:
+        return finish("error", reason="sign_in_failed")
+
+    if username.strip().lower() != pending.handle.username:
+        return finish(
+            "error",
+            reason="account_mismatch",
+            signed_in_as=username,
+            expected=pending.handle.username,
+        )
+
+    is_new_claim = storage.get(pending.handle) is None
+    management_token = (
+        f"tipme-manage-{secrets.token_urlsafe(24)}" if is_new_claim else None
+    )
+    record = storage.upsert(
+        handle=pending.handle,
+        lightning_address=pending.lightning_address,
+        preferred_asset=pending.preferred_asset,
+        minimum_tip_minor=pending.minimum_tip_minor,
+        display_name=pending.display_name,
+        claim_token=f"tipme-verify-{secrets.token_urlsafe(8)}",
+        management_token=management_token,
+    )
+    record = storage.set_verified(
+        pending.handle, True, via="oauth", platform_user_id=platform_user_id,
+    )
+
+    session_id = secrets.token_urlsafe(24)
+    _oauth_sessions[session_id] = _OAuthSession(
+        handle=pending.handle,
+        lightning_address=record.lightning_address,
+        management_token=management_token or storage.management_token(pending.handle),
+        claim_token=storage.claim_token(pending.handle),
+        created_at=time.monotonic(),
+    )
+    return finish("success", username=username, session_id=session_id)
+
+
+@app.get("/v1/oauth/session/{session_id}", response_model=OAuthSessionResponse)
+def oauth_session(session_id: str) -> OAuthSessionResponse:
+    """One-time collection point for what `/callback` produced.
+
+    Burns the entry on read. The app calls this immediately after
+    `ASWebAuthenticationSession` returns control to it, over a direct HTTPS
+    request rather than trusting anything carried in the redirect URL itself.
+    """
+    session = _oauth_sessions.pop(session_id, None)
+    if session is None or time.monotonic() - session.created_at > _OAUTH_SESSION_TTL:
+        raise HTTPException(status_code=404, detail="session expired or already used")
+    return OAuthSessionResponse(
+        platform=session.handle.platform,
+        username=session.handle.username,
+        lightning_address=session.lightning_address,
+        verified=True,
+        claim_token=session.claim_token,
+        management_token=session.management_token,
+    )
+
+
 def _client_key(request: Request) -> str:
     """Best-effort client identity for rate limiting.
 
@@ -339,7 +562,7 @@ def verify(
     except InvalidHandle as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    record = storage.set_verified(handle, True)
+    record = storage.set_verified(handle, True, via="admin")
     if record is None:
         raise HTTPException(status_code=404, detail="creator not registered")
     return {"platform": record.platform, "username": record.username, "verified": True}

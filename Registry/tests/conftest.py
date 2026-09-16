@@ -18,11 +18,13 @@ def client(monkeypatch):
     monkeypatch.setenv("REGISTRY_ADMIN_TOKEN", "test-admin-token")
 
     # The module caches settings, storage and the rate-limit window globally;
-    # reset all three so tests do not leak state into each other.
+    # reset all of it so tests do not leak state into each other.
     from tipme_registry import app as app_module
     app_module._settings = None
     app_module._storage = None
     app_module._registration_attempts.clear()
+    app_module._oauth_pending.clear()
+    app_module._oauth_sessions.clear()
 
     test_client = TestClient(app_module.app)
     test_client.public_key = public

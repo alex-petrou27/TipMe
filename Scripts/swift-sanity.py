@@ -45,8 +45,12 @@ KNOWN_EXTERNAL = {
     # Security / CryptoKit / LocalAuthentication
     "SecItemAdd","SecItemDelete","SecItemCopyMatching","CFDictionary","CFTypeRef",
     "Curve25519","SHA256","LAContext","LAError","LABiometryType",
+    # AuthenticationServices
+    "ASWebAuthenticationSession","ASWebAuthenticationSessionError","ASPresentationAnchor",
+    "ASWebAuthenticationPresentationContextProviding",
     # UIKit / SwiftUI / UTType / LinkPresentation
     "UIViewController","UIHostingController","UIPasteboard","UIPasteControl","UIColor","UIView",
+    "UIWindowScene","UIApplication","UIWindow",
     "NSLayoutConstraint","UTType","LPLinkMetadata","App","Scene","WindowGroup","View","AnyView",
     "Text","Image","Button","VStack","HStack","ZStack","Spacer","Divider","List","Form","Section",
     "NavigationStack","NavigationLink","LazyVGrid","GridItem","Toggle","Picker","TextField",

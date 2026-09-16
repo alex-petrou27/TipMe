@@ -152,6 +152,37 @@ is client-controlled — it throttles casual handle-squatting and is explicitly
 not a security control. A multi-process deployment needs it moved to shared
 storage, or the effective limit is the configured limit times the worker count.
 
+## Handle ownership can be proven by signing in, not just guessed at
+
+A bio code plus a human checking it (`POST /v1/creators/{platform}/{username}/verify`,
+admin-only) was always going to be a stopgap: it does not scale, and it leaves
+a window where a squatted handle sits unverified pointing at the wrong wallet.
+`Registry/tipme_registry/oauth.py` adds the real fix — the creator signs into
+Instagram or TikTok directly, we exchange the resulting code server-side (the
+client secret never ships in the app), and the platform's own "who am I"
+endpoint tells us the username. Only a match against the handle being claimed
+marks the record verified.
+
+This is deliberately *not* gated behind holding the record's management
+token. Signing in as `@someone` requires actually controlling `@someone` —
+that is a stronger ownership signal than a bearer token, and it is what lets a
+real creator reclaim a handle someone else squatted first, without needing
+that squatter's secret (`test_oauth_verification_can_overwrite_a_squatted_handle`).
+
+The redirect back to the app carries no secret. `/callback`'s final hop is a
+custom URL scheme (`tipme://`), routed by the OS — a channel a second app
+registering the same scheme could in principle intercept — so it carries only
+an opaque, single-use `session_id`. The app exchanges that for the real
+management token over a direct HTTPS call to `/v1/oauth/session/{id}`, which
+is deleted the moment it is read.
+
+What this cannot fix is platform policy: Instagram's OAuth login only exists
+for Business/Creator accounts, and a new TikTok app is capped to its own
+sandbox testers until TikTok approves it for production. Neither `/start`
+endpoint pretends otherwise — with no client id/secret configured for a
+platform, it fails closed with a 503 rather than offering a sign-in that
+cannot complete, and the bio-code path stays available as the fallback.
+
 ## Lightning addresses are verified before they are stored
 
 `LightningAddressVerifier` resolves the LNURL-pay endpoint at registration and
@@ -174,6 +205,8 @@ us, can ever recover, and will not find out until they need them.
   That is the intended threat model for a tipping app; anything stronger makes
   a two-second interaction impossible.
 - **Unverified handles.** Anyone can register any handle. The record carries a
-  `verified` flag, the confirm screen warns when it is false, and verification
-  is admin-only — but until platform OAuth is available (see `PHASE2.md`), an
-  unverified record is a claim rather than a fact.
+  `verified` flag and the confirm screen warns when it is false. Platform
+  sign-in (above) can clear it immediately and self-service; without that
+  configured, or on a personal Instagram account it does not cover,
+  verification falls back to a human checking a bio code, and an unverified
+  record stays a claim rather than a fact until one of those happens.

@@ -25,11 +25,13 @@ struct CreatorSetupView: View {
         case editing
         case verifying
         case registering
+        case connecting
         case done(CreatorRegistration)
 
         static func == (lhs: Phase, rhs: Phase) -> Bool {
             switch (lhs, rhs) {
-            case (.editing, .editing), (.verifying, .verifying), (.registering, .registering):
+            case (.editing, .editing), (.verifying, .verifying),
+                 (.registering, .registering), (.connecting, .connecting):
                 return true
             case (.done(let a), .done(let b)):
                 return a == b
@@ -160,6 +162,30 @@ struct CreatorSetupView: View {
                 .foregroundStyle(.secondary)
         }
 
+        Section("Verify instantly") {
+            Button {
+                Task { await connect() }
+            } label: {
+                HStack {
+                    switch phase {
+                    case .connecting: Text("Connecting to \(platform.displayName)…")
+                    default: Label("Connect \(platform.displayName)", systemImage: "checkmark.seal")
+                    }
+                    if phase == .connecting {
+                        Spacer()
+                        ProgressView()
+                    }
+                }
+            }
+            .disabled(!canSubmit)
+
+            Text(platform == .instagram
+                 ? "Signs you into Instagram to prove this handle is yours — no bio code, no waiting on a human. Needs a Business or Creator account; a personal account should use the bio-code option below instead."
+                 : "Signs you into TikTok to prove this handle is yours — no bio code, no waiting on a human.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
         if let errorMessage {
             Section {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -176,9 +202,9 @@ struct CreatorSetupView: View {
                     switch phase {
                     case .verifying: Text("Checking your wallet…")
                     case .registering: Text(isUpdatingOwnHandle ? "Updating…" : "Registering…")
-                    default: Text(isUpdatingOwnHandle ? "Update where tips go" : "Link my account")
+                    default: Text(isUpdatingOwnHandle ? "Update where tips go" : "Link my account (bio code)")
                     }
-                    if phase != .editing {
+                    if phase == .verifying || phase == .registering {
                         Spacer()
                         ProgressView()
                     }
@@ -220,24 +246,32 @@ struct CreatorSetupView: View {
             }
         }
 
-        Section("One more step") {
-            // Registration is open — anyone can claim any handle — so the badge
-            // only means something once a human has checked the claim.
-            Text("Anyone can claim a handle, so yours shows as unverified until we've checked it. Add this to your \(registration.handle.platform.displayName) bio:")
-                .font(.callout)
-
-            HStack {
-                Text(registration.claimToken)
-                    .font(.footnote.monospaced())
-                    .textSelection(.enabled)
-                Spacer()
-                Button("Copy") { UIPasteboard.general.string = registration.claimToken }
+        if registration.verified {
+            Section {
+                Label("Verified with \(registration.handle.platform.displayName)", systemImage: "checkmark.seal.fill")
                     .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
+        } else {
+            Section("One more step") {
+                // Registration is open — anyone can claim any handle — so the badge
+                // only means something once a human has checked the claim.
+                Text("Anyone can claim a handle, so yours shows as unverified until we've checked it. Add this to your \(registration.handle.platform.displayName) bio:")
+                    .font(.callout)
 
-            Text(registration.verificationInstructions)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                HStack {
+                    Text(registration.claimToken)
+                        .font(.footnote.monospaced())
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button("Copy") { UIPasteboard.general.string = registration.claimToken }
+                        .font(.footnote)
+                }
+
+                Text(registration.verificationInstructions)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
 
         Section {
@@ -284,6 +318,52 @@ struct CreatorSetupView: View {
             }
             phase = .done(registration)
         } catch let error as CreatorRegistrationError {
+            errorMessage = error.userFacingReason
+            phase = .editing
+        } catch {
+            errorMessage = String(describing: error)
+            phase = .editing
+        }
+    }
+
+    // MARK: - Connecting
+
+    /// Registers (or re-verifies) this handle by signing into the platform
+    /// itself, rather than the bio-code round trip `submit()` uses. One call
+    /// does what used to take two steps and a human: claim the handle, prove
+    /// it is really this creator's, and mark it verified, all in the same
+    /// sign-in.
+    private func connect() async {
+        guard let handle = parsedHandle, let address = parsedAddress else { return }
+        errorMessage = nil
+        phase = .connecting
+
+        let minimumTip = Int64(minimumTipText.filter(\.isNumber))
+            .map { Amount(asset: preferredAsset, minorUnits: $0) }
+
+        let connector = SocialAccountConnector(baseURL: services.configuration.registryBaseURL)
+        do {
+            let session = try await connector.connect(
+                platform: handle.platform,
+                username: handle.username,
+                lightningAddress: address,
+                preferredAsset: preferredAsset,
+                minimumTip: minimumTip,
+                displayName: nil)
+
+            // Only present on a first claim; an existing record's token is
+            // already in the keychain and does not need to be re-issued.
+            if let token = session.managementToken {
+                try? services.creatorTokens.store(token: token, for: handle)
+            }
+            phase = .done(CreatorRegistration(
+                handle: session.handle,
+                lightningAddress: session.lightningAddress,
+                verified: session.verified,
+                claimToken: session.claimToken ?? "",
+                verificationInstructions: "",
+                managementToken: session.managementToken))
+        } catch let error as SocialAccountConnector.ConnectorError {
             errorMessage = error.userFacingReason
             phase = .editing
         } catch {
