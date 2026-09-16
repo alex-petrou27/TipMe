@@ -186,7 +186,7 @@ struct CreatorSetupView: View {
             .disabled(!canSubmit)
 
             Text(platform == .instagram
-                 ? "Signs you into Instagram to prove this handle is yours — no bio code, no waiting on a human. Needs a Business or Creator account; a personal account should use the bio-code option below instead."
+                 ? "Signs you into Instagram to prove this handle is yours — no bio code, no waiting on a human. Needs a Business or Creator account — free and reversible: Instagram app → Settings → Account type and tools → Switch to professional account → Creator."
                  : "Signs you into TikTok to prove this handle is yours — no bio code, no waiting on a human.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

@@ -22,7 +22,7 @@ public final class SocialAccountConnector: NSObject, ASWebAuthenticationPresenta
 
     public enum ConnectorError: Error {
         case cancelled
-        case platformDeclined(reason: String)
+        case platformDeclined(platform: Platform, reason: String)
         case oauth(SocialOAuthError)
         case sessionFailed(String)
 
@@ -30,7 +30,7 @@ public final class SocialAccountConnector: NSObject, ASWebAuthenticationPresenta
             switch self {
             case .cancelled:
                 return "Sign-in was cancelled."
-            case .platformDeclined(let reason):
+            case .platformDeclined(let platform, let reason):
                 switch reason {
                 case "account_mismatch":
                     return "That's a different account than the one you're trying to verify. Sign in with the account that actually posts as this handle."
@@ -39,6 +39,14 @@ public final class SocialAccountConnector: NSObject, ASWebAuthenticationPresenta
                 case "not_configured":
                     return "This platform's sign-in isn't set up yet. Use the bio-code option below instead."
                 default:
+                    // Not a code Instagram is documented to send back through this
+                    // redirect, so this is a best guess rather than a matched
+                    // reason — but a personal (non-Business/Creator) account
+                    // being refused mid-flow is the single most common cause of
+                    // an Instagram sign-in failing for no other stated reason.
+                    if platform == .instagram {
+                        return "Sign-in didn't go through. If this is a personal Instagram account, that's likely why — switch to a free Creator account (Settings → Account type and tools → Switch to professional account) and try again."
+                    }
                     return "Sign-in didn't go through. Try again."
                 }
             case .oauth(let error):
@@ -102,7 +110,7 @@ public final class SocialAccountConnector: NSObject, ASWebAuthenticationPresenta
 
         switch result.status {
         case .failure(let reason):
-            throw ConnectorError.platformDeclined(reason: reason)
+            throw ConnectorError.platformDeclined(platform: result.platform, reason: reason)
         case .success(let sessionID):
             do {
                 return try await fetch(sessionID)
