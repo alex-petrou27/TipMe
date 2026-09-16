@@ -13,8 +13,18 @@ final class WalletSendEngineTests: XCTestCase {
         let capLedger: SendCapLedger
     }
 
+    /// Wallet sends get a materially higher default cap than tips in
+    /// production (see TipMeServices: 20x the tip cap), because a tip-sized
+    /// daily limit would make an ordinary wallet send impossible. Tests here
+    /// use ordinary-looking amounts like 50,000 sats (£25 at the fake
+    /// backend's rate), which would trip `SendCapPolicy.standard`'s £20
+    /// per-tip limit before ever reaching the behaviour under test — exactly
+    /// the failure this default avoids. Tests that specifically exercise cap
+    /// behaviour still override it explicitly.
+    private static let generousCapPolicy = SendCapPolicy(perTip: 40_000, perDay: 200_000, perWeek: 600_000)
+
     private func makeHarness(authorizer: BiometricAuthorizer = FakeAuthorizer(),
-                             capPolicy: SendCapPolicy = .standard) -> Harness {
+                             capPolicy: SendCapPolicy = generousCapPolicy) -> Harness {
         let clock = MutableClock()
         let backend = FakeWalletBackend(clock: clock)
         let audit = InMemoryAuditLog()
