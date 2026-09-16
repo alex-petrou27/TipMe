@@ -20,6 +20,12 @@ public struct TipMeServices: Sendable {
     public let quoteBuilder: TipQuoteBuilder
     public let keychain: WalletKeychain
     public let creatorTokens: CreatorTokenStore
+    /// Separate from `capLedger`: general wallet spending and tip spending are
+    /// deliberately independent budgets — see `SendCapLedger`'s `namespace`.
+    public let walletCapLedger: SendCapLedger
+    public let walletEngine: WalletSendEngine
+    /// The only shipped implementation always refuses. See docs/BANKING.md.
+    public let offRampProvider: FiatOffRampProvider
 
     public static func make(origin: PaymentIntent.Origin,
                             bundle: Bundle = .main,
@@ -48,8 +54,20 @@ public struct TipMeServices: Sendable {
         let auditLog = JSONLinesAuditLog(
             fileURL: try SharedContainer.auditLogURL(appGroup: configuration.appGroup))
 
-        let capLedger = SendCapLedger(store: store, clock: clock, policy: configuration.capPolicy)
+        let capLedger = SendCapLedger(store: store, clock: clock, policy: configuration.capPolicy,
+                                      namespace: "tips")
         let rateLimiter = TipRateLimiter(store: store, clock: clock, policy: configuration.rateLimitPolicy)
+        // Wallet sends get a materially higher ceiling than tips — this is now
+        // a general wallet, and a tip-sized daily cap would make an ordinary
+        // withdrawal-sized send impossible. 20x the tip cap is a starting
+        // point, not a considered regulatory figure; operators should tune it.
+        let walletCapLedger = SendCapLedger(
+            store: store, clock: clock,
+            policy: SendCapPolicy(currencyCode: configuration.capPolicy.currencyCode,
+                                  perTip: configuration.capPolicy.perTip * 20,
+                                  perDay: configuration.capPolicy.perDay * 20,
+                                  perWeek: configuration.capPolicy.perWeek * 20),
+            namespace: "wallet")
 
         let resolver = CachingCreatorResolver(
             upstream: RegistryClient(
@@ -57,6 +75,9 @@ public struct TipMeServices: Sendable {
                                      signingPublicKey: configuration.registryPublicKey),
                 clock: clock),
             clock: clock)
+
+        let gate = AuthorizationGate(authorizer: LocalAuthenticationAuthorizer(),
+                                    clock: clock, auditLog: auditLog)
 
         return TipMeServices(
             configuration: configuration,
@@ -71,12 +92,17 @@ public struct TipMeServices: Sendable {
                                   auditLog: auditLog,
                                   feeDestination: configuration.feeDestination,
                                   clock: clock),
-            gate: AuthorizationGate(authorizer: LocalAuthenticationAuthorizer(),
-                                    clock: clock,
-                                    auditLog: auditLog),
+            gate: gate,
             quoteBuilder: TipQuoteBuilder(feePolicy: configuration.feePolicy),
             keychain: keychain,
-            creatorTokens: CreatorTokenStore(accessGroup: configuration.keychainAccessGroup))
+            creatorTokens: CreatorTokenStore(accessGroup: configuration.keychainAccessGroup),
+            walletCapLedger: walletCapLedger,
+            walletEngine: WalletSendEngine(backend: backend, capLedger: walletCapLedger,
+                                           auditLog: auditLog, clock: clock),
+            // Real bank withdrawals need a licensed partner integration, which
+            // is a business and compliance undertaking, not something this
+            // constructor can create. See docs/BANKING.md.
+            offRampProvider: UnavailableFiatOffRampProvider())
     }
 
     public func makeFlow(origin: PaymentIntent.Origin, clock: Clock = SystemClock()) -> TipFlow {
@@ -90,6 +116,15 @@ public struct TipMeServices: Sendable {
                 clock: clock,
                 fiatCurrency: configuration.fiatCurrency,
                 origin: origin)
+    }
+
+    public func makeWalletSendFlow(clock: Clock = SystemClock()) -> WalletSendFlow {
+        WalletSendFlow(backend: backend, gate: gate, engine: walletEngine,
+                       clock: clock, fiatCurrency: configuration.fiatCurrency)
+    }
+
+    public func makeWithdrawalFlow(clock: Clock = SystemClock()) -> WithdrawalFlow {
+        WithdrawalFlow(provider: offRampProvider, gate: gate, auditLog: auditLog, clock: clock)
     }
 
     public var isWalletReady: Bool { keychain.hasMnemonic() }

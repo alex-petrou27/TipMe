@@ -64,7 +64,7 @@ KNOWN_EXTERNAL = {
     # Breez SDK types confirmed against the real 0.12.4 bindings.
     "PrepareSendResponse","ReceivePaymentResponse","SendPaymentRequest","SendPaymentResponse",
     "ListPaymentsRequest","PrepareReceiveResponse","PrepareSendRequest",
-    "UInt32","UInt16","UInt64","Int64","Int32",
+    "UInt32","UInt16","UInt64","Int64","Int32","CGFloat","UIImage","UIColor","CIContext","CIFilter","CGAffineTransform",
     # XCTest
     "XCTestCase","XCTest","XCTAssertEqual","XCTAssertTrue","XCTAssertFalse","XCTAssertNil",
     "XCTAssertNotNil","XCTAssertNotEqual","XCTAssertThrowsError","XCTAssertNoThrow","XCTFail",

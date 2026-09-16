@@ -1,59 +1,55 @@
 import SwiftUI
 import TipMeCore
 
-/// Reads the audit log back.
+/// Unified activity: everything the wallet actually settled, plus everything
+/// the security gates refused before it could.
 ///
-/// The same JSON-lines file the payment path writes, rendered for a human.
-/// Having one source rather than a separate "history" store means the screen
-/// cannot disagree with the record — if a payment is not in the log, it did not
-/// happen through this app.
+/// These are two different sources on purpose. `transactionHistory()` is
+/// Breez's own record of settled payments — sends and receives, tips
+/// included, since a tip settles through the same backend `send()` path as
+/// any other payment. The audit log is the only place a *refused* attempt
+/// exists at all: a payment blocked by a cap or a rate limit never reaches
+/// the wallet, so it would otherwise leave no trace whatsoever.
+///
+/// One simplification worth naming: because a tip is, to Breez, just a send,
+/// this feed does not relabel a settled tip back to "tip" in the wallet
+/// section — doing that reliably would mean cross-referencing the audit log's
+/// payment hash against wallet history, which is more machinery than this
+/// pass justifies. The tip's destination and any note usually make it
+/// recognisable regardless.
 struct ActivityView: View {
     let services: TipMeServices
 
-    @State private var events: [AuditEvent] = []
+    @State private var transactions: [WalletTransaction] = []
+    @State private var refused: [AuditEvent] = []
+    @State private var isLoading = false
     @State private var export: ExportFile?
 
-    /// Wrapper rather than an `extension URL: Identifiable`, which would
-    /// collide with the SDK's own conformance.
     private struct ExportFile: Identifiable {
         let url: URL
         var id: String { url.absoluteString }
     }
 
-    private var settled: [AuditEvent] {
-        events.filter { $0.stage == .settled }.reversed()
-    }
-
-    private var rejected: [AuditEvent] {
-        events.filter { $0.outcome == .rejected }.reversed()
-    }
-
     var body: some View {
         List {
-            if settled.isEmpty && rejected.isEmpty {
-                ContentUnavailableView("No tips yet",
+            if isLoading && transactions.isEmpty && refused.isEmpty {
+                ProgressView()
+            } else if transactions.isEmpty && refused.isEmpty {
+                ContentUnavailableView("No activity yet",
                                        systemImage: "bolt.slash",
-                                       description: Text("Share a TikTok or Instagram post and tap \"Tip via TipMe\"."))
+                                       description: Text("Send, receive, or tip a creator to see it here."))
             }
 
-            if !settled.isEmpty {
-                Section("Sent") {
-                    ForEach(settled, id: \.intentID) { event in
-                        row(event)
-                    }
+            if !transactions.isEmpty {
+                Section("Wallet") {
+                    ForEach(transactions) { ActivityRow(transaction: $0) }
                 }
             }
 
-            if !rejected.isEmpty {
+            if !refused.isEmpty {
                 Section("Blocked or cancelled") {
-                    ForEach(Array(rejected.enumerated()), id: \.offset) { _, event in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(event.handle.map { "@\($0)" } ?? "Unknown creator")
-                                .font(.callout)
-                            Text(event.detail ?? event.stage.rawValue)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                    ForEach(Array(refused.enumerated()), id: \.offset) { _, event in
+                        refusedRow(event)
                     }
                 }
             }
@@ -61,41 +57,38 @@ struct ActivityView: View {
             Section {
                 Button("Export audit log") { beginExport() }
                 Text("A JSON-lines record of every payment attempt and its outcome, including the ones that were refused.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
             }
         }
         .navigationTitle("Activity")
         .task { await reload() }
+        .refreshable { await reload() }
         .sheet(item: $export) { file in
             ShareLink(item: file.url) { Text("Share audit log") }
         }
     }
 
-    private func row(_ event: AuditEvent) -> some View {
+    private func refusedRow(_ event: AuditEvent) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(event.handle.map { "@\($0)" } ?? "Manual address")
-                    .font(.callout.weight(.medium))
-                Spacer()
-                if let currency = event.fiatCurrency, let minor = event.fiatMinorUnits {
-                    Text(FiatAmount(currencyCode: currency, minorUnits: minor).formatted)
-                        .font(.callout.monospacedDigit())
-                }
-            }
-            HStack {
-                Text(event.platform?.capitalized ?? "")
-                Text("·")
-                Text(event.timestamp.formatted(date: .abbreviated, time: .shortened))
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            Text(event.handle.map { "@\($0)" } ?? event.destination ?? "Unknown destination")
+                .font(Theme.body)
+            Text(event.detail ?? event.stage.rawValue)
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
         }
     }
 
     private func reload() async {
-        guard let log = services.auditLog as? JSONLinesAuditLog else { return }
-        events = await log.readAll()
+        isLoading = true
+        defer { isLoading = false }
+
+        transactions = (try? await services.backend.transactionHistory(limit: 50)) ?? []
+
+        if let log = services.auditLog as? JSONLinesAuditLog {
+            let events = await log.readAll()
+            refused = events.filter { $0.outcome == .rejected }.reversed()
+        }
     }
 
     private func beginExport() {
