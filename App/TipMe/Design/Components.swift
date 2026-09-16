@@ -1,4 +1,5 @@
 import SwiftUI
+import TipMeCore
 
 /// One of the four actions on the home screen — Send, Receive, Withdraw,
 /// Activity. Icon-over-label, in a soft rounded tile, deliberately identical
