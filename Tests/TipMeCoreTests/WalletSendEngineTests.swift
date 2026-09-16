@@ -112,7 +112,7 @@ final class WalletSendEngineTests: XCTestCase {
         }
     }
 
-    func testCancelledBiometricProducesNoAuthorization() async {
+    func testCancelledBiometricProducesNoAuthorization() async throws {
         let harness = makeHarness(authorizer: FakeAuthorizer(.userCancelled))
         do {
             _ = try await authorize(harness, amount: .sats(1_000), destination: .bitcoinAddress(raw: "bc1qxyz"))

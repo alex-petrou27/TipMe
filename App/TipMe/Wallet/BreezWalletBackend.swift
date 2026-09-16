@@ -34,7 +34,10 @@ extension BreezPaymentBackend: WalletBackend {
             }
             return .lightningAddress(address)
 
-        case .bolt11(let invoice, _):
+        case .bolt11(let invoice):
+            // InputType.bolt11 carries only the invoice — no bip353Address
+            // here (that field exists on a different enum, SendDestination's
+            // own bolt11 case, not this one).
             return .lightningInvoice(raw: raw,
                                      amountSat: invoice.amountMsat.map { Int64($0 / 1_000) },
                                      description: invoice.description)

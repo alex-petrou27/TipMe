@@ -14,7 +14,7 @@ final class UnavailableFiatOffRampProviderTests: XCTestCase {
         XCTAssertFalse(available)
     }
 
-    func testEveryOperationRefusesWithTheHonestReason() async {
+    func testEveryOperationRefusesWithTheHonestReason() async throws {
         do {
             _ = try await provider.linkedBankAccounts()
             XCTFail("must not report any linked accounts")

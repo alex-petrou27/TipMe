@@ -73,6 +73,19 @@ actor FakeWalletBackend: WalletBackend, PaymentBackend {
     func prepareRoute(tip: Amount, to destination: LightningAddress, receiveAsset: Asset) async throws -> SettlementRoute {
         .direct(tip, at: clock.now)
     }
+
+    /// The overload PaymentBackend itself requires (LightningAddress
+    /// destination) — distinct from the WalletBackend overload above
+    /// (WalletDestination). Unused by the wallet-send tests in this file, but
+    /// required for conformance since FakeWalletBackend declares both
+    /// protocols so WalletSendFlow's `backend as? ExchangeRateProvider` cast
+    /// has something real to find.
+    func send(route: SettlementRoute, to destination: LightningAddress,
+             idempotencyKey: String) async throws -> PaymentReceipt {
+        PaymentReceipt(status: .succeeded, paymentHash: "lnurl-hash",
+                       networkFee: .zero(route.sendAsset), sentAmount: route.debited,
+                       completedAt: clock.now)
+    }
 }
 
 enum WalletFixtures {

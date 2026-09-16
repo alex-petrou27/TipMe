@@ -23,7 +23,10 @@ public actor BreezPaymentBackend: PaymentBackend {
 
     private var sdk: BindingLiquidSdk?
     private let apiKey: String
-    private let network: LiquidNetwork
+    // Not `private`: BreezWalletBackend.swift (a different file, same
+    // module) needs this for prepareSend/send on raw destinations, exactly
+    // the same access-control lesson as `payAmount` below.
+    let network: LiquidNetwork
     private let workingDirectory: URL
     private let mnemonicProvider: @Sendable () throws -> String
     private var cachedRates: (rates: [Rate], fetchedAt: Date)?
