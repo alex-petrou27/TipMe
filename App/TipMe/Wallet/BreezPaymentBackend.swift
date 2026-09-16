@@ -102,7 +102,7 @@ public actor BreezPaymentBackend: PaymentBackend {
 
     // MARK: - Balance
 
-    public func availableBalance(for asset: Asset) async throws -> Amount {
+    public func availableBalance(for asset: Asset) async throws -> TipMeCore.Amount {
         let sdk = try requireSDK()
         let info: GetInfoResponse
         do { info = try sdk.getInfo() } catch {
@@ -129,7 +129,7 @@ public actor BreezPaymentBackend: PaymentBackend {
 
     // MARK: - Routing
 
-    public func prepareRoute(tip: Amount,
+    public func prepareRoute(tip: TipMeCore.Amount,
                              to destination: LightningAddress,
                              receiveAsset: Asset) async throws -> SettlementRoute {
         let sdk = try requireSDK()
@@ -179,7 +179,7 @@ public actor BreezPaymentBackend: PaymentBackend {
 
     /// LNURL advertises its limits in millisatoshis, so the check only applies
     /// to a Bitcoin-denominated payment.
-    private static func checkSendableRange(tip: Amount,
+    private static func checkSendableRange(tip: TipMeCore.Amount,
                                            receiveAsset: Asset,
                                            requestData: LnUrlPayRequestData) throws {
         guard receiveAsset == .bitcoin else { return }
@@ -198,7 +198,7 @@ public actor BreezPaymentBackend: PaymentBackend {
     /// `toAsset` is what lands with the creator and `fromAsset` is what leaves
     /// the sender; passing both is what asks the SDK to swap in flight. A `nil`
     /// asset means L-BTC, the Liquid base asset.
-    private static func payAmount(tip: Amount,
+    private static func payAmount(tip: TipMeCore.Amount,
                                   receiveAsset: Asset,
                                   network: LiquidNetwork) throws -> PayAmount {
         switch receiveAsset {
@@ -216,7 +216,7 @@ public actor BreezPaymentBackend: PaymentBackend {
         }
     }
 
-    private static func credited(from amount: PayAmount, fallback: Amount) -> Amount {
+    private static func credited(from amount: PayAmount, fallback: TipMeCore.Amount) -> TipMeCore.Amount {
         switch amount {
         case .bitcoin(let sats):
             return .sats(Int64(sats))
@@ -233,7 +233,7 @@ public actor BreezPaymentBackend: PaymentBackend {
     /// actually spending, so the confirm screen speaks one currency.
     private static func cost(feesSat: Int64,
                              denominatedIn asset: Asset,
-                             sdk: BindingLiquidSdk) throws -> Amount {
+                             sdk: BindingLiquidSdk) throws -> TipMeCore.Amount {
         switch asset {
         case .bitcoin:
             return .sats(feesSat)
@@ -272,7 +272,7 @@ public actor BreezPaymentBackend: PaymentBackend {
             return PaymentReceipt(
                 status: payment.status == .complete ? .succeeded : .pending,
                 paymentHash: payment.txId ?? idempotencyKey,
-                networkFee: Amount(asset: route.sendAsset, minorUnits: Int64(payment.feesSat)),
+                networkFee: TipMeCore.Amount(asset: route.sendAsset, minorUnits: Int64(payment.feesSat)),
                 sentAmount: route.debited,
                 completedAt: clock.now)
 

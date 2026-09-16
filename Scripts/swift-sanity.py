@@ -62,6 +62,11 @@ KNOWN_EXTERNAL = {
     # Swift keywords / generic parameter conventions that appear in type position
     "Self","Any","AnyObject","Type","Element","Value","Key","Output","Failure",
     "Content","Body","Label","ID","Wrapped",
+    # Module names used as explicit qualifiers (e.g. TipMeCore.Amount), needed
+    # here specifically to disambiguate from BreezSDKLiquid's own Amount enum.
+    "TipMeCore","BreezSDKLiquid","MnemonicSwift","UIKit","SwiftUI","Foundation",
+    "LocalAuthentication","LinkPresentation","UniformTypeIdentifiers","XCTest",
+    "CryptoKit","Security",
 }
 
 def source_files() -> list[Path]:

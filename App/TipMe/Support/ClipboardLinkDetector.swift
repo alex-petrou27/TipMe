@@ -26,10 +26,10 @@ import TipMeCore
 /// — no banner, no content. We use that to decide whether to offer anything at
 /// all, and the actual content only ever arrives through a `PasteButton` the
 /// user taps themselves.
-public enum ClipboardLinkDetector {
+enum ClipboardLinkDetector {
 
     /// True when the clipboard probably holds a web URL. Never returns the URL.
-    public static func containsProbableLink() async -> Bool {
+    static func containsProbableLink() async -> Bool {
         await withCheckedContinuation { continuation in
             UIPasteboard.general.detectPatterns(for: [.probableWebURL]) { result in
                 switch result {
@@ -50,7 +50,7 @@ public enum ClipboardLinkDetector {
     /// Accepts text as well as URLs, because "Copy link" on some versions puts
     /// the link inside a sentence rather than on its own, and because a user
     /// may paste from Notes or a message thread.
-    public static func payload(fromPastedURLs urls: [URL], text: [String]) -> SharedPayload {
+    static func payload(fromPastedURLs urls: [URL], text: [String]) -> SharedPayload {
         // No titles: a copied link arrives without the share sheet's header, so
         // the paste path depends on the URL naming the creator. Copying an
         // Instagram Reel link therefore still falls back to manual entry, while
@@ -62,7 +62,7 @@ public enum ClipboardLinkDetector {
     ///
     /// Checked before presenting anything, so a user who copied an unrelated
     /// link is not shown a tip sheet that immediately dead-ends.
-    public static func looksTippable(_ payload: SharedPayload,
+    static func looksTippable(_ payload: SharedPayload,
                                      parser: SharedLinkParser = SharedLinkParser()) -> Bool {
         let extractor = SharedPayloadExtractor()
         let candidates = extractor.candidateURLs(attachedURLs: payload.urls, sharedText: payload.text)
