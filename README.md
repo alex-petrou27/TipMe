@@ -399,9 +399,11 @@ Honest accounting of what has and has not been executed.
 
 **Verified by running it:**
 
-- **TipMeCore compiles and its tests run**, on a macOS GitHub Actions runner
-  (`.github/workflows/ci.yml`). This is new — the Swift had never been through
-  a compiler. 145 tests execute.
+- **The whole project compiles.** All four CI jobs are green as of this
+  writing: TipMeCore build + 145 tests, the Python registry's 59 tests, the
+  static checks, and — the one that took several rounds — the iOS app plus
+  share extension, linked against the real Breez SDK 0.12.4 binary framework.
+  See `.github/workflows/ci.yml`.
 
 - Registry service — 59 tests pass, plus a live end-to-end smoke test
   (registration, handle normalisation, signed lookup, signature verification,
@@ -421,18 +423,33 @@ Honest accounting of what has and has not been executed.
   but it catches renames left half-applied and helpers referenced but never
   written. Currently clean.
 
-**Not yet verified:** the app and share-extension targets. They compile only in
-the `app` CI job, which additionally resolves the Breez SDK.
+**What it took to get there**, for anyone touching this code next:
 
 `BreezPaymentBackend` was originally written from documentation against a
-version number I had guessed (0.6.6, which does not exist). It has since been
-rewritten field by field against the **actual generated bindings of 0.12.4**,
-read from the SDK's own source. Six concrete errors were corrected that way —
-a non-existent `PaymentMethod.lightning`, wrong argument labels on
-`PayAmount.asset`, an optional unwrap of a non-optional field, and an asset
-balance read from the wrong field. It should now be close, but "checked against
-the bindings" is not "compiled", and that distinction is the point of the CI
-job.
+version number I had guessed (0.6.6, which does not exist). It was rewritten
+field by field against the actual generated bindings of the real latest,
+0.12.4, which fixed six substantive errors — a non-existent
+`PaymentMethod.lightning`, wrong argument labels on `PayAmount.asset`, an
+optional unwrap of a non-optional field, and an asset balance read from the
+wrong field of `AssetBalance`.
+
+That rewrite still didn't compile on the first CI run. Two errors remained,
+both real and both instructive:
+
+- `BreezSDKLiquid` exports its own `Amount` enum, which collides with
+  `TipMeCore.Amount` the moment both modules are imported unqualified — which
+  is exactly what `BreezPaymentBackend.swift` does, since it is the one file
+  that touches both. Fixed by qualifying every reference as `TipMeCore.Amount`.
+- `ClipboardLinkDetector`'s methods were declared `public` while passing
+  `SharedPayload` around, which is `internal` by default. Swift enforces that
+  a `public` declaration cannot expose an `internal` type, even within the
+  same module. Since nothing outside this app target ever reads
+  `ClipboardLinkDetector`, the fix was to drop `public` rather than promote
+  `SharedPayload`.
+
+Every one of these was found by pushing to a branch and reading CI's answer,
+not by guessing — which is the entire reason `.github/workflows/ci.yml` exists
+in a repository assembled somewhere with no Swift toolchain at all.
 
 This repository is assembled in a Linux container where `download.swift.org` is
 blocked by egress policy, so there is no local Swift toolchain — CI is the
