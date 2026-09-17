@@ -1,52 +1,66 @@
-"""Real Lightning movement, via a hosted LND node (Voltage).
+"""Real Lightning movement, via Voltage's Payments API (credit-backed).
 
 This is a money-transmission integration for the *test-with-your-own-funds*
-phase of the custodial pivot -- deliberately scoped to Lightning only for now.
-On-chain Bitcoin sends/receives and USDT/Tron are separate follow-ups, each
-its own protocol and its own real-money testing pass.
+phase of the custodial pivot -- deliberately scoped to Lightning only for
+now. On-chain Bitcoin sends/receives and USDT/Tron are separate follow-ups,
+each its own protocol and its own real-money testing pass.
 
-## Why Voltage, and why this stays behind a protocol
+## Which Voltage product this actually is
 
-Voltage hosts a real LND node -- unlike a fully custodial API, the operator
-still holds the node's keys, but does not have to run node infrastructure.
-`LightningRail` is the seam: `VoltageLightningRail` below is one
-implementation of it, `FakeLightningRail` (in tests) is another that never
-touches a network. Swapping to a different provider, or to a fully custodial
-account-based one later, means writing a new class against this same
-protocol -- nothing above it (the ledger, the endpoints, the app) changes.
-This is the same seam `PaymentBackend` already is for the tip-sending path.
+Voltage offers two different things, and this integration is against the
+second one:
+
+  - A raw, customer-run Lightning node ("node-backed") -- macaroons, channel
+    liquidity, node security, all on the operator. An earlier version of
+    this module was written against that one, from LND's own REST API,
+    before an actual Voltage account showed the wallet in use here is the
+    other kind.
+  - **Voltage Payments API, credit-backed** -- Voltage runs the node;
+    the operator gets a wallet with a line of credit and a plain REST API
+    (`docs.voltageapi.com`) scoped to an organization, environment and
+    wallet. This is what `VoltagePaymentsRail` below talks to.
+
+`LightningRail` is the seam that made discovering this a non-event: the
+protocol didn't change, only this one class's HTTP internals did. Swapping
+providers again later, or moving to a different rail entirely, means writing
+another class against the same protocol -- nothing above it (the ledger, the
+endpoints, the app) changes. This is the same seam `PaymentBackend` already
+is for the tip-sending path.
 
 ## Honesty about what is verified here
 
-`VoltageLightningRail` is written from LND's own documented REST API
-(api.lightning.community) -- it has **not** been exercised against a real
-node, because no Voltage account exists yet. Expect the same kind of
-iteration the Instagram title-parsing fix needed: get a real node, try a real
-deposit, and fix whatever field name or status code turns out to differ from
-what the docs say. Everything else in this module (the protocol, the ledger
-wiring, `FakeLightningRail`) does not depend on that being exactly right and
-is fully tested today.
+Voltage's docs site and API are both unreachable from this environment's
+network (same egress block that made the Instagram og:title work
+guesswork-then-correct, not fetch-and-verify). What's confirmed, from
+screenshots of the actual account this integration targets, is the resource
+shape: wallets and payments are REST resources under
+`/organizations/{organization_id}/[environments/{environment_id}/]...`, with
+list/create/get operations on each, an API key issued from the dashboard's
+"API Keys" page, and separate "Quotes" and "Lines of Credit" resources this
+module does not yet use. The exact request/response *field names* below
+(`direction`, `payment_kind`, `amount_msats`, ...) are informed inference
+from that shape and from how Lightning payment APIs conventionally look, not
+confirmed. Expect this to need one real correction pass, the same way the
+Instagram title parsing did -- but the feedback loop here is a Python
+exception with Voltage's actual error message in it, not a rebuilt iOS app,
+so it should be a fast one.
 
 ## Configuration
 
-Reads ``REGISTRY_VOLTAGE_REST_URL`` (e.g.
-``https://<node-id>.m.voltageapp.io``) and ``REGISTRY_VOLTAGE_MACAROON_HEX``
-(a hex-encoded macaroon -- Voltage's dashboard offers an invoice+payments-
-scoped one; avoid the full admin macaroon, since this process only ever
-needs to create/pay invoices, never to manage the node itself). Until both
-are set, ``rail_from_env`` returns ``None`` and the deposit/withdraw
-endpoints fail closed with a 503, the same convention ``oauth.config_for``
-already uses for Instagram/TikTok.
+Reads ``REGISTRY_VOLTAGE_API_KEY``, ``REGISTRY_VOLTAGE_ORGANIZATION_ID``,
+``REGISTRY_VOLTAGE_ENVIRONMENT_ID`` and ``REGISTRY_VOLTAGE_WALLET_ID``.
+Until all four are set, ``rail_from_env`` returns ``None`` and the
+deposit/withdraw endpoints fail closed with a 503, the same convention
+``oauth.config_for`` already uses for Instagram/TikTok.
 
-Both names carry the ``REGISTRY_`` prefix deliberately:
+Every one of these carries the ``REGISTRY_`` prefix deliberately:
 ``Scripts/make-xcconfig.sh`` strips exactly that prefix from what reaches the
 iOS app bundle, so a differently-named credential here would ship inside the
-compiled app -- a real Lightning node macaroon, extractable by anyone who
+compiled app -- a real Lightning API key, extractable by anyone who
 decompiles the binary.
 """
 from __future__ import annotations
 
-import base64
 import os
 from dataclasses import dataclass
 from typing import Protocol
@@ -55,22 +69,31 @@ import httpx
 
 
 class LightningNodeError(Exception):
-    """The node was reached but the call did not succeed -- an invoice that
-    doesn't exist, a payment that failed to route, a malformed request."""
+    """Voltage was reached but the call did not succeed -- a payment that
+    doesn't exist, insufficient credit, a malformed request."""
 
 
 @dataclass(frozen=True)
 class LightningNodeConfig:
-    rest_url: str
-    macaroon_hex: str
+    api_base_url: str
+    api_key: str
+    organization_id: str
+    environment_id: str
+    wallet_id: str
 
 
 def config_from_env() -> LightningNodeConfig | None:
-    rest_url = os.environ.get("REGISTRY_VOLTAGE_REST_URL")
-    macaroon = os.environ.get("REGISTRY_VOLTAGE_MACAROON_HEX")
-    if not (rest_url and macaroon):
+    api_key = os.environ.get("REGISTRY_VOLTAGE_API_KEY")
+    organization_id = os.environ.get("REGISTRY_VOLTAGE_ORGANIZATION_ID")
+    environment_id = os.environ.get("REGISTRY_VOLTAGE_ENVIRONMENT_ID")
+    wallet_id = os.environ.get("REGISTRY_VOLTAGE_WALLET_ID")
+    if not (api_key and organization_id and environment_id and wallet_id):
         return None
-    return LightningNodeConfig(rest_url=rest_url.rstrip("/"), macaroon_hex=macaroon)
+    base_url = os.environ.get("REGISTRY_VOLTAGE_API_BASE_URL", "https://voltageapi.com/v1")
+    return LightningNodeConfig(
+        api_base_url=base_url.rstrip("/"), api_key=api_key,
+        organization_id=organization_id, environment_id=environment_id, wallet_id=wallet_id,
+    )
 
 
 @dataclass(frozen=True)
@@ -100,7 +123,14 @@ class PaymentResult:
 
 
 class LightningRail(Protocol):
-    """What the deposit/withdraw endpoints need from a Lightning node."""
+    """What the deposit/withdraw endpoints need from a Lightning rail.
+
+    ``payment_hash`` in `invoice_status`/`PaymentResult` is this rail's own
+    opaque identifier for a payment -- a real BOLT11 payment hash for a
+    node-backed rail, Voltage's own payment id for the credit-backed one.
+    Callers never decode or compare it themselves; it only ever round-trips
+    back into the same rail.
+    """
 
     async def create_invoice(self, amount_sats: int, memo: str) -> Invoice: ...
 
@@ -111,32 +141,47 @@ class LightningRail(Protocol):
     async def pay_invoice(self, payment_request: str) -> PaymentResult: ...
 
 
-class VoltageLightningRail:
-    """Talks to a hosted LND node's REST API. See the module docstring --
-    the exact request/response shapes here are unverified against a real
-    node and are the first thing to check if this starts throwing."""
+class VoltagePaymentsRail:
+    """Talks to Voltage's Payments API for a single credit-backed BTC
+    wallet. See the module docstring -- the exact field names here are
+    informed inference, not confirmed against a real response, and are the
+    first thing to check if this starts throwing."""
 
     def __init__(self, config: LightningNodeConfig):
         self._config = config
 
     def _client(self, timeout: float) -> httpx.AsyncClient:
         return httpx.AsyncClient(
-            base_url=self._config.rest_url,
+            base_url=self._config.api_base_url,
             timeout=timeout,
-            headers={"Grpc-Metadata-macaroon": self._config.macaroon_hex},
+            headers={"Authorization": f"Bearer {self._config.api_key}"},
+        )
+
+    def _payments_path(self, suffix: str = "") -> str:
+        return (
+            f"/organizations/{self._config.organization_id}"
+            f"/environments/{self._config.environment_id}/payments{suffix}"
         )
 
     async def create_invoice(self, amount_sats: int, memo: str) -> Invoice:
         async with self._client(10) as client:
             try:
                 response = await client.post(
-                    "/v1/invoices", json={"value": str(amount_sats), "memo": memo},
+                    self._payments_path(),
+                    json={
+                        "wallet_id": self._config.wallet_id,
+                        "direction": "receive",
+                        "currency": "btc",
+                        "payment_kind": "bolt11",
+                        "amount_msats": amount_sats * 1000,
+                        "memo": memo,
+                    },
                 )
                 response.raise_for_status()
                 body = response.json()
                 return Invoice(
                     payment_request=body["payment_request"],
-                    payment_hash=_b64_to_hex(body["r_hash"]),
+                    payment_hash=body["id"],
                     amount_sats=amount_sats,
                 )
             except (httpx.HTTPError, KeyError, ValueError) as error:
@@ -145,26 +190,36 @@ class VoltageLightningRail:
     async def invoice_status(self, payment_hash: str) -> InvoiceStatus:
         async with self._client(10) as client:
             try:
-                response = await client.get(f"/v1/invoice/{payment_hash}")
+                response = await client.get(self._payments_path(f"/{payment_hash}"))
                 response.raise_for_status()
                 body = response.json()
+                settled = body.get("status") in ("completed", "succeeded", "settled")
                 return InvoiceStatus(
-                    settled=bool(body.get("settled", False)),
-                    amount_sats=int(body.get("value", 0)),
+                    settled=settled,
+                    amount_sats=int(body.get("amount_msats", 0)) // 1000,
                 )
             except (httpx.HTTPError, KeyError, ValueError) as error:
                 raise LightningNodeError(f"could not check invoice: {error}") from error
 
     async def decode_invoice(self, payment_request: str) -> DecodedInvoice:
+        """Reads what an external BOLT11 invoice is actually for, before
+        committing to paying it. Guessed to be a quote resource -- Voltage's
+        docs list a separate "Quotes" section this hasn't been read yet --
+        rather than the node-backed `decodepayreq` primitive, which a
+        credit-backed wallet has no node to run itself."""
         async with self._client(10) as client:
             try:
-                response = await client.get(f"/v1/payreq/{payment_request}")
+                response = await client.post(
+                    f"/organizations/{self._config.organization_id}"
+                    f"/environments/{self._config.environment_id}/quotes",
+                    json={"wallet_id": self._config.wallet_id, "payment_request": payment_request},
+                )
                 response.raise_for_status()
                 body = response.json()
                 return DecodedInvoice(
-                    amount_sats=int(body.get("num_satoshis", 0)),
+                    amount_sats=int(body.get("amount_msats", 0)) // 1000,
                     destination=body.get("destination", ""),
-                    description=body.get("description", ""),
+                    description=body.get("memo", body.get("description", "")),
                 )
             except (httpx.HTTPError, KeyError, ValueError) as error:
                 raise LightningNodeError(f"could not decode invoice: {error}") from error
@@ -173,17 +228,22 @@ class VoltageLightningRail:
         async with self._client(30) as client:
             try:
                 response = await client.post(
-                    "/v1/channels/transactions",
-                    json={"payment_request": payment_request},
+                    self._payments_path(),
+                    json={
+                        "wallet_id": self._config.wallet_id,
+                        "direction": "send",
+                        "currency": "btc",
+                        "payment_kind": "bolt11",
+                        "payment_request": payment_request,
+                    },
                 )
                 response.raise_for_status()
                 body = response.json()
-                if body.get("payment_error"):
-                    raise LightningNodeError(body["payment_error"])
-                route = body.get("payment_route") or {}
+                if body.get("status") == "failed":
+                    raise LightningNodeError(body.get("error", "payment failed"))
                 return PaymentResult(
-                    payment_hash=_b64_to_hex(body["payment_hash"]) if body.get("payment_hash") else "",
-                    fee_sats=int(route.get("total_fees", 0)),
+                    payment_hash=body.get("id", ""),
+                    fee_sats=int(body.get("fee_msats", 0)) // 1000,
                 )
             except (httpx.HTTPError, KeyError, ValueError) as error:
                 raise LightningNodeError(f"could not pay invoice: {error}") from error
@@ -193,8 +253,4 @@ def rail_from_env() -> LightningRail | None:
     config = config_from_env()
     if config is None:
         return None
-    return VoltageLightningRail(config)
-
-
-def _b64_to_hex(value: str) -> str:
-    return base64.b64decode(value).hex()
+    return VoltagePaymentsRail(config)
