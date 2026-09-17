@@ -184,17 +184,16 @@ class VoltagePaymentsRail:
         )
 
     async def create_invoice(self, amount_sats: int, memo: str) -> Invoice:
+        # Chosen here, not left to Voltage, both because it requires a
+        # client-supplied id and because it doubles as the handle for the
+        # follow-up read below.
+        payment_id = str(uuid.uuid4())
         async with self._client(10) as client:
             try:
                 response = await client.post(
                     self._payments_path(),
                     json={
-                        # Confirmed against a real account: Voltage wants the
-                        # client to mint the payment's own id, not assign one
-                        # itself -- almost certainly so a retried request with
-                        # the same id is treated as idempotent rather than
-                        # creating a second payment.
-                        "id": str(uuid.uuid4()),
+                        "id": payment_id,
                         "wallet_id": self._config.wallet_id,
                         "direction": "receive",
                         "currency": "btc",
@@ -204,10 +203,20 @@ class VoltagePaymentsRail:
                     },
                 )
                 self._check(response)
-                body = response.json()
+                # Confirmed against a real account: the create response can
+                # come back with an empty body -- the payment (and its
+                # BOLT11 invoice) is generated asynchronously. Reading it
+                # back by the id we already chose is what actually gets the
+                # invoice, rather than trusting the create response to carry
+                # it.
+                body = response.json() if response.content else {}
+                if "payment_request" not in body:
+                    follow_up = await client.get(self._payments_path(f"/{payment_id}"))
+                    self._check(follow_up)
+                    body = follow_up.json()
                 return Invoice(
                     payment_request=body["payment_request"],
-                    payment_hash=body["id"],
+                    payment_hash=body.get("id", payment_id),
                     amount_sats=amount_sats,
                 )
             except LightningNodeError:
