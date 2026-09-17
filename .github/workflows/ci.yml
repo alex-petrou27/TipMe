@@ -102,6 +102,29 @@ jobs:
             -project TipMe.xcodeproj \
             -scheme TipMe \
             -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build-dd \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
+
+      # A build can succeed (exit 0) while still packaging a broken bundle --
+      # xcodebuild does not fail just because Info.plist processing produced
+      # something incomplete. This is the actual install-time check ("does
+      # not define an NSExtension dictionary") run against CI's own output,
+      # so a regression here is caught before it ever reaches a device.
+      - name: Verify TipMeShare.appex has a real Info.plist
+        run: |
+          APPEX=$(find build-dd/Build/Products -name "TipMeShare.appex" -maxdepth 4 | head -1)
+          if [[ -z "$APPEX" ]]; then
+            echo "::error::TipMeShare.appex not found in build products"
+            find build-dd/Build/Products -maxdepth 4
+            exit 1
+          fi
+          echo "found: $APPEX"
+          PLIST="$APPEX/Info.plist"
+          echo "--- Info.plist contents ---"
+          plutil -p "$PLIST"
+          if ! /usr/libexec/PlistBuddy -c "Print :NSExtension:NSExtensionPointIdentifier" "$PLIST"; then
+            echo "::error::TipMeShare.appex's Info.plist has no NSExtension dictionary -- this is exactly the install-time failure"
+            exit 1
+          fi
