@@ -48,10 +48,11 @@ so it should be a fast one.
 ## Configuration
 
 Reads ``REGISTRY_VOLTAGE_API_KEY``, ``REGISTRY_VOLTAGE_ORGANIZATION_ID``,
-``REGISTRY_VOLTAGE_ENVIRONMENT_ID`` and ``REGISTRY_VOLTAGE_WALLET_ID``.
-Until all four are set, ``rail_from_env`` returns ``None`` and the
-deposit/withdraw endpoints fail closed with a 503, the same convention
-``oauth.config_for`` already uses for Instagram/TikTok.
+``REGISTRY_VOLTAGE_ENVIRONMENT_ID``, ``REGISTRY_VOLTAGE_WALLET_ID`` and
+``REGISTRY_VOLTAGE_LINE_OF_CREDIT_ID``. Until all five are set,
+``rail_from_env`` returns ``None`` and the deposit/withdraw endpoints fail
+closed with a 503, the same convention ``oauth.config_for`` already uses for
+Instagram/TikTok.
 
 Every one of these carries the ``REGISTRY_`` prefix deliberately:
 ``Scripts/make-xcconfig.sh`` strips exactly that prefix from what reaches the
@@ -82,6 +83,11 @@ class LightningNodeConfig:
     organization_id: str
     environment_id: str
     wallet_id: str
+    # A wallet's line of credit, from that wallet's own resource
+    # (`line_of_credit_id` in `GET .../wallets/{wallet_id}`). Real testing
+    # showed both quoting and sending require it explicitly -- it isn't
+    # inferred from the wallet_id server-side.
+    line_of_credit_id: str
 
 
 def config_from_env() -> LightningNodeConfig | None:
@@ -89,12 +95,14 @@ def config_from_env() -> LightningNodeConfig | None:
     organization_id = os.environ.get("REGISTRY_VOLTAGE_ORGANIZATION_ID")
     environment_id = os.environ.get("REGISTRY_VOLTAGE_ENVIRONMENT_ID")
     wallet_id = os.environ.get("REGISTRY_VOLTAGE_WALLET_ID")
-    if not (api_key and organization_id and environment_id and wallet_id):
+    line_of_credit_id = os.environ.get("REGISTRY_VOLTAGE_LINE_OF_CREDIT_ID")
+    if not (api_key and organization_id and environment_id and wallet_id and line_of_credit_id):
         return None
     base_url = os.environ.get("REGISTRY_VOLTAGE_API_BASE_URL", "https://voltageapi.com/v1")
     return LightningNodeConfig(
         api_base_url=base_url.rstrip("/"), api_key=api_key,
         organization_id=organization_id, environment_id=environment_id, wallet_id=wallet_id,
+        line_of_credit_id=line_of_credit_id,
     )
 
 
@@ -282,6 +290,7 @@ class VoltagePaymentsRail:
                     json={
                         "id": quote_id,
                         "wallet_id": self._config.wallet_id,
+                        "line_of_credit_id": self._config.line_of_credit_id,
                         "payment_request": payment_request,
                     },
                 )
@@ -319,6 +328,7 @@ class VoltagePaymentsRail:
                     json={
                         "id": payment_id,
                         "wallet_id": self._config.wallet_id,
+                        "line_of_credit_id": self._config.line_of_credit_id,
                         "direction": "send",
                         "currency": "btc",
                         "payment_kind": "bolt11",
