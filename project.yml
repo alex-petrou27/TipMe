@@ -38,18 +38,13 @@ targets:
     type: application
     platform: iOS
     sources:
-      # Excluding Info.plist explicitly: it lives inside this directory, so a
-      # wholesale directory scan would otherwise sweep it into Copy Bundle
-      # Resources as a plain file, alongside the properly-processed one
-      # INFOPLIST_FILE produces — a documented XcodeGen/Xcode interaction
-      # that can silently corrupt or blank the final Info.plist depending on
-      # build-phase ordering on a given toolchain.
+      # Excludes Info.plist from the directory scan so it is never swept
+      # into Copy Bundle Resources as a plain file alongside the processed
+      # one INFOPLIST_FILE produces.
       - path: App/TipMe
         excludes:
           - Info.plist
       - path: App/Shared
-    info:
-      path: App/TipMe/Info.plist
     entitlements:
       path: App/TipMe/TipMe.entitlements
     dependencies:
@@ -68,21 +63,19 @@ targets:
         # Strict concurrency catches the actor-isolation mistakes that would
         # otherwise show up as a race in the payment path.
         SWIFT_STRICT_CONCURRENCY: complete
-        # Newer Xcode defaults to synthesizing Info.plist from build settings
-        # and silently ignoring `info.path` above unless told not to — which
-        # drops NSExtension, the app group keys, everything. Force it to use
-        # the real file. INFOPLIST_FILE is set explicitly too, redundant with
-        # `info.path` above — belt and braces against whatever XcodeGen
-        # version is translating (or failing to translate) that key into a
-        # build setting on a given toolchain.
+        # Point straight at the real file via the build setting rather than
+        # XcodeGen's own `info:` key: `info: path:` tells XcodeGen to
+        # generate and own the plist at that path, rewriting it from a bare
+        # template on every `xcodegen generate` and silently destroying
+        # NSExtension, the app group keys, everything -- confirmed directly
+        # via `git diff` on the file immediately after a `generate` run. Not
+        # a build-setting problem at all; do not reintroduce `info:` here.
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/TipMe/Info.plist
 
   TipMeShare:
     type: app-extension
     platform: iOS
-    info:
-      path: App/TipMeShare/Info.plist
     entitlements:
       path: App/TipMeShare/TipMeShare.entitlements
     dependencies:
@@ -95,11 +88,7 @@ targets:
       # duplicating them, so both processes build the identical object graph.
       - sdk: LocalAuthentication.framework
     sources:
-      # See the same exclusion on the TipMe target above — this is very
-      # likely the actual cause of the "does not define an NSExtension
-      # dictionary" install failure: the raw source Info.plist getting
-      # copied into the bundle as a plain resource, fighting the properly
-      # processed one.
+      # See the same exclusion on the TipMe target above.
       - path: App/TipMeShare
         excludes:
           - Info.plist
@@ -111,11 +100,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: technology.tipme.app.share
         SWIFT_VERSION: "5.9"
         SWIFT_STRICT_CONCURRENCY: complete
-        # See the same setting on the TipMe target above — without this, a
-        # newer Xcode synthesizes its own Info.plist and drops NSExtension,
-        # which is exactly the "does not define an NSExtension dictionary"
-        # install failure this fixes. INFOPLIST_FILE set explicitly too, for
-        # the same belt-and-braces reason as the TipMe target.
+        # See the same setting and comment on the TipMe target above -- this
+        # is the actual fix for the "does not define an NSExtension
+        # dictionary" install failure: no `info:` key means XcodeGen never
+        # rewrites App/TipMeShare/Info.plist, so the real file (with
+        # NSExtension) is what ships.
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/TipMeShare/Info.plist
 
