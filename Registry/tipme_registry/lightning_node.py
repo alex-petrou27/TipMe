@@ -48,11 +48,11 @@ so it should be a fast one.
 ## Configuration
 
 Reads ``REGISTRY_VOLTAGE_API_KEY``, ``REGISTRY_VOLTAGE_ORGANIZATION_ID``,
-``REGISTRY_VOLTAGE_ENVIRONMENT_ID``, ``REGISTRY_VOLTAGE_WALLET_ID`` and
-``REGISTRY_VOLTAGE_LINE_OF_CREDIT_ID``. Until all five are set,
-``rail_from_env`` returns ``None`` and the deposit/withdraw endpoints fail
-closed with a 503, the same convention ``oauth.config_for`` already uses for
-Instagram/TikTok.
+``REGISTRY_VOLTAGE_ENVIRONMENT_ID``, ``REGISTRY_VOLTAGE_WALLET_ID``,
+``REGISTRY_VOLTAGE_LINE_OF_CREDIT_ID`` and ``REGISTRY_VOLTAGE_NETWORK``.
+Until all six are set, ``rail_from_env`` returns ``None`` and the
+deposit/withdraw endpoints fail closed with a 503, the same convention
+``oauth.config_for`` already uses for Instagram/TikTok.
 
 Every one of these carries the ``REGISTRY_`` prefix deliberately:
 ``Scripts/make-xcconfig.sh`` strips exactly that prefix from what reaches the
@@ -88,6 +88,10 @@ class LightningNodeConfig:
     # showed both quoting and sending require it explicitly -- it isn't
     # inferred from the wallet_id server-side.
     line_of_credit_id: str
+    # Same story as line_of_credit_id: the wallet's own `network` field
+    # (e.g. "mutinynet", "mainnet"), required explicitly by quoting and
+    # sending rather than inferred from the wallet_id.
+    network: str
 
 
 def config_from_env() -> LightningNodeConfig | None:
@@ -96,13 +100,15 @@ def config_from_env() -> LightningNodeConfig | None:
     environment_id = os.environ.get("REGISTRY_VOLTAGE_ENVIRONMENT_ID")
     wallet_id = os.environ.get("REGISTRY_VOLTAGE_WALLET_ID")
     line_of_credit_id = os.environ.get("REGISTRY_VOLTAGE_LINE_OF_CREDIT_ID")
-    if not (api_key and organization_id and environment_id and wallet_id and line_of_credit_id):
+    network = os.environ.get("REGISTRY_VOLTAGE_NETWORK")
+    if not (api_key and organization_id and environment_id and wallet_id
+            and line_of_credit_id and network):
         return None
     base_url = os.environ.get("REGISTRY_VOLTAGE_API_BASE_URL", "https://voltageapi.com/v1")
     return LightningNodeConfig(
         api_base_url=base_url.rstrip("/"), api_key=api_key,
         organization_id=organization_id, environment_id=environment_id, wallet_id=wallet_id,
-        line_of_credit_id=line_of_credit_id,
+        line_of_credit_id=line_of_credit_id, network=network,
     )
 
 
@@ -291,6 +297,7 @@ class VoltagePaymentsRail:
                         "id": quote_id,
                         "wallet_id": self._config.wallet_id,
                         "line_of_credit_id": self._config.line_of_credit_id,
+                        "network": self._config.network,
                         "payment_request": payment_request,
                     },
                 )
@@ -329,6 +336,7 @@ class VoltagePaymentsRail:
                         "id": payment_id,
                         "wallet_id": self._config.wallet_id,
                         "line_of_credit_id": self._config.line_of_credit_id,
+                        "network": self._config.network,
                         "direction": "send",
                         "currency": "btc",
                         "payment_kind": "bolt11",

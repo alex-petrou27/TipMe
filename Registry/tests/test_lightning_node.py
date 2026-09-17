@@ -13,6 +13,7 @@ _ALL_ENV_VARS = (
     "REGISTRY_VOLTAGE_ENVIRONMENT_ID",
     "REGISTRY_VOLTAGE_WALLET_ID",
     "REGISTRY_VOLTAGE_LINE_OF_CREDIT_ID",
+    "REGISTRY_VOLTAGE_NETWORK",
 )
 
 
@@ -28,6 +29,7 @@ def _set_all(monkeypatch):
     monkeypatch.setenv("REGISTRY_VOLTAGE_ENVIRONMENT_ID", "production")
     monkeypatch.setenv("REGISTRY_VOLTAGE_WALLET_ID", "wallet-abc")
     monkeypatch.setenv("REGISTRY_VOLTAGE_LINE_OF_CREDIT_ID", "loc-xyz")
+    monkeypatch.setenv("REGISTRY_VOLTAGE_NETWORK", "mutinynet")
 
 
 def test_config_from_env_is_none_when_unset(monkeypatch):
@@ -53,6 +55,7 @@ def test_config_from_env_uses_the_documented_default_base_url(monkeypatch):
     assert config.environment_id == "production"
     assert config.wallet_id == "wallet-abc"
     assert config.line_of_credit_id == "loc-xyz"
+    assert config.network == "mutinynet"
 
 
 def test_config_from_env_allows_overriding_the_base_url(monkeypatch):
