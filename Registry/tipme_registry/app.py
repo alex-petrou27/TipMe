@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import accounts, lightning, oauth, signing
+from . import accounts, lightning, oauth, rates as rates_module, signing
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
 from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, Storage
 
@@ -307,6 +307,16 @@ class MeResponse(BaseModel):
     balances: list[BalanceEntry]
 
 
+class RatesResponse(BaseModel):
+    currency: str
+    # Fiat major units (e.g. pounds, not pence) per one whole coin. The
+    # client scales this down to a per-sat / per-cent price itself, the same
+    # way it already did with rates from the Breez SDK.
+    bitcoin_price: float
+    usdt_price: float
+    as_of: str
+
+
 # --------------------------------------------------------------------------
 # App
 # --------------------------------------------------------------------------
@@ -417,6 +427,20 @@ def me(
             BalanceEntry(asset=asset, balance_minor=balances.get(asset, 0))
             for asset in ASSETS
         ],
+    )
+
+
+@app.get("/v1/rates", response_model=RatesResponse)
+async def get_rates(currency: str = "GBP") -> RatesResponse:
+    try:
+        bitcoin_price, usdt_price = await rates_module.get(currency)
+    except rates_module.RateUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return RatesResponse(
+        currency=currency.upper(),
+        bitcoin_price=bitcoin_price,
+        usdt_price=usdt_price,
+        as_of=signing.iso8601(datetime.now(timezone.utc)),
     )
 
 
