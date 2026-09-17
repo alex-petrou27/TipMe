@@ -151,10 +151,14 @@ class VoltagePaymentsRail:
         self._config = config
 
     def _client(self, timeout: float) -> httpx.AsyncClient:
+        # Confirmed against a real Voltage account: it's `X-Api-Key`, not a
+        # standard `Authorization: Bearer` header -- the latter authenticates
+        # as nothing and comes back "Invalid token" regardless of how valid
+        # the key actually is.
         return httpx.AsyncClient(
             base_url=self._config.api_base_url,
             timeout=timeout,
-            headers={"Authorization": f"Bearer {self._config.api_key}"},
+            headers={"X-Api-Key": self._config.api_key},
         )
 
     def _payments_path(self, suffix: str = "") -> str:
