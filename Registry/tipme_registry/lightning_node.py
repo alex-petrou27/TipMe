@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Protocol
@@ -74,6 +75,36 @@ import httpx
 class LightningNodeError(Exception):
     """Voltage was reached but the call did not succeed -- a payment that
     doesn't exist, insufficient credit, a malformed request."""
+
+
+# A BOLT11 invoice is `ln<network><amount><multiplier>1<bech32 data>` --
+# e.g. `lntbs10u1p42c...` is a Mutinynet ("tbs") invoice for 10 micro-BTC
+# (1000 sats). The bech32 data-part alphabet excludes the digit `1`, so the
+# *last* `1` in the string is always the separator between the
+# human-readable part and the data, letting the amount be read off without a
+# full bech32 decode. See BOLT11: multiplier values in millisatoshi.
+_BOLT11_HRP_RE = re.compile(r"^ln[a-z]*?(?P<amount>\d+)(?P<multiplier>[munp])?$")
+_BOLT11_MSAT_PER_UNIT = {None: 100_000_000_000, "m": 100_000_000, "u": 100_000, "n": 100}
+
+
+def _bolt11_amount_sats(payment_request: str) -> int:
+    invoice = payment_request.strip().lower()
+    separator_index = invoice.rfind("1")
+    if not invoice.startswith("ln") or separator_index <= 0:
+        raise LightningNodeError("not a valid Lightning invoice")
+    match = _BOLT11_HRP_RE.match(invoice[:separator_index])
+    if not match:
+        raise LightningNodeError(
+            "invoice has no amount encoded -- zero-amount invoices aren't supported yet"
+        )
+    amount, multiplier = int(match.group("amount")), match.group("multiplier")
+    if multiplier == "p":
+        if amount % 10 != 0:
+            raise LightningNodeError("invoice amount is not a whole number of millisatoshis")
+        amount_msat = amount // 10
+    else:
+        amount_msat = amount * _BOLT11_MSAT_PER_UNIT[multiplier]
+    return amount_msat // 1000
 
 
 @dataclass(frozen=True)
@@ -275,51 +306,18 @@ class VoltagePaymentsRail:
                 raise LightningNodeError(f"could not check invoice: {error}") from error
 
     async def decode_invoice(self, payment_request: str) -> DecodedInvoice:
-        """Reads what an external BOLT11 invoice is actually for, before
-        committing to paying it. Guessed to be a quote resource -- Voltage's
-        docs list a separate "Quotes" section this hasn't been read yet --
-        rather than the node-backed `decodepayreq` primitive, which a
-        credit-backed wallet has no node to run itself.
-
-        Mirrors payment creation's shape (client-generated `id`, async 202
-        with a follow-up read, fields nested under `data`) since that's the
-        pattern every other Voltage resource here has turned out to follow."""
-        quote_id = str(uuid.uuid4())
-        quotes_path = (
-            f"/organizations/{self._config.organization_id}"
-            f"/environments/{self._config.environment_id}/quotes"
-        )
-        async with self._client(10) as client:
-            try:
-                response = await client.post(
-                    quotes_path,
-                    json={
-                        "id": quote_id,
-                        "wallet_id": self._config.wallet_id,
-                        "line_of_credit_id": self._config.line_of_credit_id,
-                        "network": self._config.network,
-                        "payment_request": payment_request,
-                    },
-                )
-                self._check(response)
-                body = response.json() if response.content else {}
-                for _attempt in range(10):
-                    if body.get("data") or body.get("amount_msats"):
-                        break
-                    await asyncio.sleep(0.3)
-                    follow_up = await client.get(f"{quotes_path}/{quote_id}")
-                    self._check(follow_up)
-                    body = follow_up.json()
-                data = body.get("data") or body
-                return DecodedInvoice(
-                    amount_sats=int(data.get("amount_msats", 0)) // 1000,
-                    destination=data.get("destination", ""),
-                    description=data.get("memo", data.get("description", "")),
-                )
-            except LightningNodeError:
-                raise
-            except (httpx.HTTPError, KeyError, ValueError) as error:
-                raise LightningNodeError(f"could not decode invoice: {error}") from error
+        """Reads the amount off a BOLT11 invoice before committing to paying
+        it. Decoded locally, from the invoice string itself, rather than
+        through Voltage: a BOLT11 invoice encodes its own amount in its
+        human-readable prefix (see `_bolt11_amount_sats`), and going through
+        Voltage's undocumented "Quotes" resource turned out to need a new
+        guessed-at required field almost every real request (an `id`, then a
+        `line_of_credit_id`, then `network`, then `amount` -- each only
+        discoverable by paying to send it). `destination`/`description`
+        aren't decoded this way and are left blank; nothing here reads them,
+        only `amount_sats` (see `app.withdraw_lightning`)."""
+        amount_sats = _bolt11_amount_sats(payment_request)
+        return DecodedInvoice(amount_sats=amount_sats, destination="", description="")
 
     async def pay_invoice(self, payment_request: str) -> PaymentResult:
         # Not yet exercised against a real send -- this mirrors the shape
