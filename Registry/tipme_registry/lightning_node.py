@@ -203,19 +203,20 @@ class VoltagePaymentsRail:
                     },
                 )
                 self._check(response)
-                # Confirmed against a real account: the create response can
-                # come back with an empty body -- the payment (and its
+                # Confirmed against a real account: the create response
+                # comes back 202 with an empty body -- the payment (and its
                 # BOLT11 invoice) is generated asynchronously. Reading it
-                # back by the id we already chose is what actually gets the
-                # invoice, rather than trusting the create response to carry
-                # it.
+                # back by the id we already chose is what actually gets it.
+                # The payment resource nests kind-specific fields (like the
+                # invoice string) under `data`; everything else (id, status,
+                # requested_amount) sits at the top level.
                 body = response.json() if response.content else {}
-                if "payment_request" not in body:
+                if "data" not in body or "payment_request" not in body.get("data", {}):
                     follow_up = await client.get(self._payments_path(f"/{payment_id}"))
                     self._check(follow_up)
                     body = follow_up.json()
                 return Invoice(
-                    payment_request=body["payment_request"],
+                    payment_request=body["data"]["payment_request"],
                     payment_hash=body.get("id", payment_id),
                     amount_sats=amount_sats,
                 )
@@ -230,10 +231,17 @@ class VoltagePaymentsRail:
                 response = await client.get(self._payments_path(f"/{payment_hash}"))
                 self._check(response)
                 body = response.json()
-                settled = body.get("status") in ("completed", "succeeded", "settled")
+                # Confirmed live: a fresh receive payment's status is
+                # "receiving", not yet a settled/paid state. The exact
+                # terminal value ("received"? "completed"?) hasn't been
+                # observed yet -- this covers the plausible spellings, and
+                # whichever one Voltage actually uses will show up in the
+                # /check response and can be confirmed then.
+                settled = body.get("status") in ("completed", "succeeded", "settled", "received")
+                amount_msats = body.get("requested_amount", {}).get("amount", 0)
                 return InvoiceStatus(
                     settled=settled,
-                    amount_sats=int(body.get("amount_msats", 0)) // 1000,
+                    amount_sats=int(amount_msats) // 1000,
                 )
             except LightningNodeError:
                 raise
@@ -266,12 +274,18 @@ class VoltagePaymentsRail:
                 raise LightningNodeError(f"could not decode invoice: {error}") from error
 
     async def pay_invoice(self, payment_request: str) -> PaymentResult:
+        # Not yet exercised against a real send -- this mirrors the shape
+        # confirmed for a receive payment (a client-chosen id, a 202 with an
+        # empty body, kind-specific fields nested under `data`), on the
+        # assumption the same envelope applies to both directions. The
+        # first real withdrawal will confirm or correct this.
+        payment_id = str(uuid.uuid4())
         async with self._client(30) as client:
             try:
                 response = await client.post(
                     self._payments_path(),
                     json={
-                        "id": str(uuid.uuid4()),
+                        "id": payment_id,
                         "wallet_id": self._config.wallet_id,
                         "direction": "send",
                         "currency": "btc",
@@ -280,12 +294,17 @@ class VoltagePaymentsRail:
                     },
                 )
                 self._check(response)
-                body = response.json()
+                body = response.json() if response.content else {}
+                if not body.get("status"):
+                    follow_up = await client.get(self._payments_path(f"/{payment_id}"))
+                    self._check(follow_up)
+                    body = follow_up.json()
                 if body.get("status") == "failed":
-                    raise LightningNodeError(body.get("error", "payment failed"))
+                    error_detail = body.get("error") or body.get("data", {}).get("error") or "payment failed"
+                    raise LightningNodeError(error_detail)
                 return PaymentResult(
-                    payment_hash=body.get("id", ""),
-                    fee_sats=int(body.get("fee_msats", 0)) // 1000,
+                    payment_hash=body.get("id", payment_id),
+                    fee_sats=int(body.get("data", {}).get("fee_msats", 0)) // 1000,
                 )
             except LightningNodeError:
                 raise
