@@ -211,12 +211,18 @@ class VoltagePaymentsRail:
                 # invoice string) under `data`; everything else (id, status,
                 # requested_amount) sits at the top level.
                 body = response.json() if response.content else {}
-                if "data" not in body or "payment_request" not in body.get("data", {}):
+                # `.get("data", {})` alone only helps when the key is
+                # missing -- Voltage's initial (still-resolving) response
+                # can carry an explicit `"data": null`, which `.get` would
+                # happily return as `None` rather than the fallback,
+                # crashing the `in` check right after it. `or {}` covers
+                # both "missing" and "present but null".
+                if not (body.get("data") or {}).get("payment_request"):
                     follow_up = await client.get(self._payments_path(f"/{payment_id}"))
                     self._check(follow_up)
                     body = follow_up.json()
                 return Invoice(
-                    payment_request=body["data"]["payment_request"],
+                    payment_request=(body.get("data") or {})["payment_request"],
                     payment_hash=body.get("id", payment_id),
                     amount_sats=amount_sats,
                 )
@@ -238,7 +244,7 @@ class VoltagePaymentsRail:
                 # whichever one Voltage actually uses will show up in the
                 # /check response and can be confirmed then.
                 settled = body.get("status") in ("completed", "succeeded", "settled", "received")
-                amount_msats = body.get("requested_amount", {}).get("amount", 0)
+                amount_msats = (body.get("requested_amount") or {}).get("amount", 0)
                 return InvoiceStatus(
                     settled=settled,
                     amount_sats=int(amount_msats) // 1000,
@@ -300,11 +306,11 @@ class VoltagePaymentsRail:
                     self._check(follow_up)
                     body = follow_up.json()
                 if body.get("status") == "failed":
-                    error_detail = body.get("error") or body.get("data", {}).get("error") or "payment failed"
+                    error_detail = body.get("error") or (body.get("data") or {}).get("error") or "payment failed"
                     raise LightningNodeError(error_detail)
                 return PaymentResult(
                     payment_hash=body.get("id", payment_id),
-                    fee_sats=int(body.get("data", {}).get("fee_msats", 0)) // 1000,
+                    fee_sats=int((body.get("data") or {}).get("fee_msats", 0)) // 1000,
                 )
             except LightningNodeError:
                 raise
