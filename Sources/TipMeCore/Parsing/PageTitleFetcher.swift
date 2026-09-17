@@ -82,11 +82,16 @@ public actor URLSessionPageMetadataFetcher: PageMetadataFetching {
 
     public func metadata(for url: URL) async throws -> FetchedPageMetadata {
         var request = URLRequest(url: url)
-        // A generic UA that identifies as a preview fetcher rather than a
-        // browser. Sites serve this metadata in server-rendered HTML
-        // specifically so a client that never runs JavaScript can still
-        // build a preview from it -- that is exactly what this is.
-        request.setValue("Mozilla/5.0 (compatible; TipMe/1.0; link-preview)",
+        // Identify as Meta's own preview crawler rather than a generic bot.
+        // A post fetch under a made-up UA came back with a title but no
+        // canonical link; a Reel fetch under the same UA came back with
+        // neither -- consistent with Instagram routing unrecognised
+        // requesters to a stripped-down or login-walled page instead of the
+        // full server-rendered one. `facebookexternalhit` is the identity
+        // Meta's own products use to fetch link-preview metadata for
+        // Messenger/WhatsApp/Facebook, so Instagram (Meta-owned) has every
+        // reason to keep serving it the real page.
+        request.setValue("facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
                          forHTTPHeaderField: "User-Agent")
         request.setValue("text/html", forHTTPHeaderField: "Accept")
 

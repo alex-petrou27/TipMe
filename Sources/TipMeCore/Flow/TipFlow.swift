@@ -119,7 +119,9 @@ public actor TipFlow {
         var fetchedTitle: String?
         var fetchedCanonicalURL: URL?
         var fetchError: String?
+        var fetchWasAttempted = false
         if link.handle == nil {
+            fetchWasAttempted = true
             do {
                 let metadata = try await pageMetadataFetcher.metadata(for: link.canonicalURL)
                 fetchedTitle = metadata.title
@@ -154,7 +156,8 @@ public actor TipFlow {
                        detail: "link carried no handle (kind: \(link.kind.rawValue)) and no title named one")
             return .needsManualEntry(reason: Self.noHandleExplanation(
                 for: link, titles: titles, text: sharedText, urls: attachedURLs,
-                fetchedTitle: fetchedTitle, fetchedCanonicalURL: fetchedCanonicalURL, fetchError: fetchError))
+                fetchedTitle: fetchedTitle, fetchedCanonicalURL: fetchedCanonicalURL,
+                fetchWasAttempted: fetchWasAttempted, fetchError: fetchError))
         }
 
         if handleWasInTheOriginalLink, link.handleSource == .url {
@@ -182,7 +185,7 @@ public actor TipFlow {
     private static func noHandleExplanation(for link: SharedLink, titles: [String],
                                             text: [String], urls: [URL],
                                             fetchedTitle: String?, fetchedCanonicalURL: URL?,
-                                            fetchError: String?) -> String {
+                                            fetchWasAttempted: Bool, fetchError: String?) -> String {
         let base: String
         switch link.platform {
         case .instagram:
@@ -201,8 +204,8 @@ public actor TipFlow {
         }
         let urlStrings = urls.map(\.absoluteString)
         let fetchLine: String = {
+            guard fetchWasAttempted else { return "fetched page: (not attempted)" }
             if let fetchError { return "fetched page: error (\(fetchError))" }
-            if fetchedTitle == nil && fetchedCanonicalURL == nil { return "fetched page: (not attempted)" }
             let titlePart = fetchedTitle.map { "title: \"\($0)\"" } ?? "title: (none)"
             let urlPart = fetchedCanonicalURL.map { "canonical url: \($0.absoluteString)" } ?? "canonical url: (none)"
             return "fetched page: \(titlePart) / \(urlPart)"
