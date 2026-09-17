@@ -24,10 +24,17 @@ public enum HandleSource: String, Equatable, Sendable {
 /// for a long time the assumption was that those shares were unidentifiable
 /// without Meta App Review. That was wrong: **the handle is in the payload, it
 /// is just not in the URL.** When Instagram shares a Reel, the system share
-/// sheet's header reads "Reel from @username", and that string reaches the
+/// sheet's header reads "Reel from username", and that string reaches the
 /// extension as the item's title.
 ///
 /// So a Reel share is identifiable after all, with no API access at all.
+///
+/// Confirmed directly against a real device: Instagram's own generated header
+/// has **no `@`** before the username at all — "Reel from yahoofinance", not
+/// "Reel from @yahoofinance". An earlier version of this parser assumed the
+/// `@` would be there, which meant it could never match a real Instagram
+/// share and every Reel fell through to manual entry. See
+/// `generatedHeaderAttribution` below for the fix and why it stays safe.
 ///
 /// ## Why it is conservative
 ///
@@ -36,6 +43,8 @@ public enum HandleSource: String, Equatable, Sendable {
 /// unrecoverable. The rules are therefore ordered by confidence and decline
 /// rather than guess:
 ///
+/// 0. Instagram's own generated header, anchored to the *entire* title —
+///    "Reel from username" and nothing else.
 /// 1. An explicit attribution — "Reel **from** @user", "Post **by** @user".
 /// 2. "@user **on** Instagram".
 /// 3. A single unambiguous mention. If the title mentions more than one
@@ -48,6 +57,20 @@ public struct ShareTitleParser: Sendable {
     /// "support@instagram.com" yields a creator called `instagram.com`.
     private static let mentionPrefix = "(?<![A-Za-z0-9._])@"
     private static let username = "([A-Za-z0-9._]+)"
+
+    /// Instagram's own generated share-sheet header for a Reel or post —
+    /// "Reel from yahoofinance" — not user-authored prose, and it has no `@`
+    /// before the username. Matching a username with no `@` prefix would
+    /// normally be far too loose ("Highlights from today" would "recover" a
+    /// creator called `today`), so this is anchored to the *entire* trimmed
+    /// title: exactly one leading word (the content type — "Reel", "Post",
+    /// "IGTV", whatever Instagram calls it), then "from"/"by", then the
+    /// username, then nothing else. A real caption essentially never has
+    /// that exact three-token shape, so this is as safe as the `@`-requiring
+    /// rules below despite not requiring the `@`.
+    private static let generatedHeaderAttribution = try! NSRegularExpression(
+        pattern: "^\\S+\\s+(?:from|by)\\s+" + username + "[\\s!.,;:)/]*$",
+        options: [.caseInsensitive])
 
     private static let attribution = try! NSRegularExpression(
         pattern: "\\b(?:from|by)\\s+" + mentionPrefix + username,
@@ -65,6 +88,13 @@ public struct ShareTitleParser: Sendable {
     public func handle(in title: String, platform: Platform) -> CreatorHandle? {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+
+        // 0. Instagram's own generated header — "Reel from yahoofinance",
+        //    no @ at all. This is what a real Reel share actually produces,
+        //    so it goes first.
+        if let handle = firstMatch(Self.generatedHeaderAttribution, in: trimmed, platform: platform) {
+            return handle
+        }
 
         // 1. Explicit attribution wins even when other accounts are mentioned:
         //    "Reel from @natgeo ft. @nasa" is about @natgeo.

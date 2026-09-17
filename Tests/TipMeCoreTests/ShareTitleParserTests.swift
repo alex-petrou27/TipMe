@@ -2,9 +2,9 @@ import XCTest
 @testable import TipMeCore
 
 /// Instagram Reel and post URLs are shortcode-keyed and name nobody, but the
-/// share sheet header reads "Reel from @username" and that string reaches the
-/// extension as the item's title. These tests cover the only place the creator
-/// appears for a Reel share.
+/// share sheet header reads "Reel from username" — confirmed on a real device,
+/// no `@` — and that string reaches the extension as the item's title. These
+/// tests cover the only place the creator appears for a Reel share.
 final class ShareTitleParserTests: XCTestCase {
 
     private let parser = ShareTitleParser()
@@ -21,6 +21,34 @@ final class ShareTitleParserTests: XCTestCase {
         XCTAssertEqual(handle("Post from @natgeo"), "natgeo")
         XCTAssertEqual(handle("Photo from @nat_geo.official"), "nat_geo.official")
         XCTAssertEqual(handle("Video from @someone"), "someone")
+    }
+
+    /// The actual, confirmed-on-device shape: Instagram's own generated
+    /// header has no `@` at all. This was broken for a while — every real
+    /// Reel share fell through to "we couldn't tell whose Reel that is"
+    /// because every rule required an `@` that Instagram never sends.
+    func testRealInstagramGeneratedHeaderHasNoAtSign() {
+        XCTAssertEqual(handle("Reel from yahoofinance"), "yahoofinance")
+        XCTAssertEqual(handle("Post from natgeo"), "natgeo")
+        XCTAssertEqual(handle("Reel from charli.damelio"), "charli.damelio")
+        XCTAssertEqual(handle("IGTV from someone"), "someone")
+    }
+
+    func testGeneratedHeaderWithTrailingPunctuation() {
+        XCTAssertEqual(handle("Reel from yahoofinance."), "yahoofinance")
+        XCTAssertEqual(handle("Reel from yahoofinance!"), "yahoofinance")
+        XCTAssertEqual(handle("Reel from yahoofinance "), "yahoofinance")
+    }
+
+    /// The no-@ rule is anchored to the whole title specifically so it
+    /// cannot misfire on ordinary prose that happens to contain "from" —
+    /// this is the false-positive risk that made requiring @ seem necessary
+    /// in the first place.
+    func testGeneratedHeaderRuleDoesNotMisfireOnOrdinaryProse() {
+        XCTAssertNil(handle("Highlights from today's game"))
+        XCTAssertNil(handle("Clips from my trip to Rome"))
+        XCTAssertNil(handle("A message from the team"))
+        XCTAssertNil(handle("Reel from my favourite creator this week"))
     }
 
     func testByAttribution() {
