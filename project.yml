@@ -63,8 +63,12 @@ targets:
         # Newer Xcode defaults to synthesizing Info.plist from build settings
         # and silently ignoring `info.path` above unless told not to — which
         # drops NSExtension, the app group keys, everything. Force it to use
-        # the real file.
+        # the real file. INFOPLIST_FILE is set explicitly too, redundant with
+        # `info.path` above — belt and braces against whatever XcodeGen
+        # version is translating (or failing to translate) that key into a
+        # build setting on a given toolchain.
         GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/TipMe/Info.plist
 
   TipMeShare:
     type: app-extension
@@ -95,8 +99,10 @@ targets:
         # See the same setting on the TipMe target above — without this, a
         # newer Xcode synthesizes its own Info.plist and drops NSExtension,
         # which is exactly the "does not define an NSExtension dictionary"
-        # install failure this fixes.
+        # install failure this fixes. INFOPLIST_FILE set explicitly too, for
+        # the same belt-and-braces reason as the TipMe target.
         GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/TipMeShare/Info.plist
 
 schemes:
   TipMe:
