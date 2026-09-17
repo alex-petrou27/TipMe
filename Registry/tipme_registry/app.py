@@ -24,11 +24,16 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import accounts, lightning, oauth, rates as rates_module, signing
+from . import accounts, lightning, lightning_node, oauth, rates as rates_module, signing
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
-from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, Storage
+from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, PendingDeposit, Storage
 
 ASSETS = ("bitcoin", "usdt")
+
+# Below this, a Lightning routing fee can easily exceed the amount itself.
+# Not a security control -- just guards against a deposit/withdrawal nobody
+# would actually want.
+MIN_LIGHTNING_SATS = 100
 
 # How long a session token stays valid. The app is expected to hold onto it
 # and only ask the user to log in again after this, so it needs to be long
@@ -100,6 +105,12 @@ _storage: Storage | None = None
 _registration_attempts: dict[str, deque[float]] = defaultdict(deque)
 _signup_attempts: dict[str, deque[float]] = defaultdict(deque)
 _login_attempts: dict[str, deque[float]] = defaultdict(deque)
+
+# Guards against paying the same withdrawal invoice twice -- a retried
+# client request must not become two real Lightning payments. Same
+# single-process caveat as the rate-limit windows above: a multi-process
+# deployment needs this moved to shared storage.
+_paid_lightning_invoices: set[str] = set()
 
 
 @dataclass
@@ -232,6 +243,20 @@ def get_current_user(
     return user_id
 
 
+def get_lightning_rail() -> lightning_node.LightningRail:
+    """Resolves fresh on every request, same convention as
+    `oauth.config_for` -- so a test can monkeypatch `lightning_node.rail_from_env`
+    without any app-level caching to reset, and so credentials added to the
+    environment after the process started are picked up without a restart."""
+    rail = lightning_node.rail_from_env()
+    if rail is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Lightning deposits/withdrawals are not configured on this registry yet",
+        )
+    return rail
+
+
 # --------------------------------------------------------------------------
 # Schemas
 # --------------------------------------------------------------------------
@@ -304,6 +329,36 @@ class BalanceEntry(BaseModel):
 class MeResponse(BaseModel):
     user_id: str
     email: str
+    balances: list[BalanceEntry]
+
+
+class DepositLightningRequest(BaseModel):
+    amount_sats: int = Field(ge=MIN_LIGHTNING_SATS)
+
+
+class DepositLightningResponse(BaseModel):
+    payment_request: str
+    payment_hash: str
+    amount_sats: int
+
+
+class DepositStatusResponse(BaseModel):
+    status: str  # "pending" | "completed"
+    balances: list[BalanceEntry]
+
+
+class WithdrawLightningRequest(BaseModel):
+    # A fixed-amount BOLT11 invoice only, for this first pass -- a
+    # zero-amount invoice would need the client to state an amount
+    # separately, which is a real case but not one this needs to handle to
+    # get real testing started today.
+    payment_request: str
+
+
+class WithdrawLightningResponse(BaseModel):
+    payment_hash: str
+    amount_sats: int
+    fee_sats: int
     balances: list[BalanceEntry]
 
 
@@ -419,14 +474,129 @@ def me(
         # The session outlived the account it points at -- possible only if
         # an account is deleted without its sessions being cleaned up first.
         raise HTTPException(status_code=401, detail="invalid or expired session")
-    balances = storage.get_balances(user_id)
     return MeResponse(
         user_id=account.id,
         email=account.email,
-        balances=[
-            BalanceEntry(asset=asset, balance_minor=balances.get(asset, 0))
-            for asset in ASSETS
-        ],
+        balances=_balance_entries(user_id, storage),
+    )
+
+
+def _balance_entries(user_id: str, storage: Storage) -> list[BalanceEntry]:
+    balances = storage.get_balances(user_id)
+    return [BalanceEntry(asset=asset, balance_minor=balances.get(asset, 0)) for asset in ASSETS]
+
+
+@app.post("/v1/deposit/lightning", response_model=DepositLightningResponse)
+async def deposit_lightning(
+    request: DepositLightningRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+    rail: lightning_node.LightningRail = Depends(get_lightning_rail),
+) -> DepositLightningResponse:
+    """Issues a real Lightning invoice for the signed-in user to deposit
+    sats into their TipMe balance.
+
+    Nothing is credited yet — an invoice existing proves nothing has been
+    paid. `/v1/deposit/lightning/{payment_hash}/check` is what credits the
+    ledger, once the node reports the invoice settled.
+    """
+    try:
+        invoice = await rail.create_invoice(request.amount_sats, memo=f"TipMe deposit {user_id}")
+    except lightning_node.LightningNodeError as error:
+        raise HTTPException(status_code=502, detail=f"could not create invoice: {error}") from error
+
+    storage.create_pending_deposit(
+        user_id=user_id, asset="bitcoin", method="lightning_invoice",
+        external_reference=invoice.payment_hash, amount_minor=invoice.amount_sats,
+    )
+    return DepositLightningResponse(
+        payment_request=invoice.payment_request,
+        payment_hash=invoice.payment_hash,
+        amount_sats=invoice.amount_sats,
+    )
+
+
+@app.post("/v1/deposit/lightning/{payment_hash}/check", response_model=DepositStatusResponse)
+async def check_lightning_deposit(
+    payment_hash: str,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+    rail: lightning_node.LightningRail = Depends(get_lightning_rail),
+) -> DepositStatusResponse:
+    """Polled by the app after it shows the invoice's QR code.
+
+    Credits the ledger the first time the node reports the invoice settled;
+    safe to call as many times as the client likes for the same payment —
+    see `Storage.complete_deposit_if_pending`, which is what actually
+    enforces the ledger is only ever credited once.
+    """
+    pending = storage.get_pending_deposit("lightning_invoice", payment_hash)
+    if pending is None or pending.user_id != user_id:
+        raise HTTPException(status_code=404, detail="no such deposit")
+
+    if pending.status == "pending":
+        try:
+            status = await rail.invoice_status(payment_hash)
+        except lightning_node.LightningNodeError as error:
+            raise HTTPException(status_code=502, detail=f"could not check invoice: {error}") from error
+        if status.settled:
+            storage.complete_deposit_if_pending(
+                "lightning_invoice", payment_hash, reason="lightning_deposit",
+            )
+            pending = storage.get_pending_deposit("lightning_invoice", payment_hash)
+
+    return DepositStatusResponse(status=pending.status, balances=_balance_entries(user_id, storage))
+
+
+@app.post("/v1/withdraw/lightning", response_model=WithdrawLightningResponse)
+async def withdraw_lightning(
+    request: WithdrawLightningRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+    rail: lightning_node.LightningRail = Depends(get_lightning_rail),
+) -> WithdrawLightningResponse:
+    """Pays a real Lightning invoice out of the signed-in user's balance.
+
+    The balance is debited *before* the payment is attempted, then refunded
+    if the payment fails — never the other way around. Attempting the
+    payment first and crediting afterwards would let two concurrent
+    withdrawal requests both pass a balance check against the same starting
+    balance and overdraw the account; debiting first makes the second one
+    fail with `InsufficientBalance` immediately, the same guarantee
+    `adjust_balance` already gives tip-sending.
+    """
+    if request.payment_request in _paid_lightning_invoices:
+        raise HTTPException(status_code=409, detail="this invoice has already been paid")
+
+    try:
+        decoded = await rail.decode_invoice(request.payment_request)
+    except lightning_node.LightningNodeError as error:
+        raise HTTPException(status_code=400, detail=f"could not read that invoice: {error}") from error
+
+    if decoded.amount_sats < MIN_LIGHTNING_SATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invoice must be for at least {MIN_LIGHTNING_SATS} sats",
+        )
+
+    try:
+        storage.adjust_balance(user_id, "bitcoin", -decoded.amount_sats, reason="lightning_withdrawal")
+    except InsufficientBalance as error:
+        raise HTTPException(status_code=402, detail=str(error)) from error
+
+    try:
+        result = await rail.pay_invoice(request.payment_request)
+    except lightning_node.LightningNodeError as error:
+        storage.adjust_balance(user_id, "bitcoin", decoded.amount_sats,
+                               reason="lightning_withdrawal_failed_refund")
+        raise HTTPException(status_code=502, detail=f"payment failed: {error}") from error
+
+    _paid_lightning_invoices.add(request.payment_request)
+    return WithdrawLightningResponse(
+        payment_hash=result.payment_hash,
+        amount_sats=decoded.amount_sats,
+        fee_sats=result.fee_sats,
+        balances=_balance_entries(user_id, storage),
     )
 
 

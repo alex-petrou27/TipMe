@@ -2,9 +2,9 @@ import Foundation
 
 /// What a tip can actually be denominated in on the wire.
 ///
-/// Both are supported by Breez SDK Nodeless: Bitcoin settles over Lightning,
-/// USDT settles as Liquid USDT. A tip may be *sent* in one and *received* in
-/// the other — see `SettlementRoute`.
+/// Both settle through the custodial ledger: Bitcoin over Lightning, USDT
+/// over Tron (TRC20). A tip may be *sent* in one and *received* in the
+/// other — see `SettlementRoute`.
 public enum Asset: String, Codable, Sendable, CaseIterable, CodingKeyRepresentable {
     case bitcoin
     case usdt

@@ -81,6 +81,26 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     counterparty TEXT,
     created_at   TEXT NOT NULL
 );
+
+-- A deposit's lifecycle from "we issued an invoice" to "the ledger was
+-- credited". Kept separate from ledger_entries rather than crediting on
+-- invoice creation: the invoice existing proves nothing was paid yet, and an
+-- external wallet may never pay it at all. `external_reference` (a payment
+-- hash today; a txid for on-chain, once that exists) is what a status check
+-- looks up, and its uniqueness with `method` is what makes crediting
+-- idempotent -- see `complete_deposit_if_pending`.
+CREATE TABLE IF NOT EXISTS pending_deposits (
+    id                  TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL,
+    asset               TEXT NOT NULL,
+    method              TEXT NOT NULL,
+    external_reference  TEXT NOT NULL,
+    amount_minor        INTEGER NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'pending',
+    created_at          TEXT NOT NULL,
+    completed_at        TEXT,
+    UNIQUE (method, external_reference)
+);
 """
 
 
@@ -97,6 +117,19 @@ class Account:
     id: str
     email: str
     created_at: datetime
+
+
+@dataclass
+class PendingDeposit:
+    id: str
+    user_id: str
+    asset: str
+    method: str
+    external_reference: str
+    amount_minor: int
+    status: str
+    created_at: datetime
+    completed_at: datetime | None
 
 
 @dataclass
@@ -359,35 +392,120 @@ class Storage:
         shown, let alone send, money that was never actually credited to
         them.
         """
+        with self.connect() as conn:
+            return self._adjust_balance(conn, user_id, asset, delta_minor, reason, counterparty)
+
+    @staticmethod
+    def _adjust_balance(
+        conn: sqlite3.Connection, user_id: str, asset: str, delta_minor: int,
+        reason: str, counterparty: str | None,
+    ) -> int:
+        """Same as `adjust_balance`, against a connection the caller already
+        holds open -- so a deposit's completion and its credit happen in one
+        transaction. Never call this with a connection you didn't open
+        yourself; it does not commit."""
+        now = datetime.now(timezone.utc)
+        row = conn.execute(
+            "SELECT balance_minor FROM ledger_balances WHERE user_id = ? AND asset = ?",
+            (user_id, asset),
+        ).fetchone()
+        current = row["balance_minor"] if row else 0
+        new_balance = current + delta_minor
+        if new_balance < 0:
+            raise InsufficientBalance(
+                f"balance {current} cannot cover a change of {delta_minor}"
+            )
+        conn.execute(
+            """
+            INSERT INTO ledger_balances (user_id, asset, balance_minor, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, asset) DO UPDATE SET
+                balance_minor = excluded.balance_minor,
+                updated_at    = excluded.updated_at
+            """,
+            (user_id, asset, new_balance, now.isoformat()),
+        )
+        conn.execute(
+            """
+            INSERT INTO ledger_entries (id, user_id, asset, delta_minor, reason,
+                                        counterparty, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (secrets.token_urlsafe(16), user_id, asset, delta_minor, reason,
+             counterparty, now.isoformat()),
+        )
+        return new_balance
+
+    # ----------------------------------------------------------------
+    # Deposits
+    # ----------------------------------------------------------------
+
+    def create_pending_deposit(
+        self, user_id: str, asset: str, method: str, external_reference: str, amount_minor: int,
+    ) -> PendingDeposit:
+        deposit_id = secrets.token_urlsafe(16)
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pending_deposits (id, user_id, asset, method, external_reference,
+                                              amount_minor, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (deposit_id, user_id, asset, method, external_reference, amount_minor, now.isoformat()),
+            )
+        return PendingDeposit(
+            id=deposit_id, user_id=user_id, asset=asset, method=method,
+            external_reference=external_reference, amount_minor=amount_minor,
+            status="pending", created_at=now, completed_at=None,
+        )
+
+    def get_pending_deposit(self, method: str, external_reference: str) -> PendingDeposit | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pending_deposits WHERE method = ? AND external_reference = ?",
+                (method, external_reference),
+            ).fetchone()
+        return self._to_pending_deposit(row) if row else None
+
+    def complete_deposit_if_pending(
+        self, method: str, external_reference: str, reason: str,
+    ) -> PendingDeposit | None:
+        """Marks a deposit completed and credits the ledger in one
+        transaction, or returns `None` without doing either if the deposit
+        does not exist or was already completed.
+
+        This is what makes crediting idempotent: a status check the app
+        polls repeatedly, or a retried webhook, can call this as many times
+        as it likes for the same payment and the ledger is only ever
+        credited once.
+        """
         now = datetime.now(timezone.utc)
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT balance_minor FROM ledger_balances WHERE user_id = ? AND asset = ?",
-                (user_id, asset),
+                "SELECT * FROM pending_deposits WHERE method = ? AND external_reference = ?",
+                (method, external_reference),
             ).fetchone()
-            current = row["balance_minor"] if row else 0
-            new_balance = current + delta_minor
-            if new_balance < 0:
-                raise InsufficientBalance(
-                    f"balance {current} cannot cover a change of {delta_minor}"
-                )
+            if row is None or row["status"] != "pending":
+                return None
             conn.execute(
-                """
-                INSERT INTO ledger_balances (user_id, asset, balance_minor, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(user_id, asset) DO UPDATE SET
-                    balance_minor = excluded.balance_minor,
-                    updated_at    = excluded.updated_at
-                """,
-                (user_id, asset, new_balance, now.isoformat()),
+                "UPDATE pending_deposits SET status = 'completed', completed_at = ? WHERE id = ?",
+                (now.isoformat(), row["id"]),
             )
-            conn.execute(
-                """
-                INSERT INTO ledger_entries (id, user_id, asset, delta_minor, reason,
-                                            counterparty, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (secrets.token_urlsafe(16), user_id, asset, delta_minor, reason,
-                 counterparty, now.isoformat()),
-            )
-        return new_balance
+            self._adjust_balance(conn, row["user_id"], row["asset"], row["amount_minor"],
+                                 reason, counterparty=None)
+        return PendingDeposit(
+            id=row["id"], user_id=row["user_id"], asset=row["asset"], method=row["method"],
+            external_reference=row["external_reference"], amount_minor=row["amount_minor"],
+            status="completed", created_at=datetime.fromisoformat(row["created_at"]),
+            completed_at=now,
+        )
+
+    @staticmethod
+    def _to_pending_deposit(row: sqlite3.Row) -> PendingDeposit:
+        return PendingDeposit(
+            id=row["id"], user_id=row["user_id"], asset=row["asset"], method=row["method"],
+            external_reference=row["external_reference"], amount_minor=row["amount_minor"],
+            status=row["status"], created_at=datetime.fromisoformat(row["created_at"]),
+            completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+        )

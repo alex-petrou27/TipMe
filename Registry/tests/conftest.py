@@ -32,6 +32,7 @@ def client(monkeypatch):
     app_module._oauth_sessions.clear()
     app_module._identity_pending.clear()
     app_module._identity_sessions.clear()
+    app_module._paid_lightning_invoices.clear()
 
     test_client = TestClient(app_module.app)
     test_client.public_key = public
