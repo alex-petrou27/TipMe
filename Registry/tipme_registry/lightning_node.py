@@ -62,6 +62,7 @@ decompiles the binary.
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -188,6 +189,12 @@ class VoltagePaymentsRail:
                 response = await client.post(
                     self._payments_path(),
                     json={
+                        # Confirmed against a real account: Voltage wants the
+                        # client to mint the payment's own id, not assign one
+                        # itself -- almost certainly so a retried request with
+                        # the same id is treated as idempotent rather than
+                        # creating a second payment.
+                        "id": str(uuid.uuid4()),
                         "wallet_id": self._config.wallet_id,
                         "direction": "receive",
                         "currency": "btc",
@@ -255,6 +262,7 @@ class VoltagePaymentsRail:
                 response = await client.post(
                     self._payments_path(),
                     json={
+                        "id": str(uuid.uuid4()),
                         "wallet_id": self._config.wallet_id,
                         "direction": "send",
                         "currency": "btc",
