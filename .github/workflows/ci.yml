@@ -93,8 +93,28 @@ jobs:
           cp .env.example .env
           ./Scripts/make-xcconfig.sh
 
+      # Checks whether XcodeGen's own `info:` handling rewrites the real
+      # Info.plist files on disk during generation -- if it does, whatever
+      # INFOPLIST_FILE/GENERATE_INFOPLIST_FILE build settings say is moot,
+      # since xcodebuild would then be processing an already-gutted file.
+      - name: Snapshot Info.plist files before generation
+        run: |
+          echo "--- App/TipMe/Info.plist before ---"
+          cat App/TipMe/Info.plist
+          echo "--- App/TipMeShare/Info.plist before ---"
+          cat App/TipMeShare/Info.plist
+
       - name: Generate project
         run: xcodegen generate
+
+      - name: Diff Info.plist files after generation
+        run: |
+          echo "--- App/TipMe/Info.plist after ---"
+          cat App/TipMe/Info.plist
+          echo "--- App/TipMeShare/Info.plist after ---"
+          cat App/TipMeShare/Info.plist
+          echo "--- git diff against committed versions ---"
+          git diff -- App/TipMe/Info.plist App/TipMeShare/Info.plist
 
       - name: Build
         run: |
