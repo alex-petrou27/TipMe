@@ -163,6 +163,21 @@ class VoltagePaymentsRail:
             f"/environments/{self._config.environment_id}/payments{suffix}"
         )
 
+    @staticmethod
+    def _check(response: httpx.Response) -> None:
+        """Raises with Voltage's own error text, not just the status code.
+
+        `response.raise_for_status()` alone throws away the response body --
+        which is exactly where a 400 explains *which* field it didn't like.
+        That blindness cost a whole round of guessing already; this is what
+        makes the next error message actually actionable.
+        """
+        if response.is_success:
+            return
+        raise LightningNodeError(
+            f"Voltage returned {response.status_code}: {response.text}"
+        )
+
     async def create_invoice(self, amount_sats: int, memo: str) -> Invoice:
         async with self._client(10) as client:
             try:
@@ -177,13 +192,15 @@ class VoltagePaymentsRail:
                         "memo": memo,
                     },
                 )
-                response.raise_for_status()
+                self._check(response)
                 body = response.json()
                 return Invoice(
                     payment_request=body["payment_request"],
                     payment_hash=body["id"],
                     amount_sats=amount_sats,
                 )
+            except LightningNodeError:
+                raise
             except (httpx.HTTPError, KeyError, ValueError) as error:
                 raise LightningNodeError(f"could not create invoice: {error}") from error
 
@@ -191,13 +208,15 @@ class VoltagePaymentsRail:
         async with self._client(10) as client:
             try:
                 response = await client.get(self._payments_path(f"/{payment_hash}"))
-                response.raise_for_status()
+                self._check(response)
                 body = response.json()
                 settled = body.get("status") in ("completed", "succeeded", "settled")
                 return InvoiceStatus(
                     settled=settled,
                     amount_sats=int(body.get("amount_msats", 0)) // 1000,
                 )
+            except LightningNodeError:
+                raise
             except (httpx.HTTPError, KeyError, ValueError) as error:
                 raise LightningNodeError(f"could not check invoice: {error}") from error
 
@@ -214,13 +233,15 @@ class VoltagePaymentsRail:
                     f"/environments/{self._config.environment_id}/quotes",
                     json={"wallet_id": self._config.wallet_id, "payment_request": payment_request},
                 )
-                response.raise_for_status()
+                self._check(response)
                 body = response.json()
                 return DecodedInvoice(
                     amount_sats=int(body.get("amount_msats", 0)) // 1000,
                     destination=body.get("destination", ""),
                     description=body.get("memo", body.get("description", "")),
                 )
+            except LightningNodeError:
+                raise
             except (httpx.HTTPError, KeyError, ValueError) as error:
                 raise LightningNodeError(f"could not decode invoice: {error}") from error
 
@@ -237,7 +258,7 @@ class VoltagePaymentsRail:
                         "payment_request": payment_request,
                     },
                 )
-                response.raise_for_status()
+                self._check(response)
                 body = response.json()
                 if body.get("status") == "failed":
                     raise LightningNodeError(body.get("error", "payment failed"))
@@ -245,6 +266,8 @@ class VoltagePaymentsRail:
                     payment_hash=body.get("id", ""),
                     fee_sats=int(body.get("fee_msats", 0)) // 1000,
                 )
+            except LightningNodeError:
+                raise
             except (httpx.HTTPError, KeyError, ValueError) as error:
                 raise LightningNodeError(f"could not pay invoice: {error}") from error
 

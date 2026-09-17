@@ -503,7 +503,7 @@ async def deposit_lightning(
     try:
         invoice = await rail.create_invoice(request.amount_sats, memo=f"TipMe deposit {user_id}")
     except lightning_node.LightningNodeError as error:
-        raise HTTPException(status_code=502, detail=f"could not create invoice: {error}") from error
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
     storage.create_pending_deposit(
         user_id=user_id, asset="bitcoin", method="lightning_invoice",
@@ -538,7 +538,7 @@ async def check_lightning_deposit(
         try:
             status = await rail.invoice_status(payment_hash)
         except lightning_node.LightningNodeError as error:
-            raise HTTPException(status_code=502, detail=f"could not check invoice: {error}") from error
+            raise HTTPException(status_code=502, detail=str(error)) from error
         if status.settled:
             storage.complete_deposit_if_pending(
                 "lightning_invoice", payment_hash, reason="lightning_deposit",
@@ -571,7 +571,7 @@ async def withdraw_lightning(
     try:
         decoded = await rail.decode_invoice(request.payment_request)
     except lightning_node.LightningNodeError as error:
-        raise HTTPException(status_code=400, detail=f"could not read that invoice: {error}") from error
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     if decoded.amount_sats < MIN_LIGHTNING_SATS:
         raise HTTPException(
@@ -589,7 +589,7 @@ async def withdraw_lightning(
     except lightning_node.LightningNodeError as error:
         storage.adjust_balance(user_id, "bitcoin", decoded.amount_sats,
                                reason="lightning_withdrawal_failed_refund")
-        raise HTTPException(status_code=502, detail=f"payment failed: {error}") from error
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
     _paid_lightning_invoices.add(request.payment_request)
     return WithdrawLightningResponse(
