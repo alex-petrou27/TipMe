@@ -76,8 +76,12 @@ public struct ShareTitleParser: Sendable {
         pattern: "\\b(?:from|by)\\s+" + mentionPrefix + username,
         options: [.caseInsensitive])
 
+    // `\)?` tolerates Instagram's own long-standing page-title convention --
+    // "Jane Doe (@natgeo) on Instagram: ..." -- where a closing paren sits
+    // between the mention and "on Instagram". This is what a fetched
+    // og:title looks like, as opposed to the share sheet's own header.
     private static let onPlatform = try! NSRegularExpression(
-        pattern: mentionPrefix + username + "\\s+on\\s+(?:instagram|tiktok)",
+        pattern: mentionPrefix + username + "\\)?\\s+on\\s+(?:instagram|tiktok)",
         options: [.caseInsensitive])
 
     private static let anyMention = try! NSRegularExpression(

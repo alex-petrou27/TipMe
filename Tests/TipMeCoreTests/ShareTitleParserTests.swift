@@ -60,6 +60,14 @@ final class ShareTitleParserTests: XCTestCase {
         XCTAssertEqual(handle("@zachking on TikTok", .tiktok), "zachking")
     }
 
+    /// Instagram's own long-standing page-title convention for a fetched
+    /// og:title, as opposed to the share sheet's own generated header:
+    /// "Jane Doe (@natgeo) on Instagram: caption text".
+    func testOnPlatformFormWithParenthesesAroundTheMention() {
+        XCTAssertEqual(handle("Jane Doe (@natgeo) on Instagram: \"Caption text\""), "natgeo")
+        XCTAssertEqual(handle("Some Creator (@zachking) on TikTok", .tiktok), "zachking")
+    }
+
     func testCasingIsNormalised() {
         XCTAssertEqual(handle("Reel from @NatGeo"), "natgeo")
         XCTAssertEqual(handle("REEL FROM @NATGEO"), "natgeo")

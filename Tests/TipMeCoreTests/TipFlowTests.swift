@@ -21,10 +21,23 @@ final class TipFlowTests: XCTestCase {
         }
     }
 
+    /// Stands in for a real network fetch so tests stay deterministic and
+    /// never touch the network — by default it behaves like a share whose
+    /// URL doesn't resolve to a usable title, same as a real failed fetch.
+    private struct StubPageTitleFetcher: PageTitleFetching {
+        var title: String?
+        var error: Error?
+        func title(for url: URL) async throws -> String? {
+            if let error { throw error }
+            return title
+        }
+    }
+
     private func makeHarness(records: [CreatorRecord] = [.stub()],
                              authorizer: BiometricAuthorizer = FakeAuthorizer(),
                              lookupError: CreatorLookupError? = nil,
-                             redirects: [String: String] = [:]) -> Harness {
+                             redirects: [String: String] = [:],
+                             pageTitleFetcher: PageTitleFetching = StubPageTitleFetcher()) -> Harness {
         let clock = MutableClock()
         let backend = FakePaymentBackend(clock: clock)
         let audit = InMemoryAuditLog()
@@ -38,6 +51,7 @@ final class TipFlowTests: XCTestCase {
 
         let flow = TipFlow(
             shortLinkResolver: ShortLinkResolver(probe: StubProbe(chain: redirects)),
+            pageTitleFetcher: pageTitleFetcher,
             creatorResolver: FakeCreatorResolver(records: table, error: lookupError),
             backend: backend,
             quoteBuilder: TipQuoteBuilder(feePolicy: .standard),
@@ -148,6 +162,61 @@ final class TipFlowTests: XCTestCase {
         guard case .needsManualEntry = state else {
             return XCTFail("expected manual entry, got \(state)")
         }
+    }
+
+    /// Confirmed on a real device: Instagram hands the share extension a bare
+    /// URL with no title or text at all, so the share-title fallback above
+    /// never fires. This is the actual real-world path: fetch the page and
+    /// read its og:title, in Instagram's long-standing
+    /// "Name (@handle) on Instagram: caption" shape.
+    func testInstagramReelIsIdentifiedFromFetchedPageTitleWhenShareCarriesNoTitleAtAll() async {
+        let harness = makeHarness(
+            records: [.stub(username: "natgeo", platform: .instagram)],
+            pageTitleFetcher: StubPageTitleFetcher(
+                title: "Jane Doe (@natgeo) on Instagram: \"Caption text here\""))
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/reel/DFxYzAbCdEf/")!],
+            sharedText: [],
+            titles: [])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "natgeo")
+    }
+
+    /// A fetch failure (network down, timeout, blocked) must not crash the
+    /// flow — it degrades to the same manual-entry offer as any other
+    /// unidentifiable share.
+    func testFailedPageTitleFetchStillFallsBackToManualEntry() async {
+        let harness = makeHarness(
+            pageTitleFetcher: StubPageTitleFetcher(error: PageTitleFetchError.timedOut))
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/reel/DFxYzAbCdEf/")!],
+            sharedText: [],
+            titles: [])
+
+        guard case .needsManualEntry(let reason) = state else {
+            return XCTFail("expected manual entry, got \(state)")
+        }
+        XCTAssertTrue(reason.contains("couldn't tell whose Reel"))
+    }
+
+    /// The fetch fallback only runs when nothing already named a creator —
+    /// a URL or share-title hit must short-circuit it.
+    func testFetchedPageTitleIsNotConsultedWhenTheUrlAlreadyNamedACreator() async {
+        let harness = makeHarness(
+            records: [.stub(username: "natgeo", platform: .instagram)],
+            pageTitleFetcher: StubPageTitleFetcher(
+                title: "Someone Else (@nasa) on Instagram: \"nope\""))
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/natgeo/reel/DFxYzAbCdEf/")!],
+            sharedText: [])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "natgeo")
     }
 
     func testInstagramLinkCarryingTheHandleIsIdentified() async {
