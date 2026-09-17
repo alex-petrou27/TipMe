@@ -32,8 +32,8 @@ final class ShareViewController: UIViewController {
 
         do {
             let services = try TipMeServices.make(origin: .shareExtension)
-            guard services.isWalletReady else {
-                return present(message: "Open TipMe once to set up your wallet, then try again.")
+            guard services.isSignedIn else {
+                return present(message: "Open TipMe and sign in, then try again.")
             }
             let viewModel = TipSheetViewModel(services: services,
                                               origin: .shareExtension,

@@ -41,10 +41,10 @@ public enum PaymentBackendError: Error, Equatable, Sendable {
 /// The wallet seam.
 ///
 /// `PaymentEngine` knows only this protocol, which is what makes the engine
-/// reusable by the Phase 2 triggers and what makes a second wallet backend
-/// (NWC, for users who already run their own wallet) an additive change rather
-/// than a rewrite. `BreezPaymentBackend` in the app target is the Phase 1
-/// implementation.
+/// reusable by the Phase 2 triggers and what makes a second implementation
+/// an additive change rather than a rewrite. `CustodialPaymentBackend` in
+/// this module is the current implementation, backed by TipMe's own
+/// custodial ledger.
 public protocol PaymentBackend: Sendable, ExchangeRateProvider {
     /// Spendable balance in a given asset.
     func availableBalance(for asset: Asset) async throws -> Amount

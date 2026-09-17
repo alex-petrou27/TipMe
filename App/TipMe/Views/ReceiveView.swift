@@ -117,7 +117,6 @@ struct ReceiveView: View {
             .map { TipMeCore.Amount(asset: asset, minorUnits: $0) }
 
         do {
-            try? await services.backend.connect()
             request = try await services.backend.receive(amount: amount, method: method)
         } catch let error as PaymentBackendError {
             errorMessage = TipFlowErrorText.describe(error)

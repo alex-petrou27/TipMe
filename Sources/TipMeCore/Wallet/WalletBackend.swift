@@ -32,14 +32,14 @@ public struct ReceiveRequest: Equatable, Sendable {
 /// registered creator's Lightning address.
 ///
 /// A `WalletBackend` implementation is expected to also implement
-/// `PaymentBackend`; `BreezPaymentBackend` does both from one Breez SDK
-/// instance, since the wallet is one thing underneath.
+/// `PaymentBackend`; `CustodialPaymentBackend` does both, since the wallet
+/// is one thing underneath.
 public protocol WalletBackend: Sendable {
     /// Spendable balance in a given asset, for a general send. Deliberately its
     /// own requirement rather than borrowed from `PaymentBackend` via a runtime
-    /// cast — a `WalletBackend` must stand on its own, and `BreezPaymentBackend`
+    /// cast — a `WalletBackend` must stand on its own, and `CustodialPaymentBackend`
     /// answers this identically to `PaymentBackend.availableBalance` since both
-    /// read the same underlying wallet.
+    /// read the same underlying ledger.
     func availableBalanceForSend(asset: Asset) async throws -> Amount
 
     /// Classifies raw pasted or scanned text. Throws rather than returning a

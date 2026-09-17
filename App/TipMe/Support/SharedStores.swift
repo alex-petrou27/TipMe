@@ -37,12 +37,6 @@ public enum SharedContainer {
         return url
     }
 
-    /// Breez's working directory. Shared so the extension opens a wallet the
-    /// host app has already synced rather than cold-syncing under a memory cap.
-    public static func walletWorkingDirectory(appGroup: String) throws -> URL {
-        try root(appGroup: appGroup).appendingPathComponent("wallet", isDirectory: true)
-    }
-
     /// Audit log. One file for both processes, so the record of what the app did
     /// is complete rather than split in two.
     public static func auditLogURL(appGroup: String) throws -> URL {

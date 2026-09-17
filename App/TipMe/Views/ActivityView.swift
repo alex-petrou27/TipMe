@@ -4,19 +4,19 @@ import TipMeCore
 /// Unified activity: everything the wallet actually settled, plus everything
 /// the security gates refused before it could.
 ///
-/// These are two different sources on purpose. `transactionHistory()` is
-/// Breez's own record of settled payments — sends and receives, tips
+/// These are two different sources on purpose. `transactionHistory()` is the
+/// backend's own record of settled payments — sends and receives, tips
 /// included, since a tip settles through the same backend `send()` path as
 /// any other payment. The audit log is the only place a *refused* attempt
 /// exists at all: a payment blocked by a cap or a rate limit never reaches
 /// the wallet, so it would otherwise leave no trace whatsoever.
 ///
-/// One simplification worth naming: because a tip is, to Breez, just a send,
-/// this feed does not relabel a settled tip back to "tip" in the wallet
-/// section — doing that reliably would mean cross-referencing the audit log's
-/// payment hash against wallet history, which is more machinery than this
-/// pass justifies. The tip's destination and any note usually make it
-/// recognisable regardless.
+/// One simplification worth naming: because a tip is, to the backend, just a
+/// send, this feed does not relabel a settled tip back to "tip" in the
+/// wallet section — doing that reliably would mean cross-referencing the
+/// audit log's payment hash against wallet history, which is more machinery
+/// than this pass justifies. The tip's destination and any note usually make
+/// it recognisable regardless.
 struct ActivityView: View {
     let services: TipMeServices
 

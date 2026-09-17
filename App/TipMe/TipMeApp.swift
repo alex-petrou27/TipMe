@@ -16,7 +16,9 @@ struct TipMeApp: App {
                 case .onboarding(let services):
                     OnboardingView(services: services) { await appModel.bootstrap() }
                 case .ready(let services):
-                    HomeView(services: services)
+                    HomeView(services: services) {
+                        appModel.returnToOnboarding(services: services)
+                    }
                 }
             }
         }
@@ -37,21 +39,21 @@ final class AppModel: ObservableObject {
     func bootstrap() async {
         do {
             let services = try TipMeServices.make(origin: .hostApp)
-            guard services.isWalletReady else {
+            guard services.isSignedIn else {
                 phase = .onboarding(services)
                 return
-            }
-            // Keep the wallet warm here, in the app, where there is memory and
-            // time to spare. The share extension depends on this having
-            // happened — it cannot afford a cold sync under its jetsam cap.
-            Task.detached {
-                try? await services.backend.connect()
-                try? await services.backend.sync()
             }
             phase = .ready(services)
         } catch {
             phase = .misconfigured(String(describing: error))
         }
+    }
+
+    /// Called after logging out — the session is already cleared from the
+    /// keychain by the time this runs, so this just moves the UI back to
+    /// onboarding rather than needing to rebuild `services` from scratch.
+    func returnToOnboarding(services: TipMeServices) {
+        phase = .onboarding(services)
     }
 }
 

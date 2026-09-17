@@ -22,14 +22,6 @@ configFiles:
   Release: Config/Base.xcconfig
 
 packages:
-  BreezSDKLiquid:
-    url: https://github.com/breez/breez-sdk-liquid-swift
-    # Pin exactly. Breez has changed request/response shapes across minor
-    # versions; BreezPaymentBackend's call sites must be re-checked on upgrade.
-    exactVersion: 0.12.4
-  MnemonicSwift:
-    url: https://github.com/zcash-hackworks/MnemonicSwift
-    from: 2.2.4
   TipMeCore:
     path: .
 
@@ -50,9 +42,6 @@ targets:
     dependencies:
       - target: TipMeShare
         embed: true
-      - package: BreezSDKLiquid
-        product: BreezSDKLiquid
-      - package: MnemonicSwift
       - package: TipMeCore
         product: TipMeCore
     settings:
@@ -79,9 +68,6 @@ targets:
     entitlements:
       path: App/TipMeShare/TipMeShare.entitlements
     dependencies:
-      - package: BreezSDKLiquid
-        product: BreezSDKLiquid
-      - package: MnemonicSwift
       - package: TipMeCore
         product: TipMeCore
       # The extension reuses the app's wallet/support sources rather than

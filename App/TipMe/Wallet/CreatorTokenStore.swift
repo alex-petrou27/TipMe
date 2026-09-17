@@ -29,7 +29,7 @@ public struct CreatorTokenStore: Sendable {
 
     public func store(token: String, for handle: CreatorHandle) throws {
         guard let data = token.data(using: .utf8) else {
-            throw WalletKeychain.KeychainError.unexpectedData
+            throw KeychainError.unexpectedData
         }
         var attributes = query(for: handle)
         attributes[kSecValueData as String] = data
@@ -37,7 +37,7 @@ public struct CreatorTokenStore: Sendable {
 
         SecItemDelete(query(for: handle) as CFDictionary)
         let status = SecItemAdd(attributes as CFDictionary, nil)
-        guard status == errSecSuccess else { throw WalletKeychain.KeychainError.status(status) }
+        guard status == errSecSuccess else { throw KeychainError.status(status) }
     }
 
     public func token(for handle: CreatorHandle) -> String? {

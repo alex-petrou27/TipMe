@@ -9,12 +9,16 @@ import TipMeCore
 /// control, it is a suggestion.
 struct SettingsView: View {
     let services: TipMeServices
+    let onLogout: () -> Void
 
-    @State private var revealedMnemonic: String?
-    @State private var revealError: String?
     @State private var connectedHandles: [Platform: String] = [:]
     @State private var connectingPlatform: Platform?
     @State private var accountError: String?
+    @State private var isLoggingOut = false
+
+    private var signedInEmail: String? {
+        try? services.accountKeychain.loadSession().email
+    }
 
     private var caps: SendCapPolicy { services.configuration.capPolicy }
     private var limits: RateLimitPolicy { services.configuration.rateLimitPolicy }
@@ -50,22 +54,16 @@ struct SettingsView: View {
                                value: "\(limits.sameHandleCount) per \(Int(limits.sameHandleWindow / 60)) min")
             }
 
-            Section("Wallet") {
-                if let revealedMnemonic {
-                    Text(revealedMnemonic)
-                        .font(.footnote.monospaced())
-                        .textSelection(.enabled)
-                    Button("Hide") { self.revealedMnemonic = nil }
-                } else {
-                    Button("Show recovery phrase") { Task { await reveal() } }
+            Section("Account") {
+                if let signedInEmail {
+                    LabeledContent("Signed in as", value: signedInEmail)
                 }
-                if let revealError {
-                    Text(revealError).font(.caption).foregroundStyle(.red)
-                }
+                Button("Log out", role: .destructive) { logout() }
+                    .disabled(isLoggingOut)
             }
 
             Section {
-                Text("TipMe is non-custodial. Your keys and funds stay on this device; we never hold your balance and every tip settles directly to the creator.")
+                Text("TipMe holds your balance for you, the same way a bank or Strike does — there's no recovery phrase to lose. Log in with this email and password on any device to get to your balance.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -127,21 +125,18 @@ struct SettingsView: View {
         connectedHandles[platform] = nil
     }
 
-    /// Revealing the phrase is gated behind the same biometric check a payment
-    /// is — anyone holding an unlocked phone could otherwise walk off with the
-    /// keys to the wallet.
-    private func reveal() async {
-        let outcome = await LocalAuthenticationAuthorizer()
-            .evaluate(reason: "Show your recovery phrase")
-        guard case .succeeded = outcome else {
-            revealError = "Confirmation failed."
-            return
-        }
-        do {
-            revealedMnemonic = try WalletSetup(keychain: services.keychain).revealMnemonic()
-            revealError = nil
-        } catch {
-            revealError = String(describing: error)
+    private func logout() {
+        isLoggingOut = true
+        Task {
+            // Best-effort server-side revoke; clearing the local copy below
+            // is what actually logs this device out, regardless of whether
+            // the server call succeeds.
+            if let session = try? services.accountKeychain.loadSession() {
+                await services.accountClient.logout(sessionToken: session.sessionToken)
+            }
+            try? services.accountKeychain.clearSession()
+            isLoggingOut = false
+            onLogout()
         }
     }
 }

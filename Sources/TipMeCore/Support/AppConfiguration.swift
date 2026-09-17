@@ -7,8 +7,6 @@ import Foundation
 /// rate limits are all values an operator can change without touching the
 /// payment path.
 public struct AppConfiguration: Sendable {
-    public var breezApiKey: String
-    public var breezNetwork: String
     public var registryBaseURL: URL
     public var registryPublicKey: Data
     public var feeDestination: LightningAddress
@@ -67,8 +65,6 @@ public struct AppConfiguration: Sendable {
         }
 
         return AppConfiguration(
-            breezApiKey: try string("BREEZ_API_KEY"),
-            breezNetwork: (try? string("BREEZ_NETWORK")) ?? "testnet",
             registryBaseURL: registryURL,
             registryPublicKey: publicKey,
             feeDestination: feeAddress,

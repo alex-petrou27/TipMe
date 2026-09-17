@@ -5,11 +5,12 @@
 	<!--
 	  Both of these must match the host app's entitlements exactly.
 
-	  The App Group is how the extension reaches the warm wallet state and the
-	  shared cap/rate-limit ledger; the keychain group is how it reaches the
-	  mnemonic. A mismatch here does not fail the build — it fails at runtime,
-	  as an extension that cannot find a wallet the user can plainly see in the
-	  app. It is the single most common setup mistake on this project.
+	  The App Group is how the extension reaches the shared audit log and the
+	  cap/rate-limit ledger; the keychain group is how it reaches the signed-in
+	  session token. A mismatch here does not fail the build — it fails at
+	  runtime, as an extension that cannot find an account the user can
+	  plainly see signed in in the app. It is the single most common setup
+	  mistake on this project.
 	-->
 	<key>com.apple.security.application-groups</key>
 	<array>

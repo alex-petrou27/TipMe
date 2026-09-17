@@ -1,39 +1,39 @@
 import SwiftUI
 import TipMeCore
 
-/// First run: create or restore a wallet.
+/// First run: create an account or log in, then a couple of optional setup
+/// steps before landing on the balance screen.
 ///
-/// The self-custody trade-off is stated plainly rather than buried in a
-/// checkbox. A user who loses the phrase loses the funds, and TipMe genuinely
-/// cannot help them — saying so up front is the only honest option.
+/// TipMe is custodial: there is no recovery phrase to write down or verify.
+/// An email and password are all that stand between someone and their
+/// balance, so the account itself gets the up-front weight the seed phrase
+/// used to have here — everything else (adding TipMe to the share sheet,
+/// connecting Instagram/TikTok) is explicitly skippable.
 struct OnboardingView: View {
     let services: TipMeServices
     let onComplete: () async -> Void
 
-    @State private var mode: Mode = .intro
-    @State private var mnemonic: String = ""
-    @State private var restoreInput: String = ""
+    @State private var mode: Mode = .welcome
+    @State private var email: String = ""
+    @State private var password: String = ""
     @State private var errorMessage: String?
+    @State private var isSubmitting = false
 
-    /// Indices (0-based) of the words the user must pick back out, and their
-    /// answers so far.
-    @State private var challengeIndices: [Int] = []
-    @State private var challengeAnswers: [Int: String] = [:]
-    @State private var challengeFailed = false
+    @State private var connectedHandles: [Platform: String] = [:]
+    @State private var connectingPlatform: Platform?
+    @State private var socialError: String?
 
-    private enum Mode { case intro, created, verify, shareSetup, restore }
-
-    private var words: [String] { mnemonic.split(separator: " ").map(String.init) }
+    private enum Mode { case welcome, signup, login, shareSetup, connectSocials }
 
     var body: some View {
         NavigationStack {
             Group {
                 switch mode {
-                case .intro: intro
-                case .created: created
-                case .verify: verify
+                case .welcome: welcome
+                case .signup: signup
+                case .login: login
                 case .shareSetup: shareSetup
-                case .restore: restore
+                case .connectSocials: connectSocials
                 }
             }
             .padding(24)
@@ -42,7 +42,9 @@ struct OnboardingView: View {
         }
     }
 
-    private var intro: some View {
+    // MARK: - Welcome
+
+    private var welcome: some View {
         VStack(spacing: 20) {
             Spacer()
             Image(systemName: "bolt.circle.fill")
@@ -51,189 +53,152 @@ struct OnboardingView: View {
             Text("Tip creators from the share sheet")
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
-            Text("Your wallet lives on this device. TipMe never holds your money and can't freeze or recover it.")
+            Text("Sign up with your email — no recovery phrase, no crypto knowledge needed. TipMe holds your balance for you.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Spacer()
 
-            Button("Create a wallet") { createWallet() }
+            Button("Create account") { errorMessage = nil; mode = .signup }
                 .buttonStyle(.borderedProminent)
                 .frame(maxWidth: .infinity)
 
-            Button("I already have a recovery phrase") { mode = .restore }
+            Button("I already have an account") { errorMessage = nil; mode = .login }
                 .font(.footnote)
-
-            if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(Theme.negative)
-            }
         }
     }
 
-    private var created: some View {
+    // MARK: - Signup / login
+
+    private var signup: some View {
+        credentialsForm(
+            title: "Create your account",
+            subtitle: "This is what you'll use to log in on any device — pick a password you'll remember.",
+            submitTitle: "Create account",
+            passwordFieldContentType: .newPassword,
+            submit: signUp,
+            switchPrompt: "Already have an account?",
+            switchTitle: "Log in",
+            switchMode: .login)
+    }
+
+    private var login: some View {
+        credentialsForm(
+            title: "Log in",
+            subtitle: nil,
+            submitTitle: "Log in",
+            passwordFieldContentType: .password,
+            submit: logIn,
+            switchPrompt: "New to TipMe?",
+            switchTitle: "Create an account",
+            switchMode: .signup)
+    }
+
+    private func credentialsForm(title: String, subtitle: String?, submitTitle: String,
+                                 passwordFieldContentType: UITextContentType,
+                                 submit: @escaping () async -> Void,
+                                 switchPrompt: String, switchTitle: String,
+                                 switchMode: Mode) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Write this down")
-                .font(.title2.weight(.semibold))
-            Text("These 12 words are the only way to recover your money. Nobody at TipMe has a copy — if you lose them, the funds are gone.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                ForEach(Array(words.enumerated()), id: \.offset) { index, word in
-                    wordRow(index: index, word: word)
-                }
-            }
-            .padding(14)
-            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
-
-            Spacer()
-
-            Button("I've written them down") { beginVerification() }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
-        }
-    }
-
-    /// Checks the user actually recorded the phrase, rather than tapping past a
-    /// checkbox.
-    ///
-    /// This is the one irreversible moment in the app. A user who taps "I've
-    /// written them down" without doing so has created a wallet whose funds
-    /// nobody — including us — can ever recover, and they will not discover it
-    /// until they need it. Asking for three specific words costs a few seconds
-    /// and is the standard every serious wallet applies.
-    private var verify: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Check your backup")
-                .font(.title2.weight(.semibold))
-            Text("Tap the right word for each position.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            ForEach(challengeIndices, id: \.self) { index in
-                challengeRow(for: index)
+            Text(title).font(.title2.weight(.semibold))
+            if let subtitle {
+                Text(subtitle).font(.callout).foregroundStyle(.secondary)
             }
 
-            if challengeFailed {
-                Label("That's not right. Check your written copy and try again.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote)
-                    .foregroundStyle(Theme.warning)
-            }
-
-            Spacer()
-
-            Button("Confirm") { completeVerification() }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
-                .disabled(challengeAnswers.count < challengeIndices.count)
-
-            Button("Show me the words again") {
-                challengeAnswers = [:]
-                challengeFailed = false
-                mode = .created
-            }
-            .font(.footnote)
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    private func wordRow(index: Int, word: String) -> some View {
-        HStack(spacing: 6) {
-            Text("\(index + 1).")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.tertiary)
-            Text(word)
-                .font(.callout.weight(.medium))
-            Spacer()
-        }
-    }
-
-    private func challengeRow(for index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Word \(index + 1)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                ForEach(options(for: index), id: \.self) { option in
-                    Button {
-                        challengeAnswers[index] = option
-                        challengeFailed = false
-                    } label: {
-                        Text(option)
-                            .font(.footnote)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(challengeAnswers[index] == option ? Theme.accent : .secondary)
-                }
-            }
-        }
-    }
-
-    /// Three choices per position: the real word plus two decoys drawn from the
-    /// same phrase, so a user who wrote the words down but in the wrong order
-    /// is also caught.
-    private func options(for index: Int) -> [String] {
-        guard words.indices.contains(index) else { return [] }
-        let correct = words[index]
-        let decoys = words.filter { $0 != correct }.shuffled().prefix(2)
-        // Seeded by the index so the row does not reshuffle on every redraw.
-        return ([correct] + decoys).sorted()
-    }
-
-    private func beginVerification() {
-        guard words.count == 12 else { return }
-        // Three positions spread across the phrase.
-        challengeIndices = Array(words.indices).shuffled().prefix(3).sorted()
-        challengeAnswers = [:]
-        challengeFailed = false
-        mode = .verify
-    }
-
-    private func completeVerification() {
-        let allCorrect = challengeIndices.allSatisfy { index in
-            challengeAnswers[index] == words[index]
-        }
-        guard allCorrect else {
-            challengeFailed = true
-            challengeAnswers = [:]
-            return
-        }
-        // Drop the phrase from memory; from here it lives only in the keychain.
-        mnemonic = ""
-        mode = .shareSetup
-    }
-
-    private var restore: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Enter your recovery phrase")
-                .font(.title2.weight(.semibold))
-            TextEditor(text: $restoreInput)
-                .frame(height: 120)
+            TextField("Email", text: $email)
+                .textContentType(.emailAddress)
+                .keyboardType(.emailAddress)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .padding(8)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
+                .padding(12)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+
+            SecureField("Password", text: $password)
+                .textContentType(passwordFieldContentType)
+                .padding(12)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
 
             if let errorMessage {
                 Text(errorMessage).font(.caption).foregroundStyle(Theme.negative)
             }
 
-            Button("Restore") { restoreWallet() }
-                .buttonStyle(.borderedProminent)
+            Button {
+                Task { await submit() }
+            } label: {
+                Group {
+                    if isSubmitting {
+                        ProgressView()
+                    } else {
+                        Text(submitTitle)
+                    }
+                }
                 .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isSubmitting || email.isEmpty || password.isEmpty)
 
-            Button("Back") { mode = .intro; errorMessage = nil }
+            HStack(spacing: 4) {
+                Text(switchPrompt).foregroundStyle(.secondary)
+                Button(switchTitle) { errorMessage = nil; password = ""; mode = switchMode }
+            }
+            .font(.footnote)
+
+            Button("Back") { errorMessage = nil; password = ""; mode = .welcome }
                 .font(.footnote)
+                .foregroundStyle(.secondary)
 
             Spacer()
         }
     }
 
+    private func signUp() async {
+        await authenticate { try await services.accountClient.signup(email: email, password: password) }
+    }
+
+    private func logIn() async {
+        await authenticate { try await services.accountClient.login(email: email, password: password) }
+    }
+
+    private func authenticate(_ call: @escaping () async throws -> AccountClient.Session) async {
+        errorMessage = nil
+        isSubmitting = true
+        defer { isSubmitting = false }
+        do {
+            let session = try await call()
+            try services.accountKeychain.store(.init(session))
+            password = ""
+            mode = .shareSetup
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+    }
+
+    private static func message(for error: Error) -> String {
+        guard let accountError = error as? AccountClient.AccountError else {
+            return "Something went wrong. Check your connection and try again."
+        }
+        switch accountError {
+        case .invalidRequest:
+            return "Enter a valid email and a password of at least 8 characters."
+        case .emailTaken:
+            return "An account with that email already exists. Try logging in instead."
+        case .invalidCredentials:
+            return "Incorrect email or password."
+        case .tooManyAttempts:
+            return "Too many attempts. Try again in a little while."
+        case .sessionExpired:
+            return "Your session expired. Try again."
+        case .offline:
+            return "You're offline. Check your connection and try again."
+        case .transport, .responseMalformed:
+            return "Couldn't reach TipMe. Try again."
+        }
+    }
+
+    // MARK: - Add to share sheet
+
     /// Prompts the user to enable TipMe in the share sheet, right after their
-    /// wallet exists and before they land on Home — the same cadence apps use
+    /// account exists and before they land on Home — the same cadence apps use
     /// for a notifications-permission prompt.
     ///
     /// There is no real equivalent to that prompt here. Notifications, camera,
@@ -287,11 +252,11 @@ struct OnboardingView: View {
                     .background(.primary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
 
-            Button("Continue to TipMe") { Task { await onComplete() } }
+            Button("Continue") { mode = .connectSocials }
                 .buttonStyle(.borderedProminent)
                 .frame(maxWidth: .infinity)
 
-            Button("I'll do this later") { Task { await onComplete() } }
+            Button("I'll do this later") { mode = .connectSocials }
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -309,23 +274,79 @@ struct OnboardingView: View {
         }
     }
 
-    private func createWallet() {
-        do {
-            mnemonic = try WalletSetup(keychain: services.keychain).createWallet()
-            errorMessage = nil
-            mode = .created
-        } catch {
-            errorMessage = String(describing: error)
+    // MARK: - Connect socials
+
+    private var connectSocials: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            Image(systemName: "person.crop.circle.badge.checkmark")
+                .font(.system(size: 56))
+                .foregroundStyle(.primary)
+
+            Text("Connect your accounts")
+                .font(.title2.weight(.semibold))
+                .multilineTextAlignment(.center)
+            Text("So people can see it's really you when you tip. You can always do this later in Settings.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            VStack(spacing: 12) {
+                connectRow(.instagram)
+                connectRow(.tiktok)
+            }
+            .padding(18)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+
+            if let socialError {
+                Text(socialError).font(.caption).foregroundStyle(Theme.negative)
+            }
+
+            Spacer()
+
+            Button("Continue to TipMe") { Task { await onComplete() } }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+
+            Button("I'll do this later") { Task { await onComplete() } }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
-    private func restoreWallet() {
+    private func connectRow(_ platform: Platform) -> some View {
+        HStack {
+            Text(platform.displayName)
+            Spacer()
+            if connectingPlatform == platform {
+                ProgressView()
+            } else if let username = connectedHandles[platform] {
+                Label("@\(username)", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            } else {
+                Button("Connect") { Task { await connectSocial(platform) } }
+                    .font(.callout)
+            }
+        }
+    }
+
+    private func connectSocial(_ platform: Platform) async {
+        socialError = nil
+        connectingPlatform = platform
+        defer { connectingPlatform = nil }
+
+        let connector = SocialAccountConnector(baseURL: services.configuration.registryBaseURL)
         do {
-            try WalletSetup(keychain: services.keychain).restoreWallet(mnemonic: restoreInput)
-            restoreInput = ""
-            mode = .shareSetup
+            let result = try await connector.connectIdentity(platform: platform)
+            SenderIdentityStore(appGroup: services.configuration.appGroup)?
+                .set(username: result.username, for: platform)
+            connectedHandles[platform] = result.username
+        } catch let error as SocialAccountConnector.ConnectorError {
+            socialError = error.userFacingReason
         } catch {
-            errorMessage = String(describing: error)
+            socialError = String(describing: error)
         }
     }
 }

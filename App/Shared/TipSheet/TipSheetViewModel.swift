@@ -72,28 +72,10 @@ final class TipSheetViewModel: ObservableObject {
     func start(with payload: SharedPayload) async {
         sourceLink = payload.urls.first
         screen = .loading("Reading link…")
-
-        // Connect while we parse — these are independent, and in an extension
-        // the user is watching a spinner for every millisecond we serialise
-        // work that didn't need to be serialised.
-        async let connected: Void = connectWallet()
         let state = await flow.identify(attachedURLs: payload.urls,
                                         sharedText: payload.text,
                                         titles: payload.titles)
-        await connected
-
         apply(state)
-    }
-
-    private func connectWallet() async {
-        do {
-            try await services.backend.connect()
-            try await services.backend.sync()
-        } catch {
-            // Surfaced when the first payment is attempted rather than here —
-            // a connection warning over someone's feed before they have even
-            // chosen an amount is noise.
-        }
     }
 
     // MARK: - Step 2: amount
@@ -143,7 +125,6 @@ final class TipSheetViewModel: ObservableObject {
     }
 
     func dismiss() {
-        Task { await services.backend.disconnect() }
         onFinish()
     }
 

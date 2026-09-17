@@ -9,8 +9,14 @@ cannot appear in TikTok's or Instagram's own share row. See
 [Where TipMe actually appears](#where-tipme-actually-appears) — it is the single
 most important thing to understand about this product's reach.
 
-Non-custodial: TipMe never holds a balance. Every tip settles from the sender's
-own on-device wallet to the creator's own Lightning address.
+Custodial: TipMe holds each user's balance on the registry server, behind an
+email/password account — no recovery phrase to write down or lose. Sending
+real money through that ledger (the shared operational wallet that would
+actually settle a tip on-chain) is not built yet; see `CustodialPaymentBackend`
+in `Sources/TipMeCore/Accounts/`. The app was originally non-custodial
+(each user's own on-device Breez SDK Liquid wallet); the sections below that
+describe that design are being replaced and are kept for now as history, not
+as the current architecture.
 
 ---
 
@@ -111,24 +117,13 @@ The project file is generated rather than committed, so target membership,
 entitlements and extension embedding cannot drift through merge conflicts in a
 10,000-line `pbxproj`.
 
-### Breez SDK setup
-
-1. Request an API key at <https://breez.technology/request-api-key/> (free,
-   issued per app) and put it in `BREEZ_API_KEY`.
-2. Leave `BREEZ_NETWORK=testnet` until you are deliberately testing with real
-   money. Testnet Liquid funds come from a Liquid testnet faucet.
-3. The SDK version is pinned exactly in `project.yml`. Breez has changed
-   request/response shapes across minor versions, so re-check the call sites in
-   `App/TipMe/Wallet/BreezPaymentBackend.swift` when upgrading — a mismatch
-   there is a payment bug, not a build error.
-
 ### App Group and keychain group
 
 `TIPME_APP_GROUP` and `TIPME_KEYCHAIN_ACCESS_GROUP` must match the entitlements
 on **both** targets and must be registered on your developer account. A
 mismatch does not fail the build; it fails at runtime, as an extension that
-cannot find a wallet the user can plainly see in the app. This is the single
-most common setup mistake on this project.
+cannot find an account the user can plainly see signed in in the app. This is
+the single most common setup mistake on this project.
 
 ---
 

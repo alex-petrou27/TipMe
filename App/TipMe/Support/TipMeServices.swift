@@ -1,5 +1,4 @@
 import Foundation
-import BreezSDKLiquid
 import TipMeCore
 
 /// Composition root, shared by the host app and the share extension.
@@ -10,7 +9,7 @@ import TipMeCore
 /// a cap, a rate limit or an audit write could quietly go missing.
 public struct TipMeServices: Sendable {
     public let configuration: AppConfiguration
-    public let backend: BreezPaymentBackend
+    public let backend: CustodialPaymentBackend
     public let creatorResolver: CreatorResolver
     public let auditLog: AuditLog
     public let capLedger: SendCapLedger
@@ -18,7 +17,8 @@ public struct TipMeServices: Sendable {
     public let engine: PaymentEngine
     public let gate: AuthorizationGate
     public let quoteBuilder: TipQuoteBuilder
-    public let keychain: WalletKeychain
+    public let accountKeychain: AccountKeychain
+    public let accountClient: AccountClient
     public let creatorTokens: CreatorTokenStore
     /// Separate from `capLedger`: general wallet spending and tip spending are
     /// deliberately independent budgets — see `SendCapLedger`'s `namespace`.
@@ -41,15 +41,19 @@ public struct TipMeServices: Sendable {
             throw SharedContainer.ContainerError.appGroupUnavailable(configuration.appGroup)
         }
 
-        let keychain = WalletKeychain(accessGroup: configuration.keychainAccessGroup)
-        let workingDirectory = try SharedContainer.walletWorkingDirectory(appGroup: configuration.appGroup)
+        let accountKeychain = AccountKeychain(accessGroup: configuration.keychainAccessGroup)
+        let accountClient = AccountClient(configuration: .init(baseURL: configuration.registryBaseURL))
+        let rateProvider = RegistryRateProvider(configuration: .init(baseURL: configuration.registryBaseURL),
+                                                clock: clock)
 
-        let backend = BreezPaymentBackend(
-            apiKey: configuration.breezApiKey,
-            network: configuration.breezNetwork.lowercased() == "mainnet" ? .mainnet : .testnet,
-            workingDirectory: workingDirectory,
-            clock: clock,
-            mnemonicProvider: { try keychain.loadMnemonic() })
+        // Reads the keychain synchronously on every call rather than caching
+        // the token in memory, so a log-out in one process (app or share
+        // extension) is picked up by the other on its very next request
+        // instead of after a relaunch.
+        let backend = CustodialPaymentBackend(
+            client: accountClient,
+            rateProvider: rateProvider,
+            sessionTokenProvider: { try? accountKeychain.loadSession().sessionToken })
 
         let auditLog = JSONLinesAuditLog(
             fileURL: try SharedContainer.auditLogURL(appGroup: configuration.appGroup))
@@ -94,7 +98,8 @@ public struct TipMeServices: Sendable {
                                   clock: clock),
             gate: gate,
             quoteBuilder: TipQuoteBuilder(feePolicy: configuration.feePolicy),
-            keychain: keychain,
+            accountKeychain: accountKeychain,
+            accountClient: accountClient,
             creatorTokens: CreatorTokenStore(accessGroup: configuration.keychainAccessGroup),
             walletCapLedger: walletCapLedger,
             walletEngine: WalletSendEngine(backend: backend, capLedger: walletCapLedger,
@@ -127,5 +132,5 @@ public struct TipMeServices: Sendable {
         WithdrawalFlow(provider: offRampProvider, gate: gate, auditLog: auditLog, clock: clock)
     }
 
-    public var isWalletReady: Bool { keychain.hasMnemonic() }
+    public var isSignedIn: Bool { accountKeychain.hasSession() }
 }

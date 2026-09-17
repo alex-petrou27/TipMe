@@ -58,10 +58,6 @@
 	</array>
 
 	<!-- Populated from Config/Secrets.xcconfig; see .env.example and README. -->
-	<key>BREEZ_API_KEY</key>
-	<string>$(BREEZ_API_KEY)</string>
-	<key>BREEZ_NETWORK</key>
-	<string>$(BREEZ_NETWORK)</string>
 	<key>TIPME_REGISTRY_BASE_URL</key>
 	<string>$(TIPME_REGISTRY_BASE_URL)</string>
 	<key>TIPME_REGISTRY_PUBLIC_KEY</key>

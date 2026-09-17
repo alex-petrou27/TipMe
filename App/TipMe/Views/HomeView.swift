@@ -9,6 +9,7 @@ import TipMeCore
 /// general-purpose send/receive/withdraw app actually means.
 struct HomeView: View {
     let services: TipMeServices
+    let onLogout: () -> Void
 
     @State private var displayedAsset: Asset = .bitcoin
     @State private var bitcoinBalance: Amount = .sats(0)
@@ -44,7 +45,7 @@ struct HomeView: View {
                 }
             }
             .sheet(isPresented: $showingMore) {
-                MoreMenuView(services: services)
+                MoreMenuView(services: services, onLogout: onLogout)
             }
             .refreshable { await refresh() }
             .task { await refresh() }
@@ -122,9 +123,6 @@ struct HomeView: View {
         isRefreshing = true
         defer { isRefreshing = false }
 
-        try? await services.backend.connect()
-        try? await services.backend.sync()
-
         bitcoinBalance = (try? await services.backend.availableBalance(for: .bitcoin)) ?? .sats(0)
         usdtBalance = (try? await services.backend.availableBalance(for: .usdt)) ?? .usdtCents(0)
         recentActivity = (try? await services.backend.transactionHistory(limit: 5)) ?? []
@@ -135,6 +133,7 @@ struct HomeView: View {
 /// screens, spending limits, and account settings.
 struct MoreMenuView: View {
     let services: TipMeServices
+    let onLogout: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -145,7 +144,7 @@ struct MoreMenuView: View {
                     NavigationLink("Get tipped") { CreatorSetupView(services: services) }
                 }
                 Section {
-                    NavigationLink("Settings") { SettingsView(services: services) }
+                    NavigationLink("Settings") { SettingsView(services: services, onLogout: onLogout) }
                 }
             }
             .navigationTitle("More")

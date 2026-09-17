@@ -5,6 +5,7 @@
 *.mobileprovision
 *.cer
 BreezApiKey.xcconfig
+Config/Secrets.xcconfig
 
 # Swift / SwiftPM
 .build/
