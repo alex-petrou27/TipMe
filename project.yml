@@ -38,7 +38,15 @@ targets:
     type: application
     platform: iOS
     sources:
+      # Excluding Info.plist explicitly: it lives inside this directory, so a
+      # wholesale directory scan would otherwise sweep it into Copy Bundle
+      # Resources as a plain file, alongside the properly-processed one
+      # INFOPLIST_FILE produces — a documented XcodeGen/Xcode interaction
+      # that can silently corrupt or blank the final Info.plist depending on
+      # build-phase ordering on a given toolchain.
       - path: App/TipMe
+        excludes:
+          - Info.plist
       - path: App/Shared
     info:
       path: App/TipMe/Info.plist
@@ -87,7 +95,14 @@ targets:
       # duplicating them, so both processes build the identical object graph.
       - sdk: LocalAuthentication.framework
     sources:
+      # See the same exclusion on the TipMe target above — this is very
+      # likely the actual cause of the "does not define an NSExtension
+      # dictionary" install failure: the raw source Info.plist getting
+      # copied into the bundle as a plain resource, fighting the properly
+      # processed one.
       - path: App/TipMeShare
+        excludes:
+          - Info.plist
       - path: App/Shared
       - path: App/TipMe/Wallet
       - path: App/TipMe/Support

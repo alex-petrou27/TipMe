@@ -31,7 +31,15 @@ enum ClipboardLinkDetector {
     /// True when the clipboard probably holds a web URL. Never returns the URL.
     static func containsProbableLink() async -> Bool {
         do {
-            let patterns = try await UIPasteboard.general.detectPatterns(for: [.probableWebURL])
+            // UIPasteboard only exposes this as a completion-handler API —
+            // there is no async overload on the SDK, despite the signature
+            // looking like a natural fit for one. Wrap it manually rather
+            // than assuming Swift synthesized an async variant.
+            let patterns: Set<UIPasteboard.DetectionPattern> = try await withCheckedThrowingContinuation { continuation in
+                UIPasteboard.general.detectPatterns(for: [.probableWebURL]) { result in
+                    continuation.resume(with: result)
+                }
+            }
             return patterns.contains(.probableWebURL)
         } catch {
             // Detection can fail if another app holds the pasteboard.
