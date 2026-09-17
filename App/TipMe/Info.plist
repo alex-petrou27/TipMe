@@ -11,6 +11,15 @@
 	<key>UILaunchScreen</key>
 	<dict/>
 
+	<!-- Portrait-only: a wallet confirm screen mid-rotation is exactly the
+	     kind of thing that should never happen. Also required explicitly on
+	     newer Xcode/iOS SDKs, which reject a build with no orientation list
+	     at all rather than defaulting to one. -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+
 	<key>NSFaceIDUsageDescription</key>
 	<string>TipMe uses Face ID to confirm every payment before it is sent.</string>
 

@@ -15,6 +15,16 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 
+	<!-- Required explicitly on newer Xcode/iOS SDKs for anything that
+	     presents its own UI, share extensions included — see the matching
+	     comment in App/TipMe/Info.plist. -->
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>
