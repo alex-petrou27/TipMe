@@ -107,7 +107,7 @@ public actor TipFlow {
             await note(.linkParsed, .rejected,
                        platform: link.platform.rawValue,
                        detail: "link carried no handle (kind: \(link.kind.rawValue)) and no title named one")
-            return .needsManualEntry(reason: Self.noHandleExplanation(for: link))
+            return .needsManualEntry(reason: Self.noHandleExplanation(for: link, titles: titles))
         }
 
         if link.handleSource == .url {
@@ -132,13 +132,21 @@ public actor TipFlow {
     /// Reached only when neither the URL nor the share title named a creator,
     /// which is now uncommon — most shortcode Reels and posts are identified
     /// from the title.
-    private static func noHandleExplanation(for link: SharedLink) -> String {
+    private static func noHandleExplanation(for link: SharedLink, titles: [String]) -> String {
+        let base: String
         switch link.platform {
         case .instagram:
-            return "We couldn't tell whose Reel that is. Try sharing from the creator's profile, or enter their Lightning address below."
+            base = "We couldn't tell whose Reel that is. Try sharing from the creator's profile, or enter their Lightning address below."
         case .tiktok:
-            return "That TikTok link doesn't include the creator's username. Try sharing the video itself, or enter their Lightning address below."
+            base = "That TikTok link doesn't include the creator's username. Try sharing the video itself, or enter their Lightning address below."
         }
+        // TEMPORARY diagnostic: shows exactly what the share extension
+        // actually received as candidate titles, so a real failure can be
+        // compared against what the title parser expects instead of guessed
+        // at blind. Remove once the Instagram title-sourcing question is
+        // settled either way.
+        let titlesDump = titles.isEmpty ? "(none)" : titles.map { "\"\($0)\"" }.joined(separator: ", ")
+        return base + "\n\n[debug] titles received: \(titlesDump)"
     }
 
     /// Manual fallback: the user pastes a Lightning address directly.
