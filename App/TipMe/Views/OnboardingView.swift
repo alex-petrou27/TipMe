@@ -192,6 +192,12 @@ struct OnboardingView: View {
             return "You're offline. Check your connection and try again."
         case .transport, .responseMalformed:
             return "Couldn't reach TipMe. Try again."
+        case .lightningUnavailable, .lightningRequestInvalid, .insufficientBalance,
+             .invoiceAlreadyPaid, .depositNotFound, .lightningNodeError:
+            // Signup/login never produces these -- they're specific to the
+            // deposit/withdraw endpoints -- but the switch must stay
+            // exhaustive over the whole shared error enum.
+            return "Something went wrong. Check your connection and try again."
         }
     }
 
