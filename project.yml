@@ -60,6 +60,11 @@ targets:
         # Strict concurrency catches the actor-isolation mistakes that would
         # otherwise show up as a race in the payment path.
         SWIFT_STRICT_CONCURRENCY: complete
+        # Newer Xcode defaults to synthesizing Info.plist from build settings
+        # and silently ignoring `info.path` above unless told not to — which
+        # drops NSExtension, the app group keys, everything. Force it to use
+        # the real file.
+        GENERATE_INFOPLIST_FILE: NO
 
   TipMeShare:
     type: app-extension
@@ -87,6 +92,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: technology.tipme.app.share
         SWIFT_VERSION: "5.9"
         SWIFT_STRICT_CONCURRENCY: complete
+        # See the same setting on the TipMe target above — without this, a
+        # newer Xcode synthesizes its own Info.plist and drops NSExtension,
+        # which is exactly the "does not define an NSExtension dictionary"
+        # install failure this fixes.
+        GENERATE_INFOPLIST_FILE: NO
 
 schemes:
   TipMe:
