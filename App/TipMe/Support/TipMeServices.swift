@@ -53,7 +53,8 @@ public struct TipMeServices: Sendable {
         let backend = CustodialPaymentBackend(
             client: accountClient,
             rateProvider: rateProvider,
-            sessionTokenProvider: { try? accountKeychain.loadSession().sessionToken })
+            sessionTokenProvider: { try? accountKeychain.loadSession().sessionToken },
+            clock: clock)
 
         let auditLog = JSONLinesAuditLog(
             fileURL: try SharedContainer.auditLogURL(appGroup: configuration.appGroup))
@@ -130,6 +131,10 @@ public struct TipMeServices: Sendable {
 
     public func makeWithdrawalFlow(clock: Clock = SystemClock()) -> WithdrawalFlow {
         WithdrawalFlow(provider: offRampProvider, gate: gate, auditLog: auditLog, clock: clock)
+    }
+
+    public func makeLightningDepositFlow() -> LightningDepositFlow {
+        LightningDepositFlow(backend: backend)
     }
 
     public var isSignedIn: Bool { accountKeychain.hasSession() }

@@ -78,8 +78,8 @@ struct HomeView: View {
             NavigationLink { SendView(services: services) } label: {
                 QuickActionLabel(title: "Send", systemImage: "arrow.up")
             }
-            NavigationLink { ReceiveView(services: services) } label: {
-                QuickActionLabel(title: "Receive", systemImage: "arrow.down")
+            NavigationLink { DepositView(services: services) } label: {
+                QuickActionLabel(title: "Deposit", systemImage: "arrow.down")
             }
             NavigationLink { WithdrawView(services: services) } label: {
                 QuickActionLabel(title: "Withdraw", systemImage: "building.columns")
@@ -102,7 +102,7 @@ struct HomeView: View {
             .padding(.horizontal, Theme.spacing)
 
             if recentActivity.isEmpty {
-                Text("Nothing yet. Receive some funds or tip a creator to get started.")
+                Text("Nothing yet. Deposit some funds or tip a creator to get started.")
                     .font(Theme.caption)
                     .foregroundStyle(Theme.textTertiary)
                     .padding(Theme.spacing)
