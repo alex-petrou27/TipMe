@@ -165,14 +165,23 @@ private extension NSItemProvider {
     }
 
     func loadItem(forTypeIdentifier identifier: String) async throws -> NSSecureCoding? {
-        try await withCheckedThrowingContinuation { continuation in
+        /// `NSItemProvider`'s completion handler is `@Sendable` on newer SDKs,
+        /// but `NSSecureCoding` itself was never audited as `Sendable`. This
+        /// is a one-shot handoff from that callback into the awaiting task —
+        /// never shared or mutated concurrently — which is exactly the case
+        /// `@unchecked Sendable` exists for.
+        struct UncheckedBox: @unchecked Sendable {
+            let value: NSSecureCoding?
+        }
+        let box: UncheckedBox = try await withCheckedThrowingContinuation { continuation in
             loadItem(forTypeIdentifier: identifier, options: nil) { item, error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
-                    continuation.resume(returning: item)
+                    continuation.resume(returning: UncheckedBox(value: item))
                 }
             }
         }
+        return box.value
     }
 }

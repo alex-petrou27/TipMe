@@ -30,18 +30,14 @@ enum ClipboardLinkDetector {
 
     /// True when the clipboard probably holds a web URL. Never returns the URL.
     static func containsProbableLink() async -> Bool {
-        await withCheckedContinuation { continuation in
-            UIPasteboard.general.detectPatterns(for: [.probableWebURL]) { result in
-                switch result {
-                case .success(let patterns):
-                    continuation.resume(returning: patterns.contains(.probableWebURL))
-                case .failure:
-                    // Detection can fail if another app holds the pasteboard.
-                    // Offering nothing is the right answer; the share-sheet
-                    // path still works.
-                    continuation.resume(returning: false)
-                }
-            }
+        do {
+            let patterns = try await UIPasteboard.general.detectPatterns(for: [.probableWebURL])
+            return patterns.contains(.probableWebURL)
+        } catch {
+            // Detection can fail if another app holds the pasteboard.
+            // Offering nothing is the right answer; the share-sheet path
+            // still works.
+            return false
         }
     }
 

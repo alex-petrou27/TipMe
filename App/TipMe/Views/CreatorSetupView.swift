@@ -281,8 +281,13 @@ struct CreatorSetupView: View {
         }
 
         Section("Photo") {
+            // Read into a plain, Sendable local before the closure, rather
+            // than the @State bool directly inside it — PhotosPicker's label
+            // closure is now @Sendable on newer SDKs, and a MainActor-isolated
+            // stored property can't be read from inside one directly.
+            let photoButtonTitle = isUploadingPhoto ? "Uploading…" : "Add a photo"
             PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                Label(isUploadingPhoto ? "Uploading…" : "Add a photo", systemImage: "photo")
+                Label(photoButtonTitle, systemImage: "photo")
             }
             .disabled(isUploadingPhoto)
 
