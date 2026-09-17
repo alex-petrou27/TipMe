@@ -27,10 +27,11 @@ final class TipFlowTests: XCTestCase {
     private struct StubPageMetadataFetcher: PageMetadataFetching {
         var title: String?
         var canonicalURL: URL?
+        var description: String?
         var error: Error?
         func metadata(for url: URL) async throws -> FetchedPageMetadata {
             if let error { throw error }
-            return FetchedPageMetadata(title: title, canonicalURL: canonicalURL)
+            return FetchedPageMetadata(title: title, canonicalURL: canonicalURL, description: description)
         }
     }
 
@@ -221,6 +222,51 @@ final class TipFlowTests: XCTestCase {
                 canonicalURL: nil))
         let state = await harness.flow.identify(
             attachedURLs: [URL(string: "https://www.instagram.com/p/Dc3nAkhAftj/")!],
+            sharedText: [],
+            titles: [])
+
+        guard case .needsManualEntry(let reason) = state else {
+            return XCTFail("expected manual entry, got \(state)")
+        }
+        XCTAssertTrue(reason.contains("couldn't tell whose Reel"))
+    }
+
+    /// The real, confirmed shape for a Reel specifically: unlike a post, its
+    /// canonical URL comes back with no username at all
+    /// ("instagram.com/reel/<code>/", same shape as the original shortcode
+    /// link) and its title is the same unusable display name shape. What
+    /// recovers the creator here is the description, which follows
+    /// Instagram's long-standing "N likes, N comments - Name (@username) on
+    /// Instagram: caption" convention.
+    func testInstagramReelIsIdentifiedFromFetchedDescriptionWhenTitleAndCanonicalURLAreBothUnusable() async {
+        let harness = makeHarness(
+            records: [.stub(username: "lukehamnett", platform: .instagram)],
+            pageMetadataFetcher: StubPageMetadataFetcher(
+                title: "Luke Hamnett on Instagram: \"caption\"",
+                canonicalURL: URL(string: "https://www.instagram.com/reel/DbWliK9tPPs/"),
+                description: "500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram: \"caption\""))
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/reel/DbWliK9tPPs/")!],
+            sharedText: [],
+            titles: [])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "lukehamnett")
+    }
+
+    /// The real, confirmed failure shape: title, canonical URL, and
+    /// description all fail to name anyone -- still degrades cleanly to
+    /// manual entry.
+    func testFetchedDescriptionWithNoMentionStillFallsBackToManualEntry() async {
+        let harness = makeHarness(
+            pageMetadataFetcher: StubPageMetadataFetcher(
+                title: "Luke Hamnett on Instagram: \"caption\"",
+                canonicalURL: URL(string: "https://www.instagram.com/reel/DbWliK9tPPs/"),
+                description: "500 likes, 12 comments - Luke Hamnett on Instagram: \"caption\""))
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/reel/DbWliK9tPPs/")!],
             sharedText: [],
             titles: [])
 

@@ -118,6 +118,7 @@ public actor TipFlow {
         // last resort is fetching the page ourselves.
         var fetchedTitle: String?
         var fetchedCanonicalURL: URL?
+        var fetchedDescription: String?
         var fetchError: String?
         var fetchWasAttempted = false
         if link.handle == nil {
@@ -126,24 +127,35 @@ public actor TipFlow {
                 let metadata = try await pageMetadataFetcher.metadata(for: link.canonicalURL)
                 fetchedTitle = metadata.title
                 fetchedCanonicalURL = metadata.canonicalURL
+                fetchedDescription = metadata.description
 
-                // Confirmed on a second real-device fetch: Instagram's title
-                // is the account's *display name* ("Pepsi UK on Instagram: …"),
-                // not its @username -- so it can't be parsed into a handle to
-                // pay. The page's own canonical URL is more reliable: it names
-                // the actual username in its path, the same shape a directly
-                // shared profile link already carries, so try that first and
-                // only fall back to the (unreliable) title.
+                // Confirmed live, in order of discovery: a post's title is
+                // the account's *display name* ("Pepsi UK on Instagram: …"),
+                // not its @username, so it can't be parsed into a handle to
+                // pay -- but a post's canonical URL does carry the real
+                // username in its path, the same shape a directly shared
+                // profile link already carries. A Reel then showed *that*
+                // isn't universal either: its canonical URL came back with
+                // no username at all. So try the canonical URL first, then
+                // the title, then the description -- Instagram's
+                // long-standing "Name (@username) on Instagram: caption"
+                // convention, the one field actually confirmed to carry
+                // an @username in prose.
                 if let canonicalURL = metadata.canonicalURL,
                    let recovered = parser.parse(canonicalURL), recovered.platform == link.platform,
                    let fromURL = recovered.handle {
                     link = link.adoptingHandle(fromURL, from: .url)
                     await note(.linkParsed, .ok, platform: link.platform.rawValue,
                                handle: fromURL.username, detail: "handle recovered from fetched canonical URL")
-                } else if let fetchedTitle, let fromFetch = titleParser.handle(in: fetchedTitle, platform: link.platform) {
-                    link = link.adoptingHandle(fromFetch, from: .shareTitle)
+                } else if let fetchedTitle, let fromTitle = titleParser.handle(in: fetchedTitle, platform: link.platform) {
+                    link = link.adoptingHandle(fromTitle, from: .shareTitle)
                     await note(.linkParsed, .ok, platform: link.platform.rawValue,
-                               handle: fromFetch.username, detail: "handle recovered from fetched page title")
+                               handle: fromTitle.username, detail: "handle recovered from fetched page title")
+                } else if let fetchedDescription,
+                          let fromDescription = titleParser.handle(in: fetchedDescription, platform: link.platform) {
+                    link = link.adoptingHandle(fromDescription, from: .shareTitle)
+                    await note(.linkParsed, .ok, platform: link.platform.rawValue,
+                               handle: fromDescription.username, detail: "handle recovered from fetched page description")
                 }
             } catch {
                 fetchError = String(describing: error)
@@ -157,6 +169,7 @@ public actor TipFlow {
             return .needsManualEntry(reason: Self.noHandleExplanation(
                 for: link, titles: titles, text: sharedText, urls: attachedURLs,
                 fetchedTitle: fetchedTitle, fetchedCanonicalURL: fetchedCanonicalURL,
+                fetchedDescription: fetchedDescription,
                 fetchWasAttempted: fetchWasAttempted, fetchError: fetchError))
         }
 
@@ -185,6 +198,7 @@ public actor TipFlow {
     private static func noHandleExplanation(for link: SharedLink, titles: [String],
                                             text: [String], urls: [URL],
                                             fetchedTitle: String?, fetchedCanonicalURL: URL?,
+                                            fetchedDescription: String?,
                                             fetchWasAttempted: Bool, fetchError: String?) -> String {
         let base: String
         switch link.platform {
@@ -208,7 +222,8 @@ public actor TipFlow {
             if let fetchError { return "fetched page: error (\(fetchError))" }
             let titlePart = fetchedTitle.map { "title: \"\($0)\"" } ?? "title: (none)"
             let urlPart = fetchedCanonicalURL.map { "canonical url: \($0.absoluteString)" } ?? "canonical url: (none)"
-            return "fetched page: \(titlePart) / \(urlPart)"
+            let descriptionPart = fetchedDescription.map { "description: \"\($0)\"" } ?? "description: (none)"
+            return "fetched page: \(titlePart) / \(urlPart) / \(descriptionPart)"
         }()
         return base + "\n\n[debug] " + [
             dump("titles", titles),

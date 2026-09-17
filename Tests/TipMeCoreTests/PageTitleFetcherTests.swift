@@ -15,6 +15,10 @@ final class PageTitleFetcherTests: XCTestCase {
         URLSessionPageMetadataFetcher.extractCanonicalURL(from: html)
     }
 
+    private func extractDescription(_ html: String) -> String? {
+        URLSessionPageMetadataFetcher.extractDescription(from: html)
+    }
+
     // MARK: - Title
 
     func testPrefersOgTitleOverTitleTag() {
@@ -106,5 +110,54 @@ final class PageTitleFetcherTests: XCTestCase {
         let metadata = URLSessionPageMetadataFetcher.extractMetadata(from: html)
         XCTAssertEqual(metadata.title, "Pepsi UK on Instagram: \"Caption\"")
         XCTAssertEqual(metadata.canonicalURL?.absoluteString, "https://www.instagram.com/pepsiuk/p/Dc3nAkhAftj/")
+    }
+
+    // MARK: - Description
+    //
+    // Confirmed against a real Instagram Reel fetch: unlike the post case
+    // above, a Reel's canonical URL comes back with no username at all
+    // ("instagram.com/reel/<code>/"), and its title is the same unusable
+    // display-name shape. The description is the one field known to follow
+    // Instagram's classic "N likes, N comments - Name (@username) on
+    // Instagram: caption" convention, which does carry the @username.
+
+    func testPrefersOgDescriptionOverDescriptionTag() {
+        let html = """
+        <meta name="description" content="Instagram">
+        <meta property="og:description" content="500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram">
+        """
+        XCTAssertEqual(extractDescription(html),
+                       "500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram")
+    }
+
+    func testOgDescriptionWithReversedAttributeOrder() {
+        let html = """
+        <meta content="500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram" property="og:description">
+        """
+        XCTAssertEqual(extractDescription(html),
+                       "500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram")
+    }
+
+    func testFallsBackToDescriptionTagWhenNoOgDescriptionPresent() {
+        let html = """
+        <meta name="description" content="500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram">
+        """
+        XCTAssertEqual(extractDescription(html),
+                       "500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram")
+    }
+
+    func testDescriptionReturnsNilWhenNeitherIsPresent() {
+        XCTAssertNil(extractDescription("<html><head></head></html>"))
+        XCTAssertNil(extractDescription(""))
+    }
+
+    func testMetadataIncludesDescription() {
+        let html = """
+        <meta property="og:title" content="Luke Hamnett on Instagram: &quot;caption&quot;">
+        <link rel="canonical" href="https://www.instagram.com/reel/DbWliK9tPPs/">
+        <meta property="og:description" content="500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram">
+        """
+        let metadata = URLSessionPageMetadataFetcher.extractMetadata(from: html)
+        XCTAssertEqual(metadata.description, "500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram")
     }
 }

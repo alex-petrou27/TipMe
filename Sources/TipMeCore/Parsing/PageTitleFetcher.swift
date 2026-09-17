@@ -14,16 +14,31 @@ public struct FetchedPageMetadata: Equatable, Sendable {
     /// a handle to pay -- see `canonicalURL` below.
     public let title: String?
     /// The page's canonical link (`<link rel="canonical">` or `og:url`).
-    /// Confirmed on the same real device fetch: Instagram's canonical URL for
-    /// a post is `instagram.com/<username>/p/<code>/` -- the *same* shape a
+    /// Confirmed on a real post fetch: Instagram's canonical URL for a post
+    /// is `instagram.com/<username>/p/<code>/` -- the *same* shape a
     /// profile-grid "copy link" share already produces, which
-    /// `SharedLinkParser` already parses with full confidence. This is the
-    /// reliable path; `title` is a fallback for pages that omit it.
+    /// `SharedLinkParser` already parses with full confidence.
+    ///
+    /// A second real fetch, this time of a Reel, confirmed this isn't
+    /// universal: a Reel's canonical URL comes back as
+    /// `instagram.com/reel/<code>/` -- no username at all, same shape as the
+    /// original shortcode link. So this is the *most* reliable source when
+    /// it names anyone, but posts and Reels aren't consistent about whether
+    /// it does.
     public let canonicalURL: URL?
+    /// The page's `og:description` (or `<meta name="description">`).
+    /// Instagram's long-standing convention for this field is
+    /// "N likes, N comments - Full Name (@username) on Instagram: caption"
+    /// -- unlike the title, which only ever showed the display name on a
+    /// real device, this is the one field actually known to carry the
+    /// `@username` in prose. Last resort when neither of the above names
+    /// anyone.
+    public let description: String?
 
-    public init(title: String?, canonicalURL: URL?) {
+    public init(title: String?, canonicalURL: URL?, description: String? = nil) {
         self.title = title
         self.canonicalURL = canonicalURL
+        self.description = description
     }
 }
 
@@ -43,9 +58,16 @@ public struct FetchedPageMetadata: Equatable, Sendable {
 /// A second real-device fetch confirmed *why* the title alone isn't enough:
 /// Instagram's title reads "Pepsi UK on Instagram: caption" -- the account's
 /// display name, not `@pepsiuk`. So the fetch also reads the page's
-/// canonical URL, which -- also confirmed live -- names the actual username
-/// in its path, the same shape `SharedLinkParser` already trusts fully for a
-/// directly-shared profile link.
+/// canonical URL, which -- also confirmed live, for a post -- names the
+/// actual username in its path, the same shape `SharedLinkParser` already
+/// trusts fully for a directly-shared profile link.
+///
+/// A third real-device fetch, this time of a Reel, showed that isn't
+/// universal either: a Reel's canonical URL comes back with no username at
+/// all. So the fetch also reads `og:description`, which follows Instagram's
+/// long-standing "N likes, N comments - Name (@username) on Instagram:
+/// caption" convention -- the one field actually known to carry the
+/// `@username` in prose, used as the last resort of the three.
 ///
 /// ## Constraints
 ///
@@ -126,7 +148,9 @@ public actor URLSessionPageMetadataFetcher: PageMetadataFetching {
     }
 
     static func extractMetadata(from html: String) -> FetchedPageMetadata {
-        FetchedPageMetadata(title: extractTitle(from: html), canonicalURL: extractCanonicalURL(from: html))
+        FetchedPageMetadata(title: extractTitle(from: html),
+                           canonicalURL: extractCanonicalURL(from: html),
+                           description: extractDescription(from: html))
     }
 
     /// Prefers `og:title` -- the field every real preview mechanism reads --
@@ -154,6 +178,17 @@ public actor URLSessionPageMetadataFetcher: PageMetadataFetching {
         return nil
     }
 
+    /// Prefers `og:description`, falling back to `<meta name="description">`.
+    static func extractDescription(from html: String) -> String? {
+        if let og = firstMatch(ogDescriptionPattern, in: html) {
+            return decodeHTMLEntities(og)
+        }
+        if let description = firstMatch(descriptionTagPattern, in: html) {
+            return decodeHTMLEntities(description)
+        }
+        return nil
+    }
+
     // Matches either attribute order: `property="og:title" content="..."`
     // or `content="..." property="og:title"` -- pages are not consistent
     // about this.
@@ -174,6 +209,16 @@ public actor URLSessionPageMetadataFetcher: PageMetadataFetching {
     private static let ogURLPattern = try! NSRegularExpression(
         pattern: "<meta\\s+property=[\"']og:url[\"']\\s+content=[\"']([^\"']*)[\"']"
             + "|<meta\\s+content=[\"']([^\"']*)[\"']\\s+property=[\"']og:url[\"']",
+        options: [.caseInsensitive])
+
+    private static let ogDescriptionPattern = try! NSRegularExpression(
+        pattern: "<meta\\s+property=[\"']og:description[\"']\\s+content=[\"']([^\"']*)[\"']"
+            + "|<meta\\s+content=[\"']([^\"']*)[\"']\\s+property=[\"']og:description[\"']",
+        options: [.caseInsensitive])
+
+    private static let descriptionTagPattern = try! NSRegularExpression(
+        pattern: "<meta\\s+name=[\"']description[\"']\\s+content=[\"']([^\"']*)[\"']"
+            + "|<meta\\s+content=[\"']([^\"']*)[\"']\\s+name=[\"']description[\"']",
         options: [.caseInsensitive])
 
     private static func firstMatch(_ regex: NSRegularExpression, in text: String) -> String? {
