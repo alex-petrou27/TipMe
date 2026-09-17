@@ -47,7 +47,9 @@ public enum HandleSource: String, Equatable, Sendable {
 ///    "Reel from username" and nothing else.
 /// 1. An explicit attribution — "Reel **from** @user", "Post **by** @user".
 /// 2. "@user **on** Instagram".
-/// 3. A single unambiguous mention. If the title mentions more than one
+/// 3. Instagram's description engagement-count prefix — "N likes, N
+///    comments - username **on** <date>".
+/// 4. A single unambiguous mention. If the title mentions more than one
 ///    distinct account, nothing is returned.
 public struct ShareTitleParser: Sendable {
 
@@ -84,6 +86,19 @@ public struct ShareTitleParser: Sendable {
         pattern: mentionPrefix + username + "\\)?\\s+on\\s+(?:instagram|tiktok)",
         options: [.caseInsensitive])
 
+    /// Instagram's actual current `og:description` convention, confirmed on a
+    /// real device fetch: "182K likes, 5,289 comments - vroomjuicy on August
+    /// 25, 2026: "caption"" -- the username sits bare, with **no `@`**,
+    /// between the comment count and "on <date>" (not "on Instagram" the way
+    /// the title-shaped rule above expects). The "N likes, N comments -"
+    /// prefix this requires essentially never occurs outside this exact
+    /// field, so matching without an `@` is as safe here as it is for
+    /// `generatedHeaderAttribution` above.
+    private static let descriptionEngagementPrefix = try! NSRegularExpression(
+        pattern: "[\\d,.]+\\+?\\s*[KkMm]?\\s+likes?,\\s*[\\d,.]+\\+?\\s*[KkMm]?\\s+comments?\\s*-\\s*"
+            + username + "\\s+on\\s",
+        options: [.caseInsensitive])
+
     private static let anyMention = try! NSRegularExpression(
         pattern: mentionPrefix + username,
         options: [])
@@ -111,7 +126,14 @@ public struct ShareTitleParser: Sendable {
             return handle
         }
 
-        // 3. A single distinct mention is unambiguous. Several are not, and
+        // 3. Instagram's description engagement-count prefix -- "N likes, N
+        //    comments - username on <date>: caption". No @ sign, but the
+        //    distinctive "likes, ... comments -" anchor keeps this safe.
+        if let handle = firstMatch(Self.descriptionEngagementPrefix, in: trimmed, platform: platform) {
+            return handle
+        }
+
+        // 4. A single distinct mention is unambiguous. Several are not, and
         //    guessing between them risks paying the wrong person.
         let mentions = allMatches(Self.anyMention, in: trimmed, platform: platform)
         let distinct = Set(mentions.map(\.username))

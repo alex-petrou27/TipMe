@@ -136,11 +136,10 @@ public actor TipFlow {
                 // username in its path, the same shape a directly shared
                 // profile link already carries. A Reel then showed *that*
                 // isn't universal either: its canonical URL came back with
-                // no username at all. So try the canonical URL first, then
-                // the title, then the description -- Instagram's
-                // long-standing "Name (@username) on Instagram: caption"
-                // convention, the one field actually confirmed to carry
-                // an @username in prose.
+                // no username at all. Its description did name it, though --
+                // "N likes, N comments - username on <date>: caption", the
+                // bare username with no `@`. Try the canonical URL first,
+                // then the title, then the description.
                 if let canonicalURL = metadata.canonicalURL,
                    let recovered = parser.parse(canonicalURL), recovered.platform == link.platform,
                    let fromURL = recovered.handle {

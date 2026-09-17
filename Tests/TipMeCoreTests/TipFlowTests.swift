@@ -235,30 +235,32 @@ final class TipFlowTests: XCTestCase {
     /// canonical URL comes back with no username at all
     /// ("instagram.com/reel/<code>/", same shape as the original shortcode
     /// link) and its title is the same unusable display name shape. What
-    /// recovers the creator here is the description, which follows
-    /// Instagram's long-standing "N likes, N comments - Name (@username) on
-    /// Instagram: caption" convention.
+    /// recovers the creator here is the description -- confirmed live to
+    /// read "N likes, N comments - username on <date>: caption", the bare
+    /// username with no `@`.
     func testInstagramReelIsIdentifiedFromFetchedDescriptionWhenTitleAndCanonicalURLAreBothUnusable() async {
         let harness = makeHarness(
-            records: [.stub(username: "lukehamnett", platform: .instagram)],
+            records: [.stub(username: "vroomjuicy", platform: .instagram)],
             pageMetadataFetcher: StubPageMetadataFetcher(
-                title: "Luke Hamnett on Instagram: \"caption\"",
-                canonicalURL: URL(string: "https://www.instagram.com/reel/DbWliK9tPPs/"),
-                description: "500 likes, 12 comments - Luke Hamnett (@lukehamnett) on Instagram: \"caption\""))
+                title: "vroom on Instagram: \"caption\"",
+                canonicalURL: URL(string: "https://www.instagram.com/reel/Dcef_2PMxDJ/"),
+                description: "182K likes, 5,289 comments - vroomjuicy on August 25, 2026: \"caption\""))
         let state = await harness.flow.identify(
-            attachedURLs: [URL(string: "https://www.instagram.com/reel/DbWliK9tPPs/")!],
+            attachedURLs: [URL(string: "https://www.instagram.com/reel/Dcef_2PMxDJ/")!],
             sharedText: [],
             titles: [])
 
         guard case .ready(let record) = state else {
             return XCTFail("expected a ready state, got \(state)")
         }
-        XCTAssertEqual(record.handle.username, "lukehamnett")
+        XCTAssertEqual(record.handle.username, "vroomjuicy")
     }
 
     /// The real, confirmed failure shape: title, canonical URL, and
     /// description all fail to name anyone -- still degrades cleanly to
-    /// manual entry.
+    /// manual entry. A multi-word display name directly before "on" doesn't
+    /// satisfy the description rule's single-token username shape, so this
+    /// isn't accidentally treated as a match either.
     func testFetchedDescriptionWithNoMentionStillFallsBackToManualEntry() async {
         let harness = makeHarness(
             pageMetadataFetcher: StubPageMetadataFetcher(

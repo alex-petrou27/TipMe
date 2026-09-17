@@ -27,12 +27,12 @@ public struct FetchedPageMetadata: Equatable, Sendable {
     /// it does.
     public let canonicalURL: URL?
     /// The page's `og:description` (or `<meta name="description">`).
-    /// Instagram's long-standing convention for this field is
-    /// "N likes, N comments - Full Name (@username) on Instagram: caption"
-    /// -- unlike the title, which only ever showed the display name on a
-    /// real device, this is the one field actually known to carry the
-    /// `@username` in prose. Last resort when neither of the above names
-    /// anyone.
+    /// Confirmed on a real device fetch of a Reel: Instagram's current
+    /// convention is "N likes, N comments - username on <date>: caption" --
+    /// the username appears bare, with **no** `@` and followed by a date
+    /// rather than "on Instagram", not the "(@username) on Instagram" shape
+    /// originally guessed here. `ShareTitleParser` matches this exact shape.
+    /// Last resort when neither of the above names anyone.
     public let description: String?
 
     public init(title: String?, canonicalURL: URL?, description: String? = nil) {
@@ -64,10 +64,10 @@ public struct FetchedPageMetadata: Equatable, Sendable {
 ///
 /// A third real-device fetch, this time of a Reel, showed that isn't
 /// universal either: a Reel's canonical URL comes back with no username at
-/// all. So the fetch also reads `og:description`, which follows Instagram's
-/// long-standing "N likes, N comments - Name (@username) on Instagram:
-/// caption" convention -- the one field actually known to carry the
-/// `@username` in prose, used as the last resort of the three.
+/// all. So the fetch also reads `og:description`, which -- confirmed on that
+/// same Reel -- follows the pattern "N likes, N comments - username on
+/// <date>: caption": the bare username with no `@`, used as the last resort
+/// of the three.
 ///
 /// ## Constraints
 ///

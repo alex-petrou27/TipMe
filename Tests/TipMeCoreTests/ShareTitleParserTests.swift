@@ -68,6 +68,26 @@ final class ShareTitleParserTests: XCTestCase {
         XCTAssertEqual(handle("Some Creator (@zachking) on TikTok", .tiktok), "zachking")
     }
 
+    /// Instagram's actual current `og:description` convention, confirmed on
+    /// a real device fetch of a Reel: "182K likes, 5,289 comments -
+    /// vroomjuicy on August 25, 2026: caption" -- the username sits bare, no
+    /// `@`, between the comment count and "on <date>" rather than
+    /// "on Instagram".
+    func testDescriptionEngagementCountPrefix() {
+        XCTAssertEqual(
+            handle("182K likes, 5,289 comments - vroomjuicy on August 25, 2026: \"You not slick unc\""),
+            "vroomjuicy")
+        XCTAssertEqual(handle("50 likes, 2 comments - natgeo on March 3, 2023: \"caption\""), "natgeo")
+        XCTAssertEqual(handle("1 like, 1 comment - zachking on Jan 1, 2024", .tiktok), "zachking")
+    }
+
+    /// The engagement-count anchor is specific enough that it shouldn't
+    /// misfire on ordinary prose that happens to mention likes or comments.
+    func testDescriptionEngagementPrefixDoesNotMisfireOnOrdinaryProse() {
+        XCTAssertNil(handle("I really liked the comments on this one"))
+        XCTAssertNil(handle("Likes and comments are turned off"))
+    }
+
     func testCasingIsNormalised() {
         XCTAssertEqual(handle("Reel from @NatGeo"), "natgeo")
         XCTAssertEqual(handle("REEL FROM @NATGEO"), "natgeo")
