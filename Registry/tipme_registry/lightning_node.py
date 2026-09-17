@@ -265,20 +265,40 @@ class VoltagePaymentsRail:
         committing to paying it. Guessed to be a quote resource -- Voltage's
         docs list a separate "Quotes" section this hasn't been read yet --
         rather than the node-backed `decodepayreq` primitive, which a
-        credit-backed wallet has no node to run itself."""
+        credit-backed wallet has no node to run itself.
+
+        Mirrors payment creation's shape (client-generated `id`, async 202
+        with a follow-up read, fields nested under `data`) since that's the
+        pattern every other Voltage resource here has turned out to follow."""
+        quote_id = str(uuid.uuid4())
+        quotes_path = (
+            f"/organizations/{self._config.organization_id}"
+            f"/environments/{self._config.environment_id}/quotes"
+        )
         async with self._client(10) as client:
             try:
                 response = await client.post(
-                    f"/organizations/{self._config.organization_id}"
-                    f"/environments/{self._config.environment_id}/quotes",
-                    json={"wallet_id": self._config.wallet_id, "payment_request": payment_request},
+                    quotes_path,
+                    json={
+                        "id": quote_id,
+                        "wallet_id": self._config.wallet_id,
+                        "payment_request": payment_request,
+                    },
                 )
                 self._check(response)
-                body = response.json()
+                body = response.json() if response.content else {}
+                for _attempt in range(10):
+                    if body.get("data") or body.get("amount_msats"):
+                        break
+                    await asyncio.sleep(0.3)
+                    follow_up = await client.get(f"{quotes_path}/{quote_id}")
+                    self._check(follow_up)
+                    body = follow_up.json()
+                data = body.get("data") or body
                 return DecodedInvoice(
-                    amount_sats=int(body.get("amount_msats", 0)) // 1000,
-                    destination=body.get("destination", ""),
-                    description=body.get("memo", body.get("description", "")),
+                    amount_sats=int(data.get("amount_msats", 0)) // 1000,
+                    destination=data.get("destination", ""),
+                    description=data.get("memo", data.get("description", "")),
                 )
             except LightningNodeError:
                 raise
