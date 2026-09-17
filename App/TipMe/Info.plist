@@ -2,6 +2,24 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- These six keys used to be filled in automatically by Xcode even when
+	     absent from a static Info.plist. Newer Xcode (27) no longer does
+	     that silently, and leaving them out produces a bundle with no
+	     CFBundleIdentifier at all, which fails to install. Spelled out
+	     explicitly so this does not depend on a given toolchain's
+	     auto-fill behaviour. -->
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
 	<key>CFBundleDisplayName</key>
 	<string>TipMe</string>
 	<key>CFBundleShortVersionString</key>
