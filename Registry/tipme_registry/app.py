@@ -24,11 +24,16 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import lightning, oauth, signing
+from . import accounts, lightning, oauth, signing
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
-from .storage import CreatorRecord, Storage
+from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, Storage
 
 ASSETS = ("bitcoin", "usdt")
+
+# How long a session token stays valid. The app is expected to hold onto it
+# and only ask the user to log in again after this, so it needs to be long
+# enough that "custodial" doesn't also mean "logs you out constantly."
+SESSION_TTL_SECONDS = 60 * 60 * 24 * 30
 
 
 # --------------------------------------------------------------------------
@@ -55,6 +60,16 @@ class Settings:
         # this: a script could claim every popular handle before their owners
         # do, pointing them all at one wallet.
         self.registrations_per_hour = int(os.environ.get("REGISTRY_REGISTRATIONS_PER_HOUR", "10"))
+
+        # Separate from registrations_per_hour above on purpose: claiming a
+        # creator handle and opening a money-holding account are different
+        # kinds of action, and a bot farming one should not be constrained
+        # by (or share a budget with) someone doing a lot of the other.
+        self.signups_per_hour = int(os.environ.get("REGISTRY_SIGNUPS_PER_HOUR", "10"))
+
+        # Login attempts per client per hour. A custodial account is only as
+        # safe as its password, so brute-forcing one has to be slow.
+        self.login_attempts_per_hour = int(os.environ.get("REGISTRY_LOGIN_ATTEMPTS_PER_HOUR", "20"))
 
         # The custom URL scheme the app registers, so the OAuth callback can
         # hand control back to it once Instagram/TikTok redirect here. Not a
@@ -83,6 +98,8 @@ _storage: Storage | None = None
 # deployment needs this moved to shared storage, or the effective limit becomes
 # the configured limit multiplied by the worker count.
 _registration_attempts: dict[str, deque[float]] = defaultdict(deque)
+_signup_attempts: dict[str, deque[float]] = defaultdict(deque)
+_login_attempts: dict[str, deque[float]] = defaultdict(deque)
 
 
 @dataclass
@@ -161,11 +178,58 @@ def _rate_limit_registration(client: str, settings: Settings) -> None:
     attempts.append(now)
 
 
+def _rate_limit_signup(client: str, settings: Settings) -> None:
+    window = 3600.0
+    now = time.monotonic()
+    attempts = _signup_attempts[client]
+    while attempts and now - attempts[0] > window:
+        attempts.popleft()
+    if len(attempts) >= settings.signups_per_hour:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many accounts created from this address. Try again later.",
+        )
+    attempts.append(now)
+
+
+def _rate_limit_login(client: str, settings: Settings) -> None:
+    window = 3600.0
+    now = time.monotonic()
+    attempts = _login_attempts[client]
+    while attempts and now - attempts[0] > window:
+        attempts.popleft()
+    if len(attempts) >= settings.login_attempts_per_hour:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts from this address. Try again later.",
+        )
+    attempts.append(now)
+
+
 def get_storage(settings: Settings = Depends(get_settings)) -> Storage:
     global _storage
     if _storage is None:
         _storage = Storage(settings.database_path)
     return _storage
+
+
+def get_current_user(
+    authorization: str | None = Header(default=None),
+    storage: Storage = Depends(get_storage),
+) -> str:
+    """Resolves a ``Bearer <token>`` header to a user id.
+
+    Every balance-affecting endpoint depends on this rather than trusting an
+    id the client sends directly -- a user id in the request body would let
+    anyone move money out of any account just by guessing or copying one.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = authorization.removeprefix("Bearer ").strip()
+    user_id = storage.session_user_id(token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    return user_id
 
 
 # --------------------------------------------------------------------------
@@ -216,6 +280,33 @@ class OAuthSessionResponse(BaseModel):
     management_token: str | None
 
 
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    user_id: str
+    email: str
+    session_token: str
+
+
+class BalanceEntry(BaseModel):
+    asset: str
+    balance_minor: int
+
+
+class MeResponse(BaseModel):
+    user_id: str
+    email: str
+    balances: list[BalanceEntry]
+
+
 # --------------------------------------------------------------------------
 # App
 # --------------------------------------------------------------------------
@@ -237,6 +328,96 @@ def public_key(settings: Settings = Depends(get_settings)) -> dict:
     authenticates would defeat the entire point of signing them.
     """
     return {"public_key": signing.public_key_b64(settings.private_key)}
+
+
+@app.post("/v1/auth/signup", response_model=AuthResponse, status_code=201)
+def signup(
+    request: SignupRequest,
+    http_request: Request,
+    settings: Settings = Depends(get_settings),
+    storage: Storage = Depends(get_storage),
+) -> AuthResponse:
+    try:
+        email = accounts.normalise_email(request.email)
+    except accounts.InvalidEmail as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    try:
+        accounts.validate_password(request.password)
+    except accounts.WeakPassword as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    _rate_limit_signup(_client_key(http_request), settings)
+
+    try:
+        account = storage.create_user(email, accounts.hash_password(request.password))
+    except EmailTaken as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    token = storage.create_session(account.id, SESSION_TTL_SECONDS)
+    return AuthResponse(user_id=account.id, email=account.email, session_token=token)
+
+
+@app.post("/v1/auth/login", response_model=AuthResponse)
+def login(
+    request: LoginRequest,
+    http_request: Request,
+    settings: Settings = Depends(get_settings),
+    storage: Storage = Depends(get_storage),
+) -> AuthResponse:
+    _rate_limit_login(_client_key(http_request), settings)
+
+    # Same "invalid email or password" message either way -- confirming
+    # which emails have accounts is its own small leak, and this endpoint
+    # has no reason to offer it.
+    invalid = HTTPException(status_code=401, detail="invalid email or password")
+    try:
+        email = accounts.normalise_email(request.email)
+    except accounts.InvalidEmail:
+        raise invalid
+
+    found = storage.get_user_by_email(email)
+    if found is None:
+        raise invalid
+    account, password_hash = found
+    if not accounts.verify_password(request.password, password_hash):
+        raise invalid
+
+    token = storage.create_session(account.id, SESSION_TTL_SECONDS)
+    return AuthResponse(user_id=account.id, email=account.email, session_token=token)
+
+
+@app.post("/v1/auth/logout", status_code=204)
+def logout(
+    authorization: str | None = Header(default=None),
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    # Deliberately does not go through get_current_user: an already-expired
+    # or already-logged-out token should still result in "you are logged
+    # out," not a 401 for a client that is trying to do exactly that.
+    if authorization and authorization.startswith("Bearer "):
+        storage.delete_session(authorization.removeprefix("Bearer ").strip())
+    return Response(status_code=204)
+
+
+@app.get("/v1/me", response_model=MeResponse)
+def me(
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> MeResponse:
+    account = storage.get_user(user_id)
+    if account is None:
+        # The session outlived the account it points at -- possible only if
+        # an account is deleted without its sessions being cleaned up first.
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    balances = storage.get_balances(user_id)
+    return MeResponse(
+        user_id=account.id,
+        email=account.email,
+        balances=[
+            BalanceEntry(asset=asset, balance_minor=balances.get(asset, 0))
+            for asset in ASSETS
+        ],
+    )
 
 
 @app.get("/v1/creators/{platform}/{username}")

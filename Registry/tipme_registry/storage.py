@@ -5,10 +5,11 @@ are three. An ORM would be more code, not less.
 """
 from __future__ import annotations
 
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .handles import Handle
 
@@ -39,7 +40,63 @@ CREATE TABLE IF NOT EXISTS creators (
     updated_at          TEXT NOT NULL,
     PRIMARY KEY (platform, username)
 );
+
+-- Custodial accounts: TipMe holds the actual sats/USDT, so this database is
+-- itself the wallet, not just a phone-book of where wallets are. See
+-- accounts.py for password handling.
+CREATE TABLE IF NOT EXISTS users (
+    id              TEXT PRIMARY KEY,
+    email           TEXT NOT NULL UNIQUE,
+    password_hash   TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token       TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL
+);
+
+-- One row per (user, asset). The balance a client is ever shown or allowed to
+-- spend against comes from here, never from summing ledger_entries live --
+-- summing on every read would make an ever-growing table a growing latency
+-- cost on the one number every screen shows.
+CREATE TABLE IF NOT EXISTS ledger_balances (
+    user_id       TEXT NOT NULL,
+    asset         TEXT NOT NULL,
+    balance_minor INTEGER NOT NULL DEFAULT 0,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (user_id, asset)
+);
+
+-- Append-only audit trail behind ledger_balances. Never read on the payment
+-- path; exists so any balance can be explained after the fact.
+CREATE TABLE IF NOT EXISTS ledger_entries (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    asset        TEXT NOT NULL,
+    delta_minor  INTEGER NOT NULL,
+    reason       TEXT NOT NULL,
+    counterparty TEXT,
+    created_at   TEXT NOT NULL
+);
 """
+
+
+class EmailTaken(ValueError):
+    """Raised by create_user when the email is already registered."""
+
+
+class InsufficientBalance(ValueError):
+    """Raised by adjust_balance when a debit would take a balance below zero."""
+
+
+@dataclass
+class Account:
+    id: str
+    email: str
+    created_at: datetime
 
 
 @dataclass
@@ -204,3 +261,133 @@ class Storage:
             oauth_platform_user_id=row["oauth_platform_user_id"],
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
+
+    # ----------------------------------------------------------------
+    # Accounts
+    # ----------------------------------------------------------------
+
+    def create_user(self, email: str, password_hash: str) -> Account:
+        user_id = secrets.token_urlsafe(16)
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            try:
+                conn.execute(
+                    "INSERT INTO users (id, email, password_hash, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (user_id, email, password_hash, now.isoformat()),
+                )
+            except sqlite3.IntegrityError as error:
+                raise EmailTaken(f"{email} is already registered") from error
+        return Account(id=user_id, email=email, created_at=now)
+
+    def get_user_by_email(self, email: str) -> tuple[Account, str] | None:
+        """Returns the account alongside its password hash.
+
+        The hash is only ever needed immediately before verifying a login
+        attempt, so it travels with the account here rather than through a
+        separate accessor that call sites could reach for by mistake.
+        """
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        return (self._to_account(row), row["password_hash"]) if row else None
+
+    def get_user(self, user_id: str) -> Account | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return self._to_account(row) if row else None
+
+    @staticmethod
+    def _to_account(row: sqlite3.Row) -> Account:
+        return Account(
+            id=row["id"],
+            email=row["email"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    # ----------------------------------------------------------------
+    # Sessions
+    # ----------------------------------------------------------------
+
+    def create_session(self, user_id: str, ttl_seconds: int) -> str:
+        token = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=ttl_seconds)
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO sessions (token, user_id, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (token, user_id, now.isoformat(), expires.isoformat()),
+            )
+        return token
+
+    def session_user_id(self, token: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT user_id, expires_at FROM sessions WHERE token = ?", (token,),
+            ).fetchone()
+        if row is None:
+            return None
+        if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+            return None
+        return row["user_id"]
+
+    def delete_session(self, token: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+
+    # ----------------------------------------------------------------
+    # Ledger
+    # ----------------------------------------------------------------
+
+    def get_balances(self, user_id: str) -> dict[str, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT asset, balance_minor FROM ledger_balances WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        return {row["asset"]: row["balance_minor"] for row in rows}
+
+    def adjust_balance(
+        self, user_id: str, asset: str, delta_minor: int, reason: str,
+        counterparty: str | None = None,
+    ) -> int:
+        """Credits (positive) or debits (negative) a user's ledger balance
+        and records the entry, atomically.
+
+        Rejects a debit that would take the balance below zero. This is the
+        one invariant a custodial ledger cannot get wrong: nobody can ever be
+        shown, let alone send, money that was never actually credited to
+        them.
+        """
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT balance_minor FROM ledger_balances WHERE user_id = ? AND asset = ?",
+                (user_id, asset),
+            ).fetchone()
+            current = row["balance_minor"] if row else 0
+            new_balance = current + delta_minor
+            if new_balance < 0:
+                raise InsufficientBalance(
+                    f"balance {current} cannot cover a change of {delta_minor}"
+                )
+            conn.execute(
+                """
+                INSERT INTO ledger_balances (user_id, asset, balance_minor, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, asset) DO UPDATE SET
+                    balance_minor = excluded.balance_minor,
+                    updated_at    = excluded.updated_at
+                """,
+                (user_id, asset, new_balance, now.isoformat()),
+            )
+            conn.execute(
+                """
+                INSERT INTO ledger_entries (id, user_id, asset, delta_minor, reason,
+                                            counterparty, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (secrets.token_urlsafe(16), user_id, asset, delta_minor, reason,
+                 counterparty, now.isoformat()),
+            )
+        return new_balance

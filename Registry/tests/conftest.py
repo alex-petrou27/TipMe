@@ -26,6 +26,8 @@ def client(monkeypatch):
     app_module._settings = None
     app_module._storage = None
     app_module._registration_attempts.clear()
+    app_module._signup_attempts.clear()
+    app_module._login_attempts.clear()
     app_module._oauth_pending.clear()
     app_module._oauth_sessions.clear()
     app_module._identity_pending.clear()
