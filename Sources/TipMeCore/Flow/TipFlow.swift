@@ -25,7 +25,7 @@ public actor TipFlow {
     private let parser: SharedLinkParser
     private let titleParser = ShareTitleParser()
     private let shortLinkResolver: ShortLinkResolver
-    private let pageTitleFetcher: PageTitleFetching
+    private let pageMetadataFetcher: PageMetadataFetching
     private let creatorResolver: CreatorResolver
     private let backend: PaymentBackend
     private let quoteBuilder: TipQuoteBuilder
@@ -38,7 +38,7 @@ public actor TipFlow {
 
     public init(parser: SharedLinkParser = SharedLinkParser(),
                 shortLinkResolver: ShortLinkResolver,
-                pageTitleFetcher: PageTitleFetching = URLSessionPageTitleFetcher(),
+                pageMetadataFetcher: PageMetadataFetching = URLSessionPageMetadataFetcher(),
                 creatorResolver: CreatorResolver,
                 backend: PaymentBackend,
                 quoteBuilder: TipQuoteBuilder,
@@ -50,7 +50,7 @@ public actor TipFlow {
                 origin: PaymentIntent.Origin = .shareExtension) {
         self.parser = parser
         self.shortLinkResolver = shortLinkResolver
-        self.pageTitleFetcher = pageTitleFetcher
+        self.pageMetadataFetcher = pageMetadataFetcher
         self.creatorResolver = creatorResolver
         self.backend = backend
         self.quoteBuilder = quoteBuilder
@@ -96,6 +96,12 @@ public actor TipFlow {
             }
         }
 
+        // Captured before any fallback below can adopt a handle from
+        // elsewhere and also stamp a `.url` source — this distinguishes "the
+        // share's own link named the creator" (logged below) from a handle
+        // recovered later that happens to carry the same trust level.
+        let handleWasInTheOriginalLink = link.handle != nil
+
         // The URL is the preferred source, but a shortcode Reel or post has no
         // handle in it. The share title usually does — "Reel from @natgeo" —
         // so fall back to that before giving up on identifying the creator.
@@ -109,14 +115,30 @@ public actor TipFlow {
         // Confirmed on a real device: Instagram hands the extension a bare
         // URL and nothing else — no title, no text. iOS's own share-sheet
         // preview text ("Reel from username") is never passed down. The
-        // last resort is fetching the page ourselves and reading its
-        // og:title, exactly as any link-preview mechanism would.
+        // last resort is fetching the page ourselves.
         var fetchedTitle: String?
+        var fetchedCanonicalURL: URL?
         var fetchError: String?
         if link.handle == nil {
             do {
-                fetchedTitle = try await pageTitleFetcher.title(for: link.canonicalURL)
-                if let fetchedTitle, let fromFetch = titleParser.handle(in: fetchedTitle, platform: link.platform) {
+                let metadata = try await pageMetadataFetcher.metadata(for: link.canonicalURL)
+                fetchedTitle = metadata.title
+                fetchedCanonicalURL = metadata.canonicalURL
+
+                // Confirmed on a second real-device fetch: Instagram's title
+                // is the account's *display name* ("Pepsi UK on Instagram: …"),
+                // not its @username -- so it can't be parsed into a handle to
+                // pay. The page's own canonical URL is more reliable: it names
+                // the actual username in its path, the same shape a directly
+                // shared profile link already carries, so try that first and
+                // only fall back to the (unreliable) title.
+                if let canonicalURL = metadata.canonicalURL,
+                   let recovered = parser.parse(canonicalURL), recovered.platform == link.platform,
+                   let fromURL = recovered.handle {
+                    link = link.adoptingHandle(fromURL, from: .url)
+                    await note(.linkParsed, .ok, platform: link.platform.rawValue,
+                               handle: fromURL.username, detail: "handle recovered from fetched canonical URL")
+                } else if let fetchedTitle, let fromFetch = titleParser.handle(in: fetchedTitle, platform: link.platform) {
                     link = link.adoptingHandle(fromFetch, from: .shareTitle)
                     await note(.linkParsed, .ok, platform: link.platform.rawValue,
                                handle: fromFetch.username, detail: "handle recovered from fetched page title")
@@ -132,10 +154,10 @@ public actor TipFlow {
                        detail: "link carried no handle (kind: \(link.kind.rawValue)) and no title named one")
             return .needsManualEntry(reason: Self.noHandleExplanation(
                 for: link, titles: titles, text: sharedText, urls: attachedURLs,
-                fetchedTitle: fetchedTitle, fetchError: fetchError))
+                fetchedTitle: fetchedTitle, fetchedCanonicalURL: fetchedCanonicalURL, fetchError: fetchError))
         }
 
-        if link.handleSource == .url {
+        if handleWasInTheOriginalLink, link.handleSource == .url {
             await note(.linkParsed, .ok, platform: handle.platform.rawValue, handle: handle.username)
         }
 
@@ -159,7 +181,8 @@ public actor TipFlow {
     /// from the title.
     private static func noHandleExplanation(for link: SharedLink, titles: [String],
                                             text: [String], urls: [URL],
-                                            fetchedTitle: String?, fetchError: String?) -> String {
+                                            fetchedTitle: String?, fetchedCanonicalURL: URL?,
+                                            fetchError: String?) -> String {
         let base: String
         switch link.platform {
         case .instagram:
@@ -168,19 +191,21 @@ public actor TipFlow {
             base = "That TikTok link doesn't include the creator's username. Try sharing the video itself, or enter their Lightning address below."
         }
         // TEMPORARY diagnostic: shows exactly what the share extension
-        // actually received, and what the og:title fallback fetch actually
+        // actually received, and what the page-fetch fallback actually
         // returned, so a real failure can be compared against what the
-        // title parser expects instead of guessed at blind. Remove once
-        // the Instagram title-sourcing question is settled either way.
+        // parser expects instead of guessed at blind. Remove once the
+        // Instagram title-sourcing question is settled either way.
         func dump(_ label: String, _ values: [String]) -> String {
             let joined = values.isEmpty ? "(none)" : values.map { "\"\($0)\"" }.joined(separator: " | ")
             return "\(label): \(joined)"
         }
         let urlStrings = urls.map(\.absoluteString)
         let fetchLine: String = {
-            if let fetchError { return "fetched title: error (\(fetchError))" }
-            if let fetchedTitle { return "fetched title: \"\(fetchedTitle)\"" }
-            return "fetched title: (not attempted)"
+            if let fetchError { return "fetched page: error (\(fetchError))" }
+            if fetchedTitle == nil && fetchedCanonicalURL == nil { return "fetched page: (not attempted)" }
+            let titlePart = fetchedTitle.map { "title: \"\($0)\"" } ?? "title: (none)"
+            let urlPart = fetchedCanonicalURL.map { "canonical url: \($0.absoluteString)" } ?? "canonical url: (none)"
+            return "fetched page: \(titlePart) / \(urlPart)"
         }()
         return base + "\n\n[debug] " + [
             dump("titles", titles),

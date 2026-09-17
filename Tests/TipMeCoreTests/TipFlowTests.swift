@@ -23,13 +23,14 @@ final class TipFlowTests: XCTestCase {
 
     /// Stands in for a real network fetch so tests stay deterministic and
     /// never touch the network — by default it behaves like a share whose
-    /// URL doesn't resolve to a usable title, same as a real failed fetch.
-    private struct StubPageTitleFetcher: PageTitleFetching {
+    /// URL doesn't resolve to any usable metadata, same as a real failed fetch.
+    private struct StubPageMetadataFetcher: PageMetadataFetching {
         var title: String?
+        var canonicalURL: URL?
         var error: Error?
-        func title(for url: URL) async throws -> String? {
+        func metadata(for url: URL) async throws -> FetchedPageMetadata {
             if let error { throw error }
-            return title
+            return FetchedPageMetadata(title: title, canonicalURL: canonicalURL)
         }
     }
 
@@ -37,7 +38,7 @@ final class TipFlowTests: XCTestCase {
                              authorizer: BiometricAuthorizer = FakeAuthorizer(),
                              lookupError: CreatorLookupError? = nil,
                              redirects: [String: String] = [:],
-                             pageTitleFetcher: PageTitleFetching = StubPageTitleFetcher()) -> Harness {
+                             pageMetadataFetcher: PageMetadataFetching = StubPageMetadataFetcher()) -> Harness {
         let clock = MutableClock()
         let backend = FakePaymentBackend(clock: clock)
         let audit = InMemoryAuditLog()
@@ -51,7 +52,7 @@ final class TipFlowTests: XCTestCase {
 
         let flow = TipFlow(
             shortLinkResolver: ShortLinkResolver(probe: StubProbe(chain: redirects)),
-            pageTitleFetcher: pageTitleFetcher,
+            pageMetadataFetcher: pageMetadataFetcher,
             creatorResolver: FakeCreatorResolver(records: table, error: lookupError),
             backend: backend,
             quoteBuilder: TipQuoteBuilder(feePolicy: .standard),
@@ -166,14 +167,38 @@ final class TipFlowTests: XCTestCase {
 
     /// Confirmed on a real device: Instagram hands the share extension a bare
     /// URL with no title or text at all, so the share-title fallback above
-    /// never fires. This is the actual real-world path: fetch the page and
-    /// read its og:title, in Instagram's long-standing
-    /// "Name (@handle) on Instagram: caption" shape.
-    func testInstagramReelIsIdentifiedFromFetchedPageTitleWhenShareCarriesNoTitleAtAll() async {
+    /// never fires. A second real fetch confirmed the title alone is *also*
+    /// no good -- Instagram's title names the account's display name
+    /// ("Pepsi UK on Instagram: caption"), not its @username. What actually
+    /// recovers the creator is the page's own canonical URL, which -- also
+    /// confirmed live -- carries the real username in its path, just like a
+    /// directly shared profile link does.
+    func testInstagramReelIsIdentifiedFromFetchedCanonicalURLWhenShareCarriesNoTitleAtAll() async {
+        let harness = makeHarness(
+            records: [.stub(username: "pepsiuk", platform: .instagram)],
+            pageMetadataFetcher: StubPageMetadataFetcher(
+                title: "Pepsi UK on Instagram: \"New Pepsi Ice cream flavours\"",
+                canonicalURL: URL(string: "https://www.instagram.com/pepsiuk/p/Dc3nAkhAftj/")))
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/p/Dc3nAkhAftj/")!],
+            sharedText: [],
+            titles: [])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "pepsiuk")
+    }
+
+    /// When the fetch turns up a title but no canonical URL, the title is
+    /// still worth trying -- some pages carry a handle in the title even
+    /// without a parseable username-bearing URL.
+    func testHandleIsRecoveredFromFetchedTitleWhenNoCanonicalURLIsAvailable() async {
         let harness = makeHarness(
             records: [.stub(username: "natgeo", platform: .instagram)],
-            pageTitleFetcher: StubPageTitleFetcher(
-                title: "Jane Doe (@natgeo) on Instagram: \"Caption text here\""))
+            pageMetadataFetcher: StubPageMetadataFetcher(
+                title: "Jane Doe (@natgeo) on Instagram: \"Caption text here\"",
+                canonicalURL: nil))
         let state = await harness.flow.identify(
             attachedURLs: [URL(string: "https://www.instagram.com/reel/DFxYzAbCdEf/")!],
             sharedText: [],
@@ -185,12 +210,32 @@ final class TipFlowTests: XCTestCase {
         XCTAssertEqual(record.handle.username, "natgeo")
     }
 
+    /// The real, confirmed shape: a title with no @-mention in it at all
+    /// (just a display name) and no canonical URL either -- still degrades
+    /// cleanly to manual entry rather than misreading the display name as a
+    /// username.
+    func testFetchedTitleWithNoMentionAndNoCanonicalURLFallsBackToManualEntry() async {
+        let harness = makeHarness(
+            pageMetadataFetcher: StubPageMetadataFetcher(
+                title: "Pepsi UK on Instagram: \"New Pepsi Ice cream flavours\"",
+                canonicalURL: nil))
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/p/Dc3nAkhAftj/")!],
+            sharedText: [],
+            titles: [])
+
+        guard case .needsManualEntry(let reason) = state else {
+            return XCTFail("expected manual entry, got \(state)")
+        }
+        XCTAssertTrue(reason.contains("couldn't tell whose Reel"))
+    }
+
     /// A fetch failure (network down, timeout, blocked) must not crash the
     /// flow — it degrades to the same manual-entry offer as any other
     /// unidentifiable share.
-    func testFailedPageTitleFetchStillFallsBackToManualEntry() async {
+    func testFailedPageMetadataFetchStillFallsBackToManualEntry() async {
         let harness = makeHarness(
-            pageTitleFetcher: StubPageTitleFetcher(error: PageTitleFetchError.timedOut))
+            pageMetadataFetcher: StubPageMetadataFetcher(error: PageTitleFetchError.timedOut))
         let state = await harness.flow.identify(
             attachedURLs: [URL(string: "https://www.instagram.com/reel/DFxYzAbCdEf/")!],
             sharedText: [],
@@ -204,11 +249,12 @@ final class TipFlowTests: XCTestCase {
 
     /// The fetch fallback only runs when nothing already named a creator —
     /// a URL or share-title hit must short-circuit it.
-    func testFetchedPageTitleIsNotConsultedWhenTheUrlAlreadyNamedACreator() async {
+    func testFetchedPageMetadataIsNotConsultedWhenTheUrlAlreadyNamedACreator() async {
         let harness = makeHarness(
             records: [.stub(username: "natgeo", platform: .instagram)],
-            pageTitleFetcher: StubPageTitleFetcher(
-                title: "Someone Else (@nasa) on Instagram: \"nope\""))
+            pageMetadataFetcher: StubPageMetadataFetcher(
+                title: "Someone Else on Instagram: \"nope\"",
+                canonicalURL: URL(string: "https://www.instagram.com/nasa/p/xyz/")))
         let state = await harness.flow.identify(
             attachedURLs: [URL(string: "https://www.instagram.com/natgeo/reel/DFxYzAbCdEf/")!],
             sharedText: [])
@@ -217,6 +263,26 @@ final class TipFlowTests: XCTestCase {
             return XCTFail("expected a ready state, got \(state)")
         }
         XCTAssertEqual(record.handle.username, "natgeo")
+    }
+
+    /// A canonical URL from a different platform than the shared link (a
+    /// redirect gone astray, a malformed page) must not be trusted -- the
+    /// platform check exists specifically to keep that from silently mixing
+    /// up TikTok and Instagram creators.
+    func testFetchedCanonicalURLFromAMismatchedPlatformIsIgnored() async {
+        let harness = makeHarness(
+            records: [.stub(username: "creator", platform: .tiktok)],
+            pageMetadataFetcher: StubPageMetadataFetcher(
+                title: nil,
+                canonicalURL: URL(string: "https://www.tiktok.com/@someoneelse/video/1")))
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/reel/DFxYzAbCdEf/")!],
+            sharedText: [],
+            titles: [])
+
+        guard case .needsManualEntry = state else {
+            return XCTFail("expected manual entry, got \(state)")
+        }
     }
 
     func testInstagramLinkCarryingTheHandleIsIdentified() async {
