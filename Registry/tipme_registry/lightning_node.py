@@ -61,6 +61,7 @@ decompiles the binary.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from dataclasses import dataclass
@@ -204,25 +205,30 @@ class VoltagePaymentsRail:
                 )
                 self._check(response)
                 # Confirmed against a real account: the create response
-                # comes back 202 with an empty body -- the payment (and its
-                # BOLT11 invoice) is generated asynchronously. Reading it
-                # back by the id we already chose is what actually gets it.
-                # The payment resource nests kind-specific fields (like the
-                # invoice string) under `data`; everything else (id, status,
-                # requested_amount) sits at the top level.
+                # comes back 202 with an empty body, and the payment (and
+                # its BOLT11 invoice) is generated asynchronously -- still
+                # null moments later, not just on that first empty response.
+                # A single follow-up read isn't reliably enough later than
+                # the create call to have it; this polls briefly instead of
+                # trusting any one read's timing. The payment resource nests
+                # kind-specific fields (like the invoice string) under
+                # `data`; everything else (id, status) sits at the top
+                # level. `(... or {})` covers `data` being either absent or
+                # explicitly null, both seen on a still-resolving payment.
                 body = response.json() if response.content else {}
-                # `.get("data", {})` alone only helps when the key is
-                # missing -- Voltage's initial (still-resolving) response
-                # can carry an explicit `"data": null`, which `.get` would
-                # happily return as `None` rather than the fallback,
-                # crashing the `in` check right after it. `or {}` covers
-                # both "missing" and "present but null".
-                if not (body.get("data") or {}).get("payment_request"):
+                payment_request = (body.get("data") or {}).get("payment_request")
+                for _attempt in range(10):
+                    if payment_request:
+                        break
+                    await asyncio.sleep(0.3)
                     follow_up = await client.get(self._payments_path(f"/{payment_id}"))
                     self._check(follow_up)
                     body = follow_up.json()
+                    payment_request = (body.get("data") or {}).get("payment_request")
+                if not payment_request:
+                    raise LightningNodeError("invoice was not ready after waiting")
                 return Invoice(
-                    payment_request=(body.get("data") or {})["payment_request"],
+                    payment_request=payment_request,
                     payment_hash=body.get("id", payment_id),
                     amount_sats=amount_sats,
                 )
@@ -300,11 +306,19 @@ class VoltagePaymentsRail:
                     },
                 )
                 self._check(response)
+                # Same asynchronous-creation shape confirmed for receive
+                # payments, applied here too: poll briefly rather than
+                # trusting a single follow-up read to have a status yet.
                 body = response.json() if response.content else {}
-                if not body.get("status"):
+                for _attempt in range(10):
+                    if body.get("status"):
+                        break
+                    await asyncio.sleep(0.3)
                     follow_up = await client.get(self._payments_path(f"/{payment_id}"))
                     self._check(follow_up)
                     body = follow_up.json()
+                if not body.get("status"):
+                    raise LightningNodeError("payment result was not ready after waiting")
                 if body.get("status") == "failed":
                     error_detail = body.get("error") or (body.get("data") or {}).get("error") or "payment failed"
                     raise LightningNodeError(error_detail)
