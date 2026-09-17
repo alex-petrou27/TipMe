@@ -1,6 +1,7 @@
 """Test doubles shared across Registry test modules."""
 from __future__ import annotations
 
+from tipme_registry.bitcoin_chain import OnChainError, SendResult
 from tipme_registry.lightning_node import DecodedInvoice, Invoice, InvoiceStatus, LightningNodeError, PaymentResult
 
 
@@ -64,3 +65,35 @@ class FakeLightningRail:
             raise LightningNodeError("unknown test invoice")
         self.paid.append(payment_request)
         return PaymentResult(payment_hash=f"paid-{payment_request}", fee_sats=1)
+
+
+class FakeOnChainRail:
+    """In-memory on-chain rail -- never touches a network or a real wallet.
+
+    A test drives it directly: `receive(address, sats)` simulates a
+    confirmed on-chain payment landing at an address this rail issued,
+    `fail_next_send` makes the next `send` raise.
+    """
+
+    def __init__(self) -> None:
+        self._addresses: dict[int, str] = {}
+        self._received: dict[str, int] = {}
+        self.fail_next_send = False
+        self.sent: list[tuple[str, int]] = []
+
+    async def deposit_address(self, index: int) -> str:
+        return self._addresses.setdefault(index, f"tb1qfakeaddress{index}")
+
+    def receive(self, address: str, amount_sats: int) -> None:
+        self._received[address] = self._received.get(address, 0) + amount_sats
+
+    async def confirmed_received_sats(self, address: str) -> int:
+        return self._received.get(address, 0)
+
+    async def send(self, to_address: str, amount_sats: int,
+                   known_index_count: int, change_index: int) -> SendResult:
+        if self.fail_next_send:
+            self.fail_next_send = False
+            raise OnChainError("simulated broadcast failure")
+        self.sent.append((to_address, amount_sats))
+        return SendResult(txid=f"fake-txid-{len(self.sent)}", fee_sats=200, change_index=None)

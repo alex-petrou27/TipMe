@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import accounts, lightning, lightning_node, oauth, rates as rates_module, signing
+from . import accounts, bitcoin_chain, lightning, lightning_node, oauth, rates as rates_module, signing
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
 from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, PendingDeposit, Storage
 
@@ -34,6 +34,10 @@ ASSETS = ("bitcoin", "usdt")
 # Not a security control -- just guards against a deposit/withdrawal nobody
 # would actually want.
 MIN_LIGHTNING_SATS = 100
+
+# Same idea for on-chain: below this, a single input's own network fee can
+# exceed the amount being withdrawn.
+MIN_ONCHAIN_SATS = 1000
 
 # How long a session token stays valid. The app is expected to hold onto it
 # and only ask the user to log in again after this, so it needs to be long
@@ -257,6 +261,17 @@ def get_lightning_rail() -> lightning_node.LightningRail:
     return rail
 
 
+def get_onchain_rail() -> bitcoin_chain.OnChainRail:
+    """Same fail-closed, resolve-fresh convention as `get_lightning_rail`."""
+    rail = bitcoin_chain.rail_from_env()
+    if rail is None:
+        raise HTTPException(
+            status_code=503,
+            detail="On-chain Bitcoin deposits/withdrawals are not configured on this registry yet",
+        )
+    return rail
+
+
 # --------------------------------------------------------------------------
 # Schemas
 # --------------------------------------------------------------------------
@@ -357,6 +372,22 @@ class WithdrawLightningRequest(BaseModel):
 
 class WithdrawLightningResponse(BaseModel):
     payment_hash: str
+    amount_sats: int
+    fee_sats: int
+    balances: list[BalanceEntry]
+
+
+class DepositBitcoinResponse(BaseModel):
+    address: str
+
+
+class WithdrawBitcoinRequest(BaseModel):
+    to_address: str
+    amount_sats: int = Field(ge=MIN_ONCHAIN_SATS)
+
+
+class WithdrawBitcoinResponse(BaseModel):
+    txid: str
     amount_sats: int
     fee_sats: int
     balances: list[BalanceEntry]
@@ -595,6 +626,107 @@ async def withdraw_lightning(
     return WithdrawLightningResponse(
         payment_hash=result.payment_hash,
         amount_sats=decoded.amount_sats,
+        fee_sats=result.fee_sats,
+        balances=_balance_entries(user_id, storage),
+    )
+
+
+@app.post("/v1/deposit/bitcoin", response_model=DepositBitcoinResponse)
+async def deposit_bitcoin(
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+    rail: bitcoin_chain.OnChainRail = Depends(get_onchain_rail),
+) -> DepositBitcoinResponse:
+    """Issues a fresh on-chain address for the signed-in user to deposit
+    sats into their TipMe balance.
+
+    Unlike a Lightning invoice, an on-chain address has no fixed amount --
+    the ledger is credited with whatever confirmed amount later shows up at
+    it, once `/v1/deposit/bitcoin/{address}/check` reports it.
+    """
+    index = storage.next_bitcoin_index()
+    try:
+        address = await rail.deposit_address(index)
+    except bitcoin_chain.OnChainError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    storage.create_pending_deposit(
+        user_id=user_id, asset="bitcoin", method="bitcoin_address",
+        external_reference=address, amount_minor=0,
+    )
+    return DepositBitcoinResponse(address=address)
+
+
+@app.post("/v1/deposit/bitcoin/{address}/check", response_model=DepositStatusResponse)
+async def check_bitcoin_deposit(
+    address: str,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+    rail: bitcoin_chain.OnChainRail = Depends(get_onchain_rail),
+) -> DepositStatusResponse:
+    """Polled by the app after it shows the address's QR code.
+
+    Credits the ledger with whatever confirmed amount has arrived, the
+    first time any has -- see `Storage.complete_deposit_with_amount`, which
+    is what actually enforces the ledger is only ever credited once per
+    address.
+    """
+    pending = storage.get_pending_deposit("bitcoin_address", address)
+    if pending is None or pending.user_id != user_id:
+        raise HTTPException(status_code=404, detail="no such deposit")
+
+    if pending.status == "pending":
+        try:
+            received_sats = await rail.confirmed_received_sats(address)
+        except bitcoin_chain.OnChainError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        if received_sats > 0:
+            storage.complete_deposit_with_amount(
+                "bitcoin_address", address, received_sats, reason="bitcoin_deposit",
+            )
+            pending = storage.get_pending_deposit("bitcoin_address", address)
+
+    return DepositStatusResponse(status=pending.status, balances=_balance_entries(user_id, storage))
+
+
+@app.post("/v1/withdraw/bitcoin", response_model=WithdrawBitcoinResponse)
+async def withdraw_bitcoin(
+    request: WithdrawBitcoinRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+    rail: bitcoin_chain.OnChainRail = Depends(get_onchain_rail),
+) -> WithdrawBitcoinResponse:
+    """Sends a real on-chain transaction out of the signed-in user's
+    balance.
+
+    The balance is debited *before* the send is attempted, then refunded if
+    it fails -- same reasoning as `withdraw_lightning`. The network fee is
+    the operator's own cost, not charged against the user's balance -- this
+    wallet has no notion yet of splitting it out.
+
+    Known simplification: two withdrawals racing each other could both
+    select the same UTXO and one broadcast would fail (refunded, same as
+    any other on-chain error) rather than being queued behind the other --
+    acceptable for a single-operator wallet, not for concurrent real usage.
+    """
+    try:
+        storage.adjust_balance(user_id, "bitcoin", -request.amount_sats, reason="bitcoin_withdrawal")
+    except InsufficientBalance as error:
+        raise HTTPException(status_code=402, detail=str(error)) from error
+
+    try:
+        known_index_count = storage.bitcoin_index_count()
+        change_index = storage.next_bitcoin_index()
+        result = await rail.send(request.to_address, request.amount_sats,
+                                 known_index_count, change_index)
+    except bitcoin_chain.OnChainError as error:
+        storage.adjust_balance(user_id, "bitcoin", request.amount_sats,
+                               reason="bitcoin_withdrawal_failed_refund")
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    return WithdrawBitcoinResponse(
+        txid=result.txid,
+        amount_sats=request.amount_sats,
         fee_sats=result.fee_sats,
         balances=_balance_entries(user_id, storage),
     )

@@ -9,6 +9,8 @@ dependencies = [
     "cryptography>=41",
     "httpx>=0.27",
     "python-multipart>=0.0.9",
+    "bitcoin-utils>=0.7",
+    "mnemonic>=0.20",
 ]
 
 [project.optional-dependencies]

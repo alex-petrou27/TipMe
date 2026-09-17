@@ -101,6 +101,16 @@ CREATE TABLE IF NOT EXISTS pending_deposits (
     completed_at        TEXT,
     UNIQUE (method, external_reference)
 );
+
+-- The next unused BIP84 derivation index for the self-managed on-chain
+-- wallet (see bitcoin_chain.py). A single row, incremented atomically --
+-- every deposit address and every change output needs an index that has
+-- never been handed out before, or two different purposes could end up
+-- spending from (or watching) the same address.
+CREATE TABLE IF NOT EXISTS bitcoin_derivation (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    next_index  INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -500,6 +510,61 @@ class Storage:
             status="completed", created_at=datetime.fromisoformat(row["created_at"]),
             completed_at=now,
         )
+
+    def complete_deposit_with_amount(
+        self, method: str, external_reference: str, observed_amount_minor: int, reason: str,
+    ) -> PendingDeposit | None:
+        """Same idempotency guarantee as `complete_deposit_if_pending`, for a
+        rail where the deposited amount isn't known until it's observed on
+        arrival (an on-chain address can receive any amount, unlike a
+        fixed-amount Lightning invoice) -- credits `observed_amount_minor`
+        rather than whatever amount_minor the deposit was created with.
+        """
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pending_deposits WHERE method = ? AND external_reference = ?",
+                (method, external_reference),
+            ).fetchone()
+            if row is None or row["status"] != "pending":
+                return None
+            conn.execute(
+                "UPDATE pending_deposits SET status = 'completed', completed_at = ?, "
+                "amount_minor = ? WHERE id = ?",
+                (now.isoformat(), observed_amount_minor, row["id"]),
+            )
+            self._adjust_balance(conn, row["user_id"], row["asset"], observed_amount_minor,
+                                 reason, counterparty=None)
+        return PendingDeposit(
+            id=row["id"], user_id=row["user_id"], asset=row["asset"], method=row["method"],
+            external_reference=row["external_reference"], amount_minor=observed_amount_minor,
+            status="completed", created_at=datetime.fromisoformat(row["created_at"]),
+            completed_at=now,
+        )
+
+    # ----------------------------------------------------------------
+    # On-chain Bitcoin address derivation
+    # ----------------------------------------------------------------
+
+    def next_bitcoin_index(self) -> int:
+        """Hands out the next never-before-used BIP84 derivation index and
+        advances the counter, atomically. Used for both fresh deposit
+        addresses and withdrawal change outputs -- either way, once an index
+        is handed out it is never handed out again.
+        """
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO bitcoin_derivation (id, next_index) VALUES (1, 0)")
+            row = conn.execute("SELECT next_index FROM bitcoin_derivation WHERE id = 1").fetchone()
+            index = row["next_index"]
+            conn.execute("UPDATE bitcoin_derivation SET next_index = ? WHERE id = 1", (index + 1,))
+        return index
+
+    def bitcoin_index_count(self) -> int:
+        """How many indices have ever been handed out -- i.e. the exclusive
+        upper bound of indices worth scanning for spendable UTXOs."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT next_index FROM bitcoin_derivation WHERE id = 1").fetchone()
+        return row["next_index"] if row else 0
 
     @staticmethod
     def _to_pending_deposit(row: sqlite3.Row) -> PendingDeposit:
