@@ -66,6 +66,7 @@ uses.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from dataclasses import dataclass
@@ -188,13 +189,22 @@ class GridRail:
             )
             customer_id = created["id"]
 
-        accounts = await self._request(
-            "GET", "/customers/internal-accounts", params={"customerId": customer_id},
-        )
-        for account in accounts.get("data", []):
-            currency = account.get("totalBalance", {}).get("currency", {}).get("code")
-            if account.get("type") == "INTERNAL_FIAT" and currency == self._config.currency:
-                return GridCustomerHandle(customer_id=customer_id, account_id=account["id"])
+        # A brand-new customer's INTERNAL_FIAT account is provisioned
+        # asynchronously, moments after creation -- an existing customer's
+        # is already long since ready, but a customer created just above by
+        # this same call can briefly 404/come back empty. Retry a few times
+        # rather than failing a transfer over a race that resolves itself
+        # within a second or two.
+        for attempt in range(5):
+            accounts = await self._request(
+                "GET", "/customers/internal-accounts", params={"customerId": customer_id},
+            )
+            for account in accounts.get("data", []):
+                currency = account.get("totalBalance", {}).get("currency", {}).get("code")
+                if account.get("type") == "INTERNAL_FIAT" and currency == self._config.currency:
+                    return GridCustomerHandle(customer_id=customer_id, account_id=account["id"])
+            if attempt < 4:
+                await asyncio.sleep(0.5)
         raise GridError(
             f"customer {customer_id} has no INTERNAL_FIAT account in {self._config.currency} yet"
         )
