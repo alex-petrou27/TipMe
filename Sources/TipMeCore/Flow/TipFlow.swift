@@ -205,6 +205,11 @@ public actor TipFlow {
             base = "We couldn't tell whose Reel that is. Try sharing from the creator's profile, or enter their Lightning address below."
         case .tiktok:
             base = "That TikTok link doesn't include the creator's username. Try sharing the video itself, or enter their Lightning address below."
+        case .youtube, .x:
+            // Sharing isn't wired up for these yet -- SharedLinkParser only
+            // recognises instagram.com/tiktok.com domains -- so this branch
+            // is unreachable today, kept only so the switch stays exhaustive.
+            base = "We couldn't tell whose content that is. Enter their Lightning address below."
         }
         // TEMPORARY diagnostic: shows exactly what the share extension
         // actually received, and what the page-fetch fallback actually

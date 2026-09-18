@@ -3,13 +3,29 @@ import Foundation
 public enum Platform: String, Codable, Sendable, CaseIterable {
     case tiktok
     case instagram
+    // YouTube and X exist only for the identity-only "sending as" connect
+    // flow in Settings (see SocialAccountConnector.connectIdentity) --
+    // signing in proves a username, nothing more, so none of the creator
+    // claiming/tipping machinery (handles.py's PLATFORMS, CreatorHandle
+    // validation) needs to know about them. `allCases` is overridden below
+    // to exclude them for exactly that reason: every other picker in the
+    // app that iterates `Platform.allCases` is a creator-claim picker, and
+    // showing a platform there that the registry can't actually validate
+    // a handle for would fail with a confusing "unknown platform" error
+    // instead of the honest "not configured yet" the connect buttons give.
+    case youtube
+    case x
 
     public var displayName: String {
         switch self {
         case .tiktok: return "TikTok"
         case .instagram: return "Instagram"
+        case .youtube: return "YouTube"
+        case .x: return "X"
         }
     }
+
+    public static var allCases: [Platform] { [.tiktok, .instagram] }
 }
 
 /// A validated creator handle, always stored lower-cased so that registry
@@ -50,6 +66,11 @@ extension Platform {
         switch self {
         case .tiktok: return 24
         case .instagram: return 30
+        // Not reachable via CreatorHandle today (see the doc comment on
+        // `Platform` above) -- real platform values kept anyway so this
+        // switch stays exhaustive without a `default` hiding a future gap.
+        case .youtube: return 30
+        case .x: return 15
         }
     }
 
@@ -67,6 +88,12 @@ extension Platform {
                     "accounts", "direct", "about", "developer", "legal",
                     "privacy", "terms", "s", "challenge", "emails", "sessions",
                     "web", "api", "oauth", "graphql", "invites", "help", "press"]
+        case .youtube:
+            return ["watch", "channel", "c", "feed", "results", "playlist",
+                    "shorts", "live", "about", "upload", "gaming"]
+        case .x:
+            return ["home", "explore", "notifications", "messages", "i",
+                    "search", "settings", "compose", "login", "signup"]
         }
     }
 }

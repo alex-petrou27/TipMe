@@ -18,12 +18,22 @@ struct OnboardingView: View {
     @State private var password: String = ""
     @State private var errorMessage: String?
     @State private var isSubmitting = false
+    @State private var isDevSigningIn = false
 
     @State private var connectedHandles: [Platform: String] = [:]
     @State private var connectingPlatform: Platform?
     @State private var socialError: String?
 
-    private enum Mode { case welcome, signup, login, shareSetup, connectSocials }
+    @State private var resetEmail: String = ""
+    @State private var resetCode: String = ""
+    @State private var resetNewPassword: String = ""
+    @State private var resetStage: ResetStage = .requestCode
+    @State private var resetMessage: String?
+    @State private var resetIsError = false
+    @State private var isSubmittingReset = false
+
+    private enum Mode { case welcome, signup, login, forgotPassword, shareSetup, connectSocials }
+    private enum ResetStage { case requestCode, enterCode }
 
     var body: some View {
         NavigationStack {
@@ -32,6 +42,7 @@ struct OnboardingView: View {
                 case .welcome: welcome
                 case .signup: signup
                 case .login: login
+                case .forgotPassword: forgotPassword
                 case .shareSetup: shareSetup
                 case .connectSocials: connectSocials
                 }
@@ -65,6 +76,45 @@ struct OnboardingView: View {
 
             Button("I already have an account") { errorMessage = nil; mode = .login }
                 .font(.footnote)
+
+            // TEMP, dev-only: signs into (or creates, on first use) one fixed
+            // test account, so testing doesn't mean retyping credentials
+            // every time the keychain doesn't carry a session across a
+            // reinstall. Remove before this ships anywhere real.
+            Button {
+                Task { await devSkipSignIn() }
+            } label: {
+                if isDevSigningIn {
+                    ProgressView()
+                } else {
+                    Text("Admin: skip sign-in")
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .disabled(isDevSigningIn)
+        }
+    }
+
+    private static let devEmail = "dev@tipme.test"
+    private static let devPassword = "tipme-dev-account"
+
+    private func devSkipSignIn() async {
+        errorMessage = nil
+        isDevSigningIn = true
+        defer { isDevSigningIn = false }
+        do {
+            let session = try await services.accountClient.login(email: Self.devEmail, password: Self.devPassword)
+            try services.accountKeychain.store(.init(session))
+            mode = .shareSetup
+        } catch {
+            do {
+                let session = try await services.accountClient.signup(email: Self.devEmail, password: Self.devPassword)
+                try services.accountKeychain.store(.init(session))
+                mode = .shareSetup
+            } catch {
+                errorMessage = Self.message(for: error)
+            }
         }
     }
 
@@ -91,14 +141,16 @@ struct OnboardingView: View {
             submit: logIn,
             switchPrompt: "New to TipMe?",
             switchTitle: "Create an account",
-            switchMode: .signup)
+            switchMode: .signup,
+            showForgotPassword: true)
     }
 
     private func credentialsForm(title: String, subtitle: String?, submitTitle: String,
                                  passwordFieldContentType: UITextContentType,
                                  submit: @escaping () async -> Void,
                                  switchPrompt: String, switchTitle: String,
-                                 switchMode: Mode) -> some View {
+                                 switchMode: Mode,
+                                 showForgotPassword: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(title).font(.title2.weight(.semibold))
             if let subtitle {
@@ -136,6 +188,19 @@ struct OnboardingView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(isSubmitting || email.isEmpty || password.isEmpty)
+
+            if showForgotPassword {
+                Button("Forgot password?") {
+                    errorMessage = nil
+                    resetEmail = email
+                    resetCode = ""
+                    resetNewPassword = ""
+                    resetMessage = nil
+                    resetStage = .requestCode
+                    mode = .forgotPassword
+                }
+                .font(.footnote)
+            }
 
             HStack(spacing: 4) {
                 Text(switchPrompt).foregroundStyle(.secondary)
@@ -190,7 +255,146 @@ struct OnboardingView: View {
             return "Your session expired. Try again."
         case .offline:
             return "You're offline. Check your connection and try again."
-        case .transport, .responseMalformed:
+        case .transport, .responseMalformed, .insufficientFunds, .requestRejected:
+            return "Couldn't reach TipMe. Try again."
+        }
+    }
+
+    // MARK: - Forgot password
+
+    private var forgotPassword: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            switch resetStage {
+            case .requestCode:
+                Text("Reset your password").font(.title2.weight(.semibold))
+                Text("We'll email you a code. It's good for 30 minutes.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                TextField("Email", text: $resetEmail)
+                    .textContentType(.emailAddress)
+                    .keyboardType(.emailAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(12)
+                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+
+                if let resetMessage {
+                    Text(resetMessage).font(.caption).foregroundStyle(resetIsError ? Theme.negative : .secondary)
+                }
+
+                Button {
+                    Task { await requestResetCode() }
+                } label: {
+                    Group {
+                        if isSubmittingReset { ProgressView() } else { Text("Send code") }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSubmittingReset || resetEmail.isEmpty)
+
+            case .enterCode:
+                Text("Check your email").font(.title2.weight(.semibold))
+                Text("Enter the code we sent to \(resetEmail), and a new password.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                TextField("Code", text: $resetCode)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .padding(12)
+                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+
+                SecureField("New password", text: $resetNewPassword)
+                    .textContentType(.newPassword)
+                    .padding(12)
+                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+
+                if let resetMessage {
+                    Text(resetMessage).font(.caption).foregroundStyle(resetIsError ? Theme.negative : .secondary)
+                }
+
+                Button {
+                    Task { await submitReset() }
+                } label: {
+                    Group {
+                        if isSubmittingReset { ProgressView() } else { Text("Reset password") }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSubmittingReset || resetCode.isEmpty || resetNewPassword.isEmpty)
+
+                Button("Send another code") { Task { await requestResetCode() } }
+                    .font(.footnote)
+                    .disabled(isSubmittingReset)
+            }
+
+            Button("Back to log in") {
+                resetMessage = nil
+                password = ""
+                mode = .login
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+
+            Spacer()
+        }
+    }
+
+    private func requestResetCode() async {
+        resetMessage = nil
+        resetIsError = false
+        isSubmittingReset = true
+        defer { isSubmittingReset = false }
+        do {
+            try await services.accountClient.forgotPassword(email: resetEmail)
+            resetStage = .enterCode
+            resetMessage = "If that email has an account, a code is on its way."
+        } catch {
+            // Deliberately the same message a real failure would show here
+            // too -- the registry already declines to say whether the email
+            // exists, and this screen shouldn't undo that by behaving
+            // differently on request-building or network errors.
+            resetStage = .enterCode
+            resetMessage = "If that email has an account, a code is on its way."
+        }
+    }
+
+    private func submitReset() async {
+        resetMessage = nil
+        resetIsError = false
+        isSubmittingReset = true
+        defer { isSubmittingReset = false }
+        do {
+            let session = try await services.accountClient.resetPassword(
+                code: resetCode.trimmingCharacters(in: .whitespacesAndNewlines),
+                newPassword: resetNewPassword)
+            try services.accountKeychain.store(.init(session))
+            resetCode = ""
+            resetNewPassword = ""
+            mode = .shareSetup
+        } catch {
+            resetIsError = true
+            resetMessage = Self.resetErrorMessage(for: error)
+        }
+    }
+
+    private static func resetErrorMessage(for error: Error) -> String {
+        guard let accountError = error as? AccountClient.AccountError else {
+            return "Something went wrong. Check your connection and try again."
+        }
+        switch accountError {
+        case .invalidRequest:
+            return "Enter a password of at least 8 characters."
+        case .invalidCredentials:
+            return "That code is invalid or has expired. Request a new one."
+        case .tooManyAttempts:
+            return "Too many attempts. Try again in a little while."
+        case .offline:
+            return "You're offline. Check your connection and try again."
+        default:
             return "Couldn't reach TipMe. Try again."
         }
     }

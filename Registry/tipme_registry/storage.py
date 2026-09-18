@@ -23,9 +23,13 @@ CREATE TABLE IF NOT EXISTS creators (
     display_name        TEXT,
     verified            INTEGER NOT NULL DEFAULT 0,
     -- How `verified` was earned: 'oauth' (the creator signed in with the
-    -- platform itself) or 'admin' (a human checked a bio code). NULL for an
-    -- unverified record. Kept for audit — verification is what makes a tip
-    -- trustworthy, so how it happened should never be a mystery later.
+    -- platform itself), 'admin' (a human checked a bio code), 'link' (the
+    -- registry fetched a page the creator submitted and found the claim
+    -- code in it -- see page_metadata.py), or 'dev-auto' (skipped entirely,
+    -- REGISTRY_AUTO_VERIFY_LINKS=1 -- must never be set where real money
+    -- moves). NULL for an unverified record. Kept for audit — verification
+    -- is what makes a tip trustworthy, so how it happened should never be
+    -- a mystery later.
     verified_via        TEXT,
     -- The platform's own account id, captured the moment OAuth verification
     -- succeeds. Not used to gate anything today; kept so a future re-auth can
@@ -36,6 +40,17 @@ CREATE TABLE IF NOT EXISTS creators (
     -- Secret issued on first registration. Required to change an existing
     -- record, so a handle cannot be taken over by whoever asks last.
     management_token    TEXT,
+    -- Set when this handle is linked straight to a TipMe account's own
+    -- balance rather than an external Lightning address (see
+    -- POST /v1/me/creators). A tip to a record like this never touches the
+    -- Lightning network at all -- it is a ledger transfer between two rows
+    -- in this same database, which is also why it needs none of the
+    -- external-send machinery that is not built yet. `lightning_address` is
+    -- an empty string (not NULL -- see the NOT NULL above, kept rather than
+    -- relaxed to avoid a table-rebuild migration) for a record like this;
+    -- callers must check `tipme_user_id` first, never assume the address is
+    -- meaningful just because it is present.
+    tipme_user_id       TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
     PRIMARY KEY (platform, username)
@@ -56,6 +71,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id     TEXT NOT NULL,
     created_at  TEXT NOT NULL,
     expires_at  TEXT NOT NULL
+);
+
+-- Forgot-password codes. Short-lived and single-use on purpose: this is a
+-- second, weaker credential that unlocks the same account as the password
+-- itself, so it gets the same "expires soon, works once" treatment a
+-- management token or OAuth state does elsewhere in this file.
+CREATE TABLE IF NOT EXISTS password_resets (
+    code        TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    used        INTEGER NOT NULL DEFAULT 0
 );
 
 -- One row per (user, asset). The balance a client is ever shown or allowed to
@@ -110,7 +137,12 @@ class CreatorRecord:
     verified: bool
     verified_via: str | None
     oauth_platform_user_id: str | None
+    tipme_user_id: str | None
     updated_at: datetime
+
+    @property
+    def is_tipme_account(self) -> bool:
+        return self.tipme_user_id is not None
 
 
 class Storage:
@@ -133,6 +165,8 @@ class Storage:
             conn.execute("ALTER TABLE creators ADD COLUMN verified_via TEXT")
         if "oauth_platform_user_id" not in existing:
             conn.execute("ALTER TABLE creators ADD COLUMN oauth_platform_user_id TEXT")
+        if "tipme_user_id" not in existing:
+            conn.execute("ALTER TABLE creators ADD COLUMN tipme_user_id TEXT")
 
     @contextmanager
     def connect(self):
@@ -200,6 +234,59 @@ class Storage:
             )
         return self.get(handle)
 
+    def link_to_tipme_account(
+        self,
+        handle: Handle,
+        user_id: str,
+        preferred_asset: str,
+        minimum_tip_minor: int | None,
+        display_name: str | None,
+        claim_token: str,
+    ) -> CreatorRecord:
+        """Links a handle straight to a TipMe account's own balance.
+
+        Unlike `upsert`, there is no external address to store or verify --
+        the destination *is* the account, so a tip here is a ledger
+        transfer between two rows in this database, never a real Lightning
+        send. Ownership of that account is already proven by the session
+        token this requires (see app.py's `/v1/me/creators`); what is not
+        proven is that the caller actually controls the social handle being
+        claimed -- the same trust gap `upsert`'s anonymous claim has -- so
+        this starts unverified too, upgradable through the same bio-code +
+        admin `/verify` path.
+        """
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO creators (platform, username, lightning_address,
+                                      preferred_asset, minimum_tip_minor,
+                                      display_name, verified, verified_via,
+                                      oauth_platform_user_id, claim_token,
+                                      management_token, tipme_user_id,
+                                      created_at, updated_at)
+                VALUES (?, ?, '', ?, ?, ?, 0, NULL, NULL, ?, NULL, ?, ?, ?)
+                ON CONFLICT(platform, username) DO UPDATE SET
+                    lightning_address = '',
+                    preferred_asset   = excluded.preferred_asset,
+                    minimum_tip_minor = excluded.minimum_tip_minor,
+                    display_name      = excluded.display_name,
+                    verified          = 0,
+                    verified_via      = NULL,
+                    oauth_platform_user_id = NULL,
+                    claim_token       = excluded.claim_token,
+                    management_token  = NULL,
+                    tipme_user_id     = excluded.tipme_user_id,
+                    updated_at        = excluded.updated_at
+                """,
+                (
+                    handle.platform, handle.username, preferred_asset,
+                    minimum_tip_minor, display_name, claim_token, user_id,
+                    now.isoformat(), now.isoformat(),
+                ),
+            )
+        return self.get(handle)
+
     def management_token(self, handle: Handle) -> str | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -259,6 +346,7 @@ class Storage:
             verified=bool(row["verified"]),
             verified_via=row["verified_via"],
             oauth_platform_user_id=row["oauth_platform_user_id"],
+            tipme_user_id=row["tipme_user_id"],
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
@@ -335,6 +423,67 @@ class Storage:
         with self.connect() as conn:
             conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
 
+    def delete_sessions_for_user(self, user_id: str, except_token: str | None = None) -> None:
+        """Logs a user out everywhere -- used after a password change or
+        reset, since a credential that just changed hands (or was just
+        proven) is exactly the moment every *other* session should stop
+        trusting the old one. `except_token` keeps the session that just
+        authenticated the change alive, so changing your own password does
+        not also log out the device you changed it from."""
+        with self.connect() as conn:
+            if except_token:
+                conn.execute(
+                    "DELETE FROM sessions WHERE user_id = ? AND token != ?",
+                    (user_id, except_token),
+                )
+            else:
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+    def update_password(self, user_id: str, password_hash: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (password_hash, user_id),
+            )
+
+    # ----------------------------------------------------------------
+    # Password resets
+    # ----------------------------------------------------------------
+
+    def create_password_reset(self, user_id: str, ttl_seconds: int) -> str:
+        # Uppercase hex rather than token_urlsafe: this one gets typed by
+        # hand from an email, so it skips the mixed-case/punctuation
+        # alphabet that makes token_urlsafe good for machine-to-machine
+        # secrets and bad for human ones.
+        code = secrets.token_hex(4).upper()
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=ttl_seconds)
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO password_resets (code, user_id, created_at, expires_at, used) "
+                "VALUES (?, ?, ?, ?, 0)",
+                (code, user_id, now.isoformat(), expires.isoformat()),
+            )
+        return code
+
+    def consume_password_reset(self, code: str) -> str | None:
+        """Returns the user id the code was issued for, and marks it spent
+        -- atomically enough for a single-process SQLite deployment, since
+        this connection is the only writer. Returns None for a code that
+        does not exist, already used, or expired, so a reset attempt with a
+        bad code fails the same way regardless of which of those it was."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT user_id, expires_at, used FROM password_resets WHERE code = ?",
+                (code,),
+            ).fetchone()
+            if row is None or row["used"]:
+                return None
+            if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+                return None
+            conn.execute("UPDATE password_resets SET used = 1 WHERE code = ?", (code,))
+        return row["user_id"]
+
     # ----------------------------------------------------------------
     # Ledger
     # ----------------------------------------------------------------
@@ -391,3 +540,70 @@ class Storage:
                  counterparty, now.isoformat()),
             )
         return new_balance
+
+    def transfer_balance(
+        self, from_user_id: str, to_user_id: str, asset: str, amount_minor: int,
+        reason: str, from_counterparty: str | None = None, to_counterparty: str | None = None,
+    ) -> None:
+        """Moves money between two TipMe accounts' ledgers in one
+        transaction -- the debit and credit either both happen or neither
+        does, which calling `adjust_balance` twice cannot guarantee (a crash
+        between the two calls would burn or duplicate the amount). This is
+        what makes a TipMe-to-TipMe tip real without ever touching the
+        Lightning network: the whole payment *is* these two rows changing
+        together.
+        """
+        if amount_minor <= 0:
+            raise ValueError("transfer amount must be positive")
+        if from_user_id == to_user_id:
+            # Not just a no-op to reject: the read-both-then-write-both
+            # shape below would have the second write clobber the first
+            # for a single (user_id, asset) row, silently losing the debit.
+            raise ValueError("cannot transfer to the same account")
+
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            sender_row = conn.execute(
+                "SELECT balance_minor FROM ledger_balances WHERE user_id = ? AND asset = ?",
+                (from_user_id, asset),
+            ).fetchone()
+            sender_balance = sender_row["balance_minor"] if sender_row else 0
+            new_sender_balance = sender_balance - amount_minor
+            if new_sender_balance < 0:
+                raise InsufficientBalance(
+                    f"balance {sender_balance} cannot cover a send of {amount_minor}"
+                )
+
+            receiver_row = conn.execute(
+                "SELECT balance_minor FROM ledger_balances WHERE user_id = ? AND asset = ?",
+                (to_user_id, asset),
+            ).fetchone()
+            receiver_balance = receiver_row["balance_minor"] if receiver_row else 0
+            new_receiver_balance = receiver_balance + amount_minor
+
+            for user_id, new_balance in ((from_user_id, new_sender_balance),
+                                         (to_user_id, new_receiver_balance)):
+                conn.execute(
+                    """
+                    INSERT INTO ledger_balances (user_id, asset, balance_minor, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id, asset) DO UPDATE SET
+                        balance_minor = excluded.balance_minor,
+                        updated_at    = excluded.updated_at
+                    """,
+                    (user_id, asset, new_balance, now.isoformat()),
+                )
+
+            for user_id, delta, counterparty in (
+                (from_user_id, -amount_minor, from_counterparty),
+                (to_user_id, amount_minor, to_counterparty),
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO ledger_entries (id, user_id, asset, delta_minor, reason,
+                                                counterparty, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (secrets.token_urlsafe(16), user_id, asset, delta, reason,
+                     counterparty, now.isoformat()),
+                )

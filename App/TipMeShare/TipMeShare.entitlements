@@ -2,16 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!--
-	  Both of these must match the host app's entitlements exactly.
-
-	  The App Group is how the extension reaches the shared audit log and the
-	  cap/rate-limit ledger; the keychain group is how it reaches the signed-in
-	  session token. A mismatch here does not fail the build — it fails at
-	  runtime, as an extension that cannot find an account the user can
-	  plainly see signed in in the app. It is the single most common setup
-	  mistake on this project.
-	-->
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>$(TIPME_APP_GROUP)</string>

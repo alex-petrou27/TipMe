@@ -195,3 +195,67 @@ def test_oauth_verification_can_overwrite_a_squatted_handle(client, monkeypatch)
     # still reports the real creator's chosen lightning address as active.
     session = client.get(f"/v1/oauth/session/{params['session_id']}").json()
     assert session["lightning_address"] == "creator@getalby.com"
+
+
+# --------------------------------------------------------------------------
+# YouTube / X config -- unlike the platforms above, these are exercised
+# directly rather than only through a monkeypatched `config_for`, since
+# nothing else in the suite would otherwise catch a typo'd env var name.
+# --------------------------------------------------------------------------
+
+def test_youtube_config_is_none_until_all_three_env_vars_are_set(monkeypatch):
+    monkeypatch.delenv("YOUTUBE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("YOUTUBE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("YOUTUBE_REDIRECT_URI", raising=False)
+    assert oauth_module.config_for("youtube") is None
+
+    monkeypatch.setenv("YOUTUBE_CLIENT_ID", "yt-id")
+    monkeypatch.setenv("YOUTUBE_CLIENT_SECRET", "yt-secret")
+    assert oauth_module.config_for("youtube") is None  # redirect_uri still missing
+
+    monkeypatch.setenv("YOUTUBE_REDIRECT_URI", "https://registry.example/v1/oauth/youtube/callback")
+    config = oauth_module.config_for("youtube")
+    assert config is not None
+    assert config.platform == "youtube"
+    assert config.client_id == "yt-id"
+
+
+def test_x_config_is_none_until_all_three_env_vars_are_set(monkeypatch):
+    monkeypatch.delenv("X_CLIENT_ID", raising=False)
+    monkeypatch.delenv("X_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("X_REDIRECT_URI", raising=False)
+    assert oauth_module.config_for("x") is None
+
+    monkeypatch.setenv("X_CLIENT_ID", "x-id")
+    monkeypatch.setenv("X_CLIENT_SECRET", "x-secret")
+    monkeypatch.setenv("X_REDIRECT_URI", "https://registry.example/v1/oauth/x/callback")
+    config = oauth_module.config_for("x")
+    assert config is not None
+    assert config.platform == "x"
+
+
+def test_build_authorize_url_uses_client_id_param_for_youtube_and_x():
+    """Only TikTok's authorize endpoint expects `client_key` -- confirms the
+    generalised param-name check in `build_authorize_url` didn't silently
+    keep the old instagram-only special case."""
+    youtube_config = oauth_module.PlatformOAuthConfig(
+        platform="youtube", client_id="yt-id", client_secret="s",
+        redirect_uri="https://registry.example/cb",
+        authorize_base="https://accounts.google.com/o/oauth2/v2/auth",
+        scope="https://www.googleapis.com/auth/youtube.readonly",
+    )
+    url = oauth_module.build_authorize_url(youtube_config, state="abc")
+    assert "client_id=yt-id" in url
+    assert "client_key" not in url
+
+
+def test_build_authorize_url_adds_pkce_params_for_x():
+    x_config = oauth_module.PlatformOAuthConfig(
+        platform="x", client_id="x-id", client_secret="s",
+        redirect_uri="https://registry.example/cb",
+        authorize_base="https://twitter.com/i/oauth2/authorize",
+        scope="users.read tweet.read",
+    )
+    url = oauth_module.build_authorize_url(x_config, state="abc")
+    assert "code_challenge" in url
+    assert "code_challenge_method" in url

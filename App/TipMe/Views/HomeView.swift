@@ -55,7 +55,20 @@ struct HomeView: View {
 
     private var balancePanel: some View {
         VStack(spacing: Theme.spacingSmall) {
-            AssetSwitcher(selection: $displayedAsset)
+            HStack(spacing: Theme.spacingSmall) {
+                AssetSwitcher(selection: $displayedAsset)
+
+                // TEMP: fast access to the connected-accounts work while it's
+                // being built, so it doesn't need Settings -> ... every time.
+                // Remove this NavigationLink once the feature has a real home.
+                NavigationLink { CreatorSetupView(services: services) } label: {
+                    Image(systemName: "link")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                        .frame(width: 34, height: 34)
+                        .background(Theme.surfaceRaised, in: Circle())
+                }
+            }
 
             Text(currentBalance.formatted)
                 .font(Theme.balance())

@@ -247,13 +247,36 @@ def test_register_accepts_usdt_preference(client):
     assert record["minimum_tip_minor_units"] == 100
 
 
-def test_delete_requires_admin_and_removes_the_record(client, registered):
+def test_delete_requires_a_token_and_removes_the_record(client, registered):
     assert client.delete("/v1/creators/tiktok/creator").status_code == 403
 
     response = client.delete("/v1/creators/tiktok/creator",
                              headers={"X-Admin-Token": "test-admin-token"})
     assert response.status_code == 204
     assert client.get("/v1/creators/tiktok/creator").status_code == 404
+
+
+def test_creator_can_unlink_their_own_handle(client, management_token):
+    """Self-service: the same device that can change where tips go can also
+    remove the record entirely, with the same management token."""
+    response = client.delete("/v1/creators/tiktok/creator",
+                             headers={"X-Management-Token": management_token})
+    assert response.status_code == 204
+    assert client.get("/v1/creators/tiktok/creator").status_code == 404
+
+
+def test_wrong_management_token_cannot_unlink(client, registered):
+    response = client.delete("/v1/creators/tiktok/creator",
+                             headers={"X-Management-Token": "not-the-real-token"})
+    assert response.status_code == 403
+    # Still there -- a rejected delete must not have side effects.
+    assert client.get("/v1/creators/tiktok/creator").status_code == 200
+
+
+def test_deleting_an_unregistered_handle_is_a_plain_404(client):
+    response = client.delete("/v1/creators/tiktok/nobody",
+                             headers={"X-Admin-Token": "test-admin-token"})
+    assert response.status_code == 404
 
 
 def test_signed_at_is_fresh_on_every_lookup(client, registered):

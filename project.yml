@@ -46,7 +46,8 @@ targets:
         product: TipMeCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: technology.tipme.app
+        PRODUCT_BUNDLE_IDENTIFIER: technology.tipme.dev.52ct28ufuv
+        DEVELOPMENT_TEAM: 52CT28UFUV
         SWIFT_VERSION: "5.9"
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         # Strict concurrency catches the actor-isolation mistakes that would
@@ -83,7 +84,8 @@ targets:
       - path: App/TipMe/Support
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: technology.tipme.app.share
+        PRODUCT_BUNDLE_IDENTIFIER: technology.tipme.dev.52ct28ufuv.share
+        DEVELOPMENT_TEAM: 52CT28UFUV
         SWIFT_VERSION: "5.9"
         SWIFT_STRICT_CONCURRENCY: complete
         # See the same setting and comment on the TipMe target above -- this

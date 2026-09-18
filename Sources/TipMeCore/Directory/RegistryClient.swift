@@ -125,7 +125,18 @@ public struct RegistryClient: CreatorResolver {
               recordHandle == handle
         else { throw CreatorLookupError.responseMalformed("registry answered for a different handle") }
 
-        guard let address = LightningAddress(payload.lightningAddress) else {
+        // A TipMe-linked record's real `lightning_address` field is an empty
+        // string server-side (see storage.py) -- there is no external
+        // address at all, so parsing it directly would always fail. The
+        // synthetic address stands in for it, decodable back to the user id
+        // by `CustodialPaymentBackend` at send time.
+        let address: LightningAddress
+        if payload.tipmeUserId != nil,
+           let internalAddress = InternalTipDestination.address(platform: recordHandle.platform, username: recordHandle.username) {
+            address = internalAddress
+        } else if let parsed = LightningAddress(payload.lightningAddress) {
+            address = parsed
+        } else {
             throw CreatorLookupError.responseMalformed("invalid lightning address in registry record")
         }
 
@@ -143,7 +154,8 @@ public struct RegistryClient: CreatorResolver {
                              updatedAt: payload.updatedAt,
                              displayName: payload.displayName,
                              verified: payload.verified,
-                             photoURL: photoURL)
+                             photoURL: photoURL,
+                             tipmeUserID: payload.tipmeUserId)
     }
 
     struct SignedEnvelope: Codable, Sendable {
@@ -166,6 +178,27 @@ public struct RegistryClient: CreatorResolver {
         let hasPhoto: Bool
         let updatedAt: Date
         let signedAt: Date
+        // Matches auto camelCasing of the signed payload's `tipme_user_id` --
+        // named to match exactly rather than adding explicit CodingKeys just
+        // for this one field. Mapped to `CreatorRecord.tipmeUserID` (Swift's
+        // own capitalisation convention for the initialism) in `verify(_:expecting:)`.
+        let tipmeUserId: String?
+
+        init(platform: Platform, username: String, lightningAddress: String, preferredAsset: Asset,
+             minimumTipMinorUnits: Int64?, displayName: String?, verified: Bool, hasPhoto: Bool,
+             updatedAt: Date, signedAt: Date, tipmeUserId: String? = nil) {
+            self.platform = platform
+            self.username = username
+            self.lightningAddress = lightningAddress
+            self.preferredAsset = preferredAsset
+            self.minimumTipMinorUnits = minimumTipMinorUnits
+            self.displayName = displayName
+            self.verified = verified
+            self.hasPhoto = hasPhoto
+            self.updatedAt = updatedAt
+            self.signedAt = signedAt
+            self.tipmeUserId = tipmeUserId
+        }
     }
 }
 

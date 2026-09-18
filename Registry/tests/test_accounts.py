@@ -130,3 +130,130 @@ def test_password_hash_round_trip():
 
 def test_password_hashes_are_salted_differently():
     assert accounts.hash_password("same password") != accounts.hash_password("same password")
+
+
+# --------------------------------------------------------------------------
+# Forgot / reset password
+# --------------------------------------------------------------------------
+
+def _request_reset_code(client, caplog, email="alex@example.com"):
+    """No real email provider is configured in tests (or in dev -- see
+    mailer.py), so the code the app would have received by email is read
+    back out of the log line that stands in for sending it."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="tipme_registry.mailer"):
+        response = client.post("/v1/auth/forgot-password", json={"email": email})
+    assert response.status_code == 204
+    for record in caplog.records:
+        if "Password reset code for" in record.message:
+            return record.message.split(": ")[1].split(" ")[0]
+    return None
+
+
+def test_forgot_password_is_204_for_a_real_account(client, caplog):
+    _signup(client)
+    code = _request_reset_code(client, caplog)
+    assert code is not None
+
+
+def test_forgot_password_is_204_for_an_unknown_email_too(client, caplog):
+    """Same response either way -- this endpoint must not let a caller learn
+    which emails have accounts."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="tipme_registry.mailer"):
+        response = client.post("/v1/auth/forgot-password", json={"email": "nobody@example.com"})
+    assert response.status_code == 204
+    assert not any("Password reset code" in r.message for r in caplog.records)
+
+
+def test_reset_password_with_a_valid_code(client, caplog):
+    _signup(client, password="old password")
+    code = _request_reset_code(client, caplog)
+
+    response = client.post("/v1/auth/reset-password", json={
+        "code": code, "new_password": "new password 123",
+    })
+    assert response.status_code == 200
+    assert response.json()["session_token"]
+
+    login = client.post("/v1/auth/login", json={
+        "email": "alex@example.com", "password": "new password 123",
+    })
+    assert login.status_code == 200
+
+
+def test_reset_password_code_is_single_use(client, caplog):
+    _signup(client)
+    code = _request_reset_code(client, caplog)
+
+    first = client.post("/v1/auth/reset-password", json={"code": code, "new_password": "new password 123"})
+    assert first.status_code == 200
+
+    second = client.post("/v1/auth/reset-password", json={"code": code, "new_password": "another password"})
+    assert second.status_code == 400
+
+
+def test_reset_password_rejects_unknown_code(client):
+    response = client.post("/v1/auth/reset-password", json={
+        "code": "NOTREAL1", "new_password": "new password 123",
+    })
+    assert response.status_code == 400
+
+
+def test_reset_password_invalidates_existing_sessions(client, caplog):
+    old_token = _signup(client).json()["session_token"]
+    code = _request_reset_code(client, caplog)
+    client.post("/v1/auth/reset-password", json={"code": code, "new_password": "new password 123"})
+
+    response = client.get("/v1/me", headers={"Authorization": f"Bearer {old_token}"})
+    assert response.status_code == 401
+
+
+# --------------------------------------------------------------------------
+# Change password
+# --------------------------------------------------------------------------
+
+def test_change_password_with_correct_current_password(client):
+    token = _signup(client, password="old password").json()["session_token"]
+    response = client.post("/v1/auth/change-password",
+                           headers={"Authorization": f"Bearer {token}"},
+                           json={"current_password": "old password", "new_password": "new password 123"})
+    assert response.status_code == 204
+
+    login = client.post("/v1/auth/login", json={
+        "email": "alex@example.com", "password": "new password 123",
+    })
+    assert login.status_code == 200
+
+
+def test_change_password_rejects_wrong_current_password(client):
+    token = _signup(client, password="old password").json()["session_token"]
+    response = client.post("/v1/auth/change-password",
+                           headers={"Authorization": f"Bearer {token}"},
+                           json={"current_password": "wrong password", "new_password": "new password 123"})
+    assert response.status_code == 403
+
+    login = client.post("/v1/auth/login", json={
+        "email": "alex@example.com", "password": "old password",
+    })
+    assert login.status_code == 200
+
+
+def test_change_password_requires_a_session(client):
+    response = client.post("/v1/auth/change-password",
+                           json={"current_password": "x", "new_password": "new password 123"})
+    assert response.status_code == 401
+
+
+def test_change_password_keeps_the_current_session_but_logs_out_others(client):
+    session_a = _signup(client, password="old password").json()["session_token"]
+    session_b = client.post("/v1/auth/login", json={
+        "email": "alex@example.com", "password": "old password",
+    }).json()["session_token"]
+
+    client.post("/v1/auth/change-password",
+               headers={"Authorization": f"Bearer {session_a}"},
+               json={"current_password": "old password", "new_password": "new password 123"})
+
+    assert client.get("/v1/me", headers={"Authorization": f"Bearer {session_a}"}).status_code == 200
+    assert client.get("/v1/me", headers={"Authorization": f"Bearer {session_b}"}).status_code == 401

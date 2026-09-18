@@ -23,6 +23,10 @@ struct CreatorSetupView: View {
     @State private var phase: Phase = .editing
     @State private var errorMessage: String?
 
+    @State private var handlePendingUnlink: CreatorHandle?
+    @State private var isUnlinking = false
+    @State private var unlinkError: String?
+
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var isUploadingPhoto = false
     @State private var photoUploadError: String?
@@ -83,6 +87,20 @@ struct CreatorSetupView: View {
         }
         .navigationTitle("Get tipped")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            handlePendingUnlink.map { "Unlink \($0.displayName)?" } ?? "",
+            isPresented: Binding(
+                get: { handlePendingUnlink != nil },
+                set: { if !$0 { handlePendingUnlink = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Unlink", role: .destructive) {
+                if let handle = handlePendingUnlink { Task { await unlink(handle) } }
+            }
+            Button("Cancel", role: .cancel) { handlePendingUnlink = nil }
+        } message: {
+            Text("Tips sent to this handle will stop working until someone links it again. This can't be undone.")
+        }
     }
 
     // MARK: - Editing
@@ -92,23 +110,53 @@ struct CreatorSetupView: View {
         if !claimedHandles.isEmpty {
             Section("Linked on this device") {
                 ForEach(claimedHandles, id: \.registryKey) { handle in
-                    Button {
-                        platform = handle.platform
-                        username = handle.username
-                    } label: {
-                        HStack {
-                            Text(handle.displayName)
-                            Spacer()
-                            Text(handle.platform.displayName)
-                                .font(.caption)
+                    HStack {
+                        Button {
+                            platform = handle.platform
+                            username = handle.username
+                        } label: {
+                            HStack {
+                                Text(handle.displayName)
+                                Spacer()
+                                Text(handle.platform.displayName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        Button(role: .destructive) {
+                            handlePendingUnlink = handle
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(.plain)
+                        .disabled(isUnlinking)
                     }
                 }
-                Text("Tap one to change where its tips go.")
+                Text("Tap one to change where its tips go, or ⓧ to unlink it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if let unlinkError {
+                    Text(unlinkError).font(.caption).foregroundStyle(.red)
+                }
             }
+        }
+
+        if services.isSignedIn {
+            SocialIdentityConnectSection(services: services)
+        }
+
+        Section {
+            Picker("Get paid in", selection: $preferredAsset) {
+                Text("Bitcoin").tag(Asset.bitcoin)
+                Text("USDT").tag(Asset.usdt)
+            }
+            .pickerStyle(.segmented)
+        } footer: {
+            Text("What tips arrive as when you link a wallet below. There's no conversion yet — a sender tipping in the other asset can't reach you.")
         }
 
         Section("Your account") {
@@ -398,6 +446,41 @@ struct CreatorSetupView: View {
         } catch {
             errorMessage = String(describing: error)
             phase = .editing
+        }
+    }
+
+    // MARK: - Unlinking
+
+    /// Removes a claimed handle from the registry and clears this device's
+    /// local copy of its management token — the token is useless once the
+    /// record it unlocks is gone, so there is nothing to keep it around for.
+    private func unlink(_ handle: CreatorHandle) async {
+        handlePendingUnlink = nil
+        unlinkError = nil
+
+        guard let token = services.creatorTokens.token(for: handle) else {
+            // No token on this device for a handle it apparently claimed --
+            // stale local state rather than a real registry mismatch. Drop
+            // the stale entry rather than leaving a dead "Linked" row the
+            // user can never clear.
+            services.creatorTokens.delete(for: handle)
+            return
+        }
+
+        isUnlinking = true
+        defer { isUnlinking = false }
+
+        let registrar = CreatorRegistrar(baseURL: services.configuration.registryBaseURL)
+        do {
+            try await registrar.unregister(handle: handle, managementToken: token)
+            services.creatorTokens.delete(for: handle)
+            if username == handle.username && platform == handle.platform {
+                username = ""
+            }
+        } catch let error as CreatorRegistrationError {
+            unlinkError = error.userFacingReason
+        } catch {
+            unlinkError = String(describing: error)
         }
     }
 

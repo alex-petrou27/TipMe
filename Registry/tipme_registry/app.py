@@ -11,6 +11,8 @@ server-side trigger cannot itself move a sender's money.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import secrets
 import time
@@ -24,9 +26,11 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import accounts, lightning, oauth, rates as rates_module, signing
+from . import accounts, lightning, mailer, oauth, page_metadata, rates as rates_module, signing
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
 from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, Storage
+
+logger = logging.getLogger("tipme_registry.app")
 
 ASSETS = ("bitcoin", "usdt")
 
@@ -71,6 +75,12 @@ class Settings:
         # safe as its password, so brute-forcing one has to be slow.
         self.login_attempts_per_hour = int(os.environ.get("REGISTRY_LOGIN_ATTEMPTS_PER_HOUR", "20"))
 
+        # Forgot-password requests per client per hour. Its own budget,
+        # separate from login attempts -- this one can be used to spam a
+        # stranger's inbox rather than to brute-force a password, so it is
+        # worth limiting even though it can never itself leak a credential.
+        self.password_resets_per_hour = int(os.environ.get("REGISTRY_PASSWORD_RESETS_PER_HOUR", "5"))
+
         # The custom URL scheme the app registers, so the OAuth callback can
         # hand control back to it once Instagram/TikTok redirect here. Not a
         # secret — it is baked into every copy of the app.
@@ -82,6 +92,14 @@ class Settings:
         # database backup for no safety benefit.
         self.photos_dir = Path(os.environ.get("REGISTRY_PHOTOS_DIR", "photos"))
         self.max_photo_bytes = 2 * 1024 * 1024
+
+        # DEV-ONLY escape hatch: skips verification entirely so payments can
+        # be exercised end-to-end while real OAuth is still Tester-gated (see
+        # link_creator). This defeats the entire point of verification --
+        # anyone could link anyone else's handle and immediately collect
+        # their tips -- so it must default off and never be set in an
+        # environment that holds real money.
+        self.auto_verify_links = os.environ.get("REGISTRY_AUTO_VERIFY_LINKS") == "1"
 
 
 def get_settings() -> Settings:
@@ -100,6 +118,7 @@ _storage: Storage | None = None
 _registration_attempts: dict[str, deque[float]] = defaultdict(deque)
 _signup_attempts: dict[str, deque[float]] = defaultdict(deque)
 _login_attempts: dict[str, deque[float]] = defaultdict(deque)
+_password_reset_attempts: dict[str, deque[float]] = defaultdict(deque)
 
 
 @dataclass
@@ -206,6 +225,20 @@ def _rate_limit_login(client: str, settings: Settings) -> None:
     attempts.append(now)
 
 
+def _rate_limit_password_reset(client: str, settings: Settings) -> None:
+    window = 3600.0
+    now = time.monotonic()
+    attempts = _password_reset_attempts[client]
+    while attempts and now - attempts[0] > window:
+        attempts.popleft()
+    if len(attempts) >= settings.password_resets_per_hour:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many reset requests from this address. Try again later.",
+        )
+    attempts.append(now)
+
+
 def get_storage(settings: Settings = Depends(get_settings)) -> Storage:
     global _storage
     if _storage is None:
@@ -296,9 +329,59 @@ class AuthResponse(BaseModel):
     session_token: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    code: str
+    new_password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class BalanceEntry(BaseModel):
     asset: str
     balance_minor: int
+
+
+class LinkCreatorRequest(BaseModel):
+    platform: str
+    username: str
+    preferred_asset: str = "bitcoin"
+    minimum_tip_minor_units: int | None = Field(default=None, ge=0)
+    display_name: str | None = None
+
+
+class LinkCreatorResponse(BaseModel):
+    platform: str
+    username: str
+    preferred_asset: str
+    verified: bool
+    claim_token: str
+    verification_instructions: str
+
+
+class VerifyByLinkRequest(BaseModel):
+    post_url: str
+
+
+class TipRequest(BaseModel):
+    platform: str
+    username: str
+    asset: str
+    amount_minor_units: int = Field(gt=0)
+
+
+class TipResponse(BaseModel):
+    platform: str
+    username: str
+    asset: str
+    amount_minor_units: int
+    new_balance_minor_units: int
 
 
 class MeResponse(BaseModel):
@@ -409,6 +492,94 @@ def logout(
     return Response(status_code=204)
 
 
+_PASSWORD_RESET_TTL_SECONDS = 30 * 60
+
+
+@app.post("/v1/auth/forgot-password", status_code=204)
+def forgot_password(
+    request: ForgotPasswordRequest,
+    http_request: Request,
+    settings: Settings = Depends(get_settings),
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    """Always answers 204, whether or not the email has an account.
+
+    Confirming which emails are registered is its own small leak (the same
+    reasoning `login`'s identical error message follows) -- worse here,
+    since this endpoint takes no password at all, so answering differently
+    would let anyone enumerate real accounts for free.
+    """
+    _rate_limit_password_reset(_client_key(http_request), settings)
+
+    try:
+        email = accounts.normalise_email(request.email)
+    except accounts.InvalidEmail:
+        return Response(status_code=204)
+
+    found = storage.get_user_by_email(email)
+    if found is not None:
+        account, _ = found
+        code = storage.create_password_reset(account.id, _PASSWORD_RESET_TTL_SECONDS)
+        mailer.send_password_reset(email, code)
+    return Response(status_code=204)
+
+
+@app.post("/v1/auth/reset-password", response_model=AuthResponse)
+def reset_password(
+    request: ResetPasswordRequest,
+    storage: Storage = Depends(get_storage),
+) -> AuthResponse:
+    try:
+        accounts.validate_password(request.new_password)
+    except accounts.WeakPassword as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    invalid = HTTPException(status_code=400, detail="That reset code is invalid or has expired.")
+    user_id = storage.consume_password_reset(request.code.strip().upper())
+    if user_id is None:
+        raise invalid
+    account = storage.get_user(user_id)
+    if account is None:
+        raise invalid
+
+    storage.update_password(user_id, accounts.hash_password(request.new_password))
+    # A reset is, by definition, happening because the old password is no
+    # longer trusted -- every session it could have created should stop
+    # working too, not just future login attempts.
+    storage.delete_sessions_for_user(user_id)
+
+    token = storage.create_session(user_id, SESSION_TTL_SECONDS)
+    return AuthResponse(user_id=account.id, email=account.email, session_token=token)
+
+
+@app.post("/v1/auth/change-password", status_code=204)
+def change_password(
+    request: ChangePasswordRequest,
+    authorization: str | None = Header(default=None),
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    account = storage.get_user(user_id)
+    found = storage.get_user_by_email(account.email) if account else None
+    if account is None or found is None:
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    _, password_hash = found
+
+    if not accounts.verify_password(request.current_password, password_hash):
+        raise HTTPException(status_code=403, detail="Current password is incorrect.")
+    try:
+        accounts.validate_password(request.new_password)
+    except accounts.WeakPassword as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    storage.update_password(user_id, accounts.hash_password(request.new_password))
+    # Keep the session that just proved the old password alive; every other
+    # one (a lost or stolen device, say) stops working immediately.
+    current_token = authorization.removeprefix("Bearer ").strip() if authorization else None
+    storage.delete_sessions_for_user(user_id, except_token=current_token)
+    return Response(status_code=204)
+
+
 @app.get("/v1/me", response_model=MeResponse)
 def me(
     user_id: str = Depends(get_current_user),
@@ -427,6 +598,331 @@ def me(
             BalanceEntry(asset=asset, balance_minor=balances.get(asset, 0))
             for asset in ASSETS
         ],
+    )
+
+
+@app.post("/v1/me/creators", response_model=LinkCreatorResponse, status_code=201)
+def link_creator(
+    request: LinkCreatorRequest,
+    user_id: str = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+    storage: Storage = Depends(get_storage),
+) -> LinkCreatorResponse:
+    """Links a social handle straight to the signed-in account's own
+    balance -- the "tip a friend who already has TipMe" path, distinct from
+    `POST /v1/creators`'s anonymous claim against an external Lightning
+    address. See `Storage.link_to_tipme_account` for what that changes
+    about how a tip to this handle settles.
+
+    An unverified claim only reserves the handle *provisionally*: it does
+    not block someone else (including the real account owner) from
+    claiming it instead, and `POST /v1/me/tip` refuses to deliver money to
+    it. Self-service linking never proved you control the social account --
+    only a verified claim should be able to lock a handle away from its
+    real owner or actually collect tips. See `verify` below for how a claim
+    becomes verified.
+    """
+    try:
+        handle = normalise_handle(request.platform, request.username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if request.preferred_asset not in ASSETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"preferred_asset must be one of {', '.join(ASSETS)}",
+        )
+
+    existing = storage.get(handle)
+    if existing is not None and existing.tipme_user_id != user_id and existing.verified:
+        # A *verified* claim by someone else is a real, proven ownership --
+        # that one stays locked, same as `_authorise_update` protects a
+        # verified external-address registration. An unverified claim has
+        # no such proof behind it, so it is not exclusive: falling through
+        # here lets this call overwrite it, which is exactly how the real
+        # owner takes their handle back from a squatter.
+        raise HTTPException(
+            status_code=403,
+            detail="This handle is already verified and linked elsewhere. Contact support.",
+        )
+
+    token = f"tipme-verify-{secrets.token_urlsafe(8)}"
+    record = storage.link_to_tipme_account(
+        handle=handle,
+        user_id=user_id,
+        preferred_asset=request.preferred_asset,
+        minimum_tip_minor=request.minimum_tip_minor_units,
+        display_name=request.display_name,
+        claim_token=token,
+    )
+
+    if settings.auto_verify_links:
+        record = storage.set_verified(handle, True, via="dev-auto") or record
+
+    return LinkCreatorResponse(
+        platform=record.platform,
+        username=record.username,
+        preferred_asset=record.preferred_asset,
+        verified=record.verified,
+        claim_token=token,
+        verification_instructions=(
+            "Auto-verified for testing (REGISTRY_AUTO_VERIFY_LINKS=1) -- turn this off "
+            "before anyone outside your team can link a handle." if settings.auto_verify_links else
+            f"Add '{token}' to your {handle.platform} bio, then contact support to "
+            "get verified. Tips can't reach this handle until then, and until "
+            "then someone else can also claim it."
+        ),
+    )
+
+
+@app.delete("/v1/me/creators/{platform}/{username}", status_code=204)
+def unlink_own_creator(
+    platform: str,
+    username: str,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    """Convenience alias for `DELETE /v1/creators/{platform}/{username}`
+    scoped to "whatever I'm signed in as," so the app does not need to hold
+    a management token that a TipMe-account-linked handle never had in the
+    first place -- the session already proves ownership."""
+    try:
+        handle = normalise_handle(platform, username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    record = storage.get(handle)
+    if record is None:
+        raise HTTPException(status_code=404, detail="creator not registered")
+    if record.tipme_user_id != user_id:
+        raise HTTPException(status_code=403, detail="This handle isn't linked to your account.")
+    storage.delete(handle)
+    return Response(status_code=204)
+
+
+@app.post("/v1/me/creators/{platform}/{username}/request-verification")
+def request_verification(
+    platform: str,
+    username: str,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> dict:
+    """Lets the creator say "I've put the code in my bio, please check" --
+    the self-service half of the manual bio-code path. `POST
+    /v1/creators/{platform}/{username}/verify` itself stays admin-only on
+    purpose (see its docstring): nothing here can prove ownership by
+    itself, so this doesn't verify anything -- it just puts the claim in
+    front of whoever holds the admin token, the same way the dev
+    password-reset flow logs a code instead of emailing one (see
+    mailer.py). Swapping this for a real review queue later doesn't change
+    the app-facing contract.
+    """
+    try:
+        handle = normalise_handle(platform, username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    record = storage.get(handle)
+    if record is None:
+        raise HTTPException(status_code=404, detail="creator not registered")
+    if record.tipme_user_id != user_id:
+        raise HTTPException(status_code=403, detail="This handle isn't linked to your account.")
+    if record.verified:
+        return {"status": "already_verified"}
+
+    claim_token = storage.claim_token(handle)
+    profile_url = (
+        f"https://instagram.com/{handle.username}" if handle.platform == "instagram"
+        else f"https://www.tiktok.com/@{handle.username}"
+    )
+    logger.warning(
+        "[VERIFICATION REQUESTED] %s says the bio code is live -- check %s for "
+        "'%s', then POST /v1/creators/%s/%s/verify with the admin token.",
+        handle.key, profile_url, claim_token, handle.platform, handle.username,
+    )
+    return {"status": "requested"}
+
+
+_ALLOWED_POST_URL_PREFIXES = (
+    "https://www.instagram.com/", "https://instagram.com/",
+    "https://www.tiktok.com/", "https://vm.tiktok.com/",
+)
+
+
+@app.post("/v1/me/creators/{platform}/{username}/verify-by-link")
+async def verify_by_link(
+    platform: str,
+    username: str,
+    request: VerifyByLinkRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> dict:
+    """Automated verification: fetches a public post the creator says
+    contains their claim code, the same way any link-preview feature reads
+    a shared URL, and only verifies if the code is genuinely there. See
+    `page_metadata.py` for why this is a legitimate fetch and not scraping
+    -- it only ever touches one URL the signed-in creator handed us, never
+    a profile the app goes looking at on its own.
+
+    This never trusts the client's word for what it saw -- the client only
+    supplies the URL; the registry does its own fetch and its own check,
+    the same trust boundary `send_tip` uses for money.
+    """
+    try:
+        handle = normalise_handle(platform, username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    record = storage.get(handle)
+    if record is None:
+        raise HTTPException(status_code=404, detail="creator not registered")
+    if record.tipme_user_id != user_id:
+        raise HTTPException(status_code=403, detail="This handle isn't linked to your account.")
+    if record.verified:
+        return {"status": "already_verified"}
+
+    if not request.post_url.startswith(_ALLOWED_POST_URL_PREFIXES):
+        raise HTTPException(status_code=400, detail="That doesn't look like an Instagram or TikTok link.")
+
+    claim_token = storage.claim_token(handle)
+    try:
+        metadata = await page_metadata.fetch(request.post_url)
+    except page_metadata.PageFetchError as error:
+        raise HTTPException(status_code=502, detail=f"Couldn't fetch that link: {error}") from error
+
+    if not claim_token or not metadata.contains(claim_token):
+        raise HTTPException(
+            status_code=400,
+            detail="That post's caption doesn't contain your verification code. "
+                   "Make sure the post is public and the code is in the caption itself.",
+        )
+
+    updated = storage.set_verified(handle, True, via="link")
+    return {"status": "verified", "verified": updated.verified if updated else True}
+
+
+@app.post("/v1/me/creators/{platform}/{username}/verify-by-bio")
+async def verify_by_bio(
+    platform: str,
+    username: str,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> dict:
+    """One-tap verification: fetches the creator's own public profile page
+    and checks the standard `<meta name="description">` tag Instagram
+    fills with the real bio text -- confirmed by fetching real accounts
+    (see `page_metadata.py`), not assumed. No link to paste: the profile
+    URL is built from the handle this record already carries.
+
+    Instagram-only for now. TikTok's profile page, fetched the same
+    legitimate way, does not serve bio text to an unauthenticated request
+    at all (confirmed by fetching one directly) -- `verify-by-link`
+    (checking a post's caption instead) is the automated option there.
+    """
+    try:
+        handle = normalise_handle(platform, username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    if handle.platform != "instagram":
+        raise HTTPException(
+            status_code=400,
+            detail="Bio verification only works for Instagram right now -- TikTok's profile "
+                   "page doesn't expose bio text to this kind of check. Use a post link instead.",
+        )
+
+    record = storage.get(handle)
+    if record is None:
+        raise HTTPException(status_code=404, detail="creator not registered")
+    if record.tipme_user_id != user_id:
+        raise HTTPException(status_code=403, detail="This handle isn't linked to your account.")
+    if record.verified:
+        return {"status": "already_verified"}
+
+    claim_token = storage.claim_token(handle)
+    profile_url = f"https://www.instagram.com/{handle.username}/"
+    try:
+        metadata = await page_metadata.fetch(profile_url)
+    except page_metadata.PageFetchError as error:
+        raise HTTPException(status_code=502, detail=f"Couldn't fetch your profile: {error}") from error
+
+    if not claim_token or not metadata.contains(claim_token):
+        raise HTTPException(
+            status_code=400,
+            detail="Your bio doesn't contain your verification code yet, or your profile "
+                   "isn't public. Add the code to your bio and try again.",
+        )
+
+    updated = storage.set_verified(handle, True, via="link")
+    return {"status": "verified", "verified": updated.verified if updated else True}
+
+
+@app.post("/v1/me/tip", response_model=TipResponse)
+def send_tip(
+    request: TipRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> TipResponse:
+    """The one payment path that actually moves money today.
+
+    Only works when the destination handle is linked to a TipMe account
+    (see `link_creator` above) -- that is what makes this safe to implement
+    now rather than waiting on the real external-send wallet: the whole
+    transfer is two rows changing in this database, atomically, via
+    `Storage.transfer_balance`. A handle registered against an external
+    Lightning address instead is refused here with a clear reason, not a
+    silent no-op.
+
+    Also requires the destination to be verified. An unverified link is
+    just someone's unproven claim to a handle -- paying it out would make
+    squatting a real handle (claim it, collect tips meant for its actual
+    owner) profitable. Verification is what turns "someone typed this
+    handle into a form" into "the person who controls this handle asked
+    for this."
+    """
+    try:
+        handle = normalise_handle(request.platform, request.username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if request.asset not in ASSETS:
+        raise HTTPException(status_code=400, detail=f"asset must be one of {', '.join(ASSETS)}")
+
+    record = storage.get(handle)
+    if record is None:
+        raise HTTPException(status_code=404, detail="creator not registered")
+    if record.tipme_user_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="This creator hasn't linked their handle to a TipMe account yet, "
+                   "so TipMe can't deliver a tip to them directly.",
+        )
+    if record.tipme_user_id == user_id:
+        raise HTTPException(status_code=400, detail="You can't tip your own linked handle.")
+    if not record.verified:
+        raise HTTPException(
+            status_code=403,
+            detail="This creator hasn't verified their handle yet, so TipMe can't "
+                   "safely deliver a tip to them -- see docs/PHASE2.md for how they verify.",
+        )
+
+    try:
+        storage.transfer_balance(
+            from_user_id=user_id,
+            to_user_id=record.tipme_user_id,
+            asset=request.asset,
+            amount_minor=request.amount_minor_units,
+            reason="tip",
+            from_counterparty=f"{handle.platform}:{handle.username}",
+            to_counterparty=f"user:{user_id}",
+        )
+    except InsufficientBalance as error:
+        raise HTTPException(status_code=402, detail=str(error)) from error
+
+    new_balance = storage.get_balances(user_id).get(request.asset, 0)
+    return TipResponse(
+        platform=record.platform,
+        username=record.username,
+        asset=request.asset,
+        amount_minor_units=request.amount_minor_units,
+        new_balance_minor_units=new_balance,
     )
 
 
@@ -477,6 +973,13 @@ def _signed_payload(record: CreatorRecord, settings: Settings) -> dict:
         "platform": record.platform,
         "username": record.username,
         "lightning_address": record.lightning_address,
+        # Present only for a handle linked straight to a TipMe account's own
+        # balance (see POST /v1/me/creators) -- signed for integrity exactly
+        # like lightning_address, since this is just as much "where the
+        # money goes" as that field is. A sender's app must treat this as
+        # the destination whenever it is non-null, never fall back to
+        # lightning_address for a record that has it.
+        "tipme_user_id": record.tipme_user_id,
         "preferred_asset": record.preferred_asset,
         "minimum_tip_minor_units": record.minimum_tip_minor,
         "display_name": record.display_name,
@@ -744,7 +1247,7 @@ def oauth_identity_start(platform: str, settings: Settings = Depends(get_setting
     claiming a wallet. Nothing about a handle or a wallet is taken here; there
     is nothing to validate before starting, unlike `/oauth/{platform}/start`.
     """
-    config = oauth.config_for(platform)
+    config = oauth.config_for(platform, purpose="identity")
     if config is None:
         raise HTTPException(
             status_code=503,
@@ -777,14 +1280,28 @@ async def oauth_identity_callback(
     if time.monotonic() - pending.created_at > _OAUTH_STATE_TTL:
         return _oauth_redirect(settings.app_url_scheme, platform, "error", reason="expired")
 
-    config = oauth.config_for(platform)
+    config = oauth.config_for(platform, purpose="identity")
     if config is None or not code:
         return _oauth_redirect(settings.app_url_scheme, platform, "error", reason="not_configured")
 
     try:
-        username, _platform_user_id = await oauth.exchange_code(config, code)
+        username, platform_user_id = await oauth.exchange_code(config, code)
     except oauth.OAuthError:
         return _oauth_redirect(settings.app_url_scheme, platform, "error", reason="sign_in_failed")
+
+    # Structured audit trail for every identity connect. This is the only
+    # place any of it is recorded at all -- nothing is persisted server-side
+    # (see SenderIdentityStore.swift), so this log line is the sole durable
+    # record that a "sending as" badge was ever proven, by whom (the
+    # platform's own account id, not just the handle it had that day), and
+    # when. There is no matching disconnect event to log here: disconnecting
+    # only clears local on-device storage and never calls the registry, so
+    # the server genuinely has nothing to observe when it happens.
+    logger.info(json.dumps({
+        "event": "identity_connected", "platform": platform,
+        "username": username, "platform_user_id": platform_user_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }))
 
     session_id = secrets.token_urlsafe(24)
     _identity_sessions[session_id] = _IdentitySession(
@@ -823,9 +1340,22 @@ def _authorise_update(
     management_token: str | None,
     admin_token: str | None,
     settings: Settings,
+    session_user_id: str | None = None,
 ) -> None:
     if settings.admin_token and admin_token and secrets.compare_digest(admin_token, settings.admin_token):
         return
+
+    # A handle linked straight to a TipMe account (see /v1/me/creators) has
+    # no management token at all -- the session that owns the linked
+    # account is its only credential, checked here instead.
+    record = storage.get(handle)
+    if record is not None and record.tipme_user_id is not None:
+        if session_user_id and session_user_id == record.tipme_user_id:
+            return
+        raise HTTPException(
+            status_code=403,
+            detail="This handle is linked to a different TipMe account. Log into that account to change it.",
+        )
 
     stored = storage.management_token(handle)
     if stored is None:
@@ -914,15 +1444,32 @@ def get_photo(
 def unregister(
     platform: str,
     username: str,
+    authorization: str | None = Header(default=None),
+    x_management_token: str | None = Header(default=None),
     x_admin_token: str | None = Header(default=None),
     settings: Settings = Depends(get_settings),
     storage: Storage = Depends(get_storage),
 ) -> Response:
-    _require_admin(x_admin_token, settings)
+    """Unlinks a creator handle.
+
+    Self-service: the same trust boundary as changing where tips go
+    (`_authorise_update`) -- the device holding the management token issued
+    at first claim can remove the record, same as it can update it, and the
+    session for a TipMe-account-linked handle can remove that. Admin token
+    still works too, for support requests from a device that lost its
+    token.
+    """
     try:
         handle = normalise_handle(platform, username)
     except InvalidHandle as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    if storage.get(handle) is None:
+        raise HTTPException(status_code=404, detail="creator not registered")
+    session_user_id = None
+    if authorization and authorization.startswith("Bearer "):
+        session_user_id = storage.session_user_id(authorization.removeprefix("Bearer ").strip())
+    _authorise_update(handle, storage, x_management_token, x_admin_token, settings,
+                      session_user_id=session_user_id)
 
     if not storage.delete(handle):
         raise HTTPException(status_code=404, detail="creator not registered")

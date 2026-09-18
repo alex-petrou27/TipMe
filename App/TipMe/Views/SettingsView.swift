@@ -11,9 +11,6 @@ struct SettingsView: View {
     let services: TipMeServices
     let onLogout: () -> Void
 
-    @State private var connectedHandles: [Platform: String] = [:]
-    @State private var connectingPlatform: Platform?
-    @State private var accountError: String?
     @State private var isLoggingOut = false
 
     private var signedInEmail: String? {
@@ -22,23 +19,9 @@ struct SettingsView: View {
 
     private var caps: SendCapPolicy { services.configuration.capPolicy }
     private var limits: RateLimitPolicy { services.configuration.rateLimitPolicy }
-    private var identityStore: SenderIdentityStore? {
-        SenderIdentityStore(appGroup: services.configuration.appGroup)
-    }
 
     var body: some View {
         Form {
-            Section("Your accounts") {
-                accountRow(.instagram)
-                accountRow(.tiktok)
-                if let accountError {
-                    Text(accountError).font(.caption).foregroundStyle(.red)
-                }
-                Text("A \u{201C}Sending as\u{201D} badge only — sending a tip never needs this. TipMe never sees your password; connecting just proves the handle is yours.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Fee") {
                 LabeledContent("TipMe fee", value: services.configuration.feePolicy.percentageDescription)
                 Text("Added on top of your tip. The creator always receives the full amount you chose.")
@@ -58,6 +41,7 @@ struct SettingsView: View {
                 if let signedInEmail {
                     LabeledContent("Signed in as", value: signedInEmail)
                 }
+                NavigationLink("Change password") { ChangePasswordView(services: services) }
                 Button("Log out", role: .destructive) { logout() }
                     .disabled(isLoggingOut)
             }
@@ -69,60 +53,10 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
-        .task { loadIdentities() }
-    }
-
-    private func accountRow(_ platform: Platform) -> some View {
-        HStack {
-            Text(platform.displayName)
-            Spacer()
-            if connectingPlatform == platform {
-                ProgressView()
-            } else if let username = connectedHandles[platform] {
-                Text("@\(username)")
-                    .foregroundStyle(.secondary)
-                Button("Disconnect") { disconnect(platform) }
-                    .font(.caption)
-            } else {
-                Button("Connect") { Task { await connect(platform) } }
-                    .font(.callout)
-            }
-        }
     }
 
     private func fiat(_ minorUnits: Int64) -> String {
         FiatAmount(currencyCode: caps.currencyCode, minorUnits: minorUnits).formatted
-    }
-
-    private func loadIdentities() {
-        guard let identityStore else { return }
-        for platform in Platform.allCases {
-            if let username = identityStore.username(for: platform) {
-                connectedHandles[platform] = username
-            }
-        }
-    }
-
-    private func connect(_ platform: Platform) async {
-        accountError = nil
-        connectingPlatform = platform
-        defer { connectingPlatform = nil }
-
-        let connector = SocialAccountConnector(baseURL: services.configuration.registryBaseURL)
-        do {
-            let result = try await connector.connectIdentity(platform: platform)
-            identityStore?.set(username: result.username, for: platform)
-            connectedHandles[platform] = result.username
-        } catch let error as SocialAccountConnector.ConnectorError {
-            accountError = error.userFacingReason
-        } catch {
-            accountError = String(describing: error)
-        }
-    }
-
-    private func disconnect(_ platform: Platform) {
-        identityStore?.clear(platform)
-        connectedHandles[platform] = nil
     }
 
     private func logout() {

@@ -165,6 +165,45 @@ public struct CreatorRegistrar: Sendable {
             managementToken: object["management_token"] as? String)
     }
 
+    /// Removes a claimed handle entirely, so it can be claimed fresh by anyone
+    /// (including the same creator, later, starting over).
+    ///
+    /// Self-service, gated the same way an update is: the registry accepts
+    /// either this handle's own management token or the server's admin
+    /// token. There is no "are you sure" here — that belongs in the UI,
+    /// since this is the one action in the creator flow with no undo.
+    public func unregister(handle: CreatorHandle, managementToken: String) async throws {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        components?.path = "/v1/creators/\(handle.platform.rawValue)/\(handle.username)"
+        guard let url = components?.url else {
+            throw CreatorRegistrationError.responseMalformed("could not build registry URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue(managementToken, forHTTPHeaderField: "X-Management-Token")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw CreatorRegistrationError.transport(String(describing: error))
+        }
+
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        // 404 is treated as success: the handle is unlinked either way, which
+        // is exactly what a retry after a lost response should see.
+        guard (200...299).contains(status) || status == 404 else {
+            let detail = Self.detail(in: data) ?? "registry returned HTTP \(status)"
+            switch status {
+            case 403: throw CreatorRegistrationError.notYours(detail)
+            default: throw CreatorRegistrationError.rejected(detail)
+            }
+        }
+    }
+
     /// FastAPI puts the human-readable reason in `detail`.
     private static func detail(in data: Data) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {

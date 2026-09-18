@@ -319,6 +319,89 @@ New claims are also rate limited per client, because handle-squatting is
 otherwise cheap: a script could claim every popular handle before their owners
 do and point them all at one wallet.
 
+## Connecting social accounts (OAuth setup)
+
+Two separate OAuth flows share the same per-platform app credentials, for two
+different purposes:
+
+- **Claim** (`/v1/oauth/{platform}/start` → `/callback`) — a creator proving
+  they own the handle they're registering a payout wallet for.
+- **Identity** (`/v1/oauth/{platform}/identity/start` → `/identity/callback`)
+  — anyone proving "this is me" for a "Sending as @you" badge in Settings.
+  Nothing here is written to the registry — see `SenderIdentityStore.swift`.
+  Live today for Instagram, TikTok, YouTube, and X.
+
+**Both flows on a platform need their own registered redirect URI**, even
+though they share one client id/secret. The platform redirects the browser
+back to a single, fixed URL with no way to say which flow started it, so
+pointing both at the same URI means one callback route is simply never
+reached. Register **both** paths below with each platform, and set **both**
+env vars — the app fails closed with a 503 on whichever is missing, rather
+than silently misrouting.
+
+| Platform | Client env vars | Claim redirect URI | Identity redirect URI |
+|---|---|---|---|
+| Instagram | `INSTAGRAM_CLIENT_ID`, `INSTAGRAM_CLIENT_SECRET` | `INSTAGRAM_REDIRECT_URI` → `.../v1/oauth/instagram/callback` | `INSTAGRAM_IDENTITY_REDIRECT_URI` → `.../v1/oauth/instagram/identity/callback` |
+| TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` | `TIKTOK_REDIRECT_URI` → `.../v1/oauth/tiktok/callback` | `TIKTOK_IDENTITY_REDIRECT_URI` → `.../v1/oauth/tiktok/identity/callback` |
+| YouTube | `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` | `YOUTUBE_REDIRECT_URI` → `.../v1/oauth/youtube/callback` | `YOUTUBE_IDENTITY_REDIRECT_URI` → `.../v1/oauth/youtube/identity/callback` |
+| X | `X_CLIENT_ID`, `X_CLIENT_SECRET` | `X_REDIRECT_URI` → `.../v1/oauth/x/callback` | `X_IDENTITY_REDIRECT_URI` → `.../v1/oauth/x/identity/callback` |
+
+`...` is this registry's own public HTTPS base URL — Meta/Google/TikTok/X all
+reject a bare local IP, so testing needs a real tunnel (see below) even before
+App Review.
+
+**Per platform, what to actually go create:**
+
+- **Instagram** — a Meta Developer app with the Instagram product, set up
+  for Business Login. The Instagram account signing in must be Business or
+  Creator, not personal (Instagram app → Settings → Account type and tools
+  → Switch to professional account — free, reversible). Scope requested:
+  `instagram_business_basic` — identity only, no content/comment/messaging
+  permissions. For pre-review testing: add specific accounts as Testers in
+  the app dashboard (up to 50, or 500 with a verified Business Manager) —
+  each must accept the invite from inside Instagram before signing in works
+  for them. App Review is only needed to open this to accounts you haven't
+  added yourself.
+- **TikTok** — a TikTok developer app with Login Kit. Scope requested:
+  `user.info.basic` — display name, avatar, user id only. For pre-review
+  testing: TikTok's Sandbox mode, which is more restrictive than Meta's —
+  a fixed, pre-registered roster of up to 10 TikTok accounts per sandbox
+  (not open invites), up to 5 sandboxes per app.
+- **YouTube** — a Google Cloud project with an OAuth 2.0 client. Scope
+  requested: `youtube.readonly` — the narrowest scope that can still read
+  the signed-in channel's own `@handle`; nothing that can read or modify a
+  video, comment, or playlist. For pre-review testing: set the OAuth
+  consent screen to "Testing" and add specific Google accounts as test
+  users (up to 100 before verification is required).
+- **X** — an X developer app with OAuth 2.0 (User context). Scope requested:
+  `users.read tweet.read`. **Not fully wired up yet** — X's OAuth 2.0
+  requires PKCE (a code challenge at authorize time, a matching verifier at
+  token exchange), which isn't implemented; see the note in `oauth.py`'s
+  `build_authorize_url` and `_exchange_x`. The rest of the flow (config
+  gating, redirect URI, callback handling) is in place, so finishing PKCE
+  later is a small, localised change, not a rewrite — but a real X sign-in
+  will not complete until that's done, even with real credentials.
+
+**Testing before a real deployment exists:** none of the four platforms
+accept a redirect URI on a bare IP or `localhost`, so exercising any of this
+against the registry running on a laptop needs a public HTTPS tunnel (e.g.
+`cloudflared tunnel --url http://localhost:8000`, no account required) in
+front of it first, with the tunnel's `https://...` origin used for every
+`*_REDIRECT_URI`/`*_IDENTITY_REDIRECT_URI` value above.
+
+**Data model note:** the identity flow persists nothing server-side by
+design — no `social_connections` table, no stored access/refresh tokens.
+Each successful connect is exchanged for a username once, logged as a
+structured JSON line (`{"event": "identity_connected", "platform", "username",
+"platform_user_id", "timestamp"}` — see `oauth_identity_callback`) for audit
+purposes, and then the token itself is discarded; only the device keeps the
+proven username (`SenderIdentityStore`, App Group `UserDefaults`, one active
+handle per platform). There is deliberately no server-side disconnect event
+to log, since disconnecting only clears local storage. Revisit this if a
+real need for durable server-side connections (or repeated API access after
+the initial proof) shows up — it would be a genuinely different, larger
+design than what's here today.
+
 ## Fees
 
 Sender-side only, added on top. The creator always receives the full tip amount.
