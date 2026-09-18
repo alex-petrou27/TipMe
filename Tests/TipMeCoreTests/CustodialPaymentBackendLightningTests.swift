@@ -101,13 +101,39 @@ final class CustodialPaymentBackendLightningTests: XCTestCase {
         }
     }
 
+    func testResolveRecognisesAnOnChainAddress() async throws {
+        let destination = try await makeBackend().resolve(destination: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
+        guard case .bitcoinAddress(let raw) = destination else {
+            return XCTFail("expected a bitcoinAddress destination")
+        }
+        XCTAssertEqual(raw, "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
+    }
+
+    func testResolveRecognisesTestnetAndRegtestOnChainPrefixes() async throws {
+        let testnet = try await makeBackend().resolve(destination: "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx")
+        guard case .bitcoinAddress = testnet else { return XCTFail("expected a bitcoinAddress destination") }
+
+        let regtest = try await makeBackend().resolve(destination: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080")
+        guard case .bitcoinAddress = regtest else { return XCTFail("expected a bitcoinAddress destination") }
+    }
+
+    func testPrepareSendForAnOnChainAddressHasNoFixedAmountToDisagreeWith() async throws {
+        let backend = makeBackend()
+        let destination = try await backend.resolve(destination: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
+
+        let route = try await backend.prepareSend(amount: .sats(4200), to: destination)
+        XCTAssertEqual(route.debited, .sats(4200))
+        XCTAssertEqual(route.credited, .sats(4200))
+    }
+
     func testPrepareSendRejectsOtherDestinationKinds() async {
         let backend = makeBackend()
         do {
-            _ = try await backend.prepareSend(amount: .sats(300), to: .bitcoinAddress(raw: "bc1qmock"))
+            _ = try await backend.prepareSend(amount: .sats(300), to: .liquidAddress(raw: "VJL...mock", assetHint: nil))
             XCTFail("expected an error")
         } catch PaymentBackendError.network {
-            // expected -- only a raw invoice is wired up so far
+            // expected -- only a raw Lightning invoice or on-chain Bitcoin
+            // address are wired up so far
         } catch {
             XCTFail("wrong error: \(error)")
         }
@@ -170,6 +196,22 @@ final class CustodialPaymentBackendSendTests: XCTestCase {
         } catch {
             XCTFail("wrong error: \(error)")
         }
+    }
+
+    func testSendPaysAnOnChainAddressAndReturnsAReceipt() async throws {
+        StubURLProtocol.stubJSON(200, """
+        {"txid":"abc123","amount_sats":4200,"fee_sats":250,"balances":[{"asset":"bitcoin","balance_minor":1000},{"asset":"usdt","balance_minor":0}]}
+        """)
+
+        let backend = makeBackend()
+        let destination = try await backend.resolve(destination: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
+        let route = try await backend.prepareSend(amount: .sats(4200), to: destination)
+        let receipt = try await backend.send(route: route, to: destination, idempotencyKey: "idem-1")
+
+        XCTAssertEqual(receipt.status, .succeeded)
+        XCTAssertEqual(receipt.paymentHash, "abc123")
+        XCTAssertEqual(receipt.sentAmount, .sats(4200))
+        XCTAssertEqual(receipt.networkFee, .sats(250))
     }
 
     func testSendWithNoSessionTokenThrowsNotConnected() async throws {
