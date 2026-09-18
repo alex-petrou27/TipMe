@@ -111,6 +111,24 @@ CREATE TABLE IF NOT EXISTS bitcoin_derivation (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
     next_index  INTEGER NOT NULL DEFAULT 0
 );
+
+-- Tracks a real Lightspark payment (in either direction) against the TipMe
+-- transaction it belongs to. Separate from `pending_deposits`: a deposit's
+-- ledger effect is still driven by that table (method='lightspark_invoice'),
+-- exactly like a Voltage deposit -- this table exists so a withdrawal has
+-- somewhere durable to record Lightspark's own payment id and status too
+-- (previously nothing but an in-memory dedupe set), and so a webhook has
+-- something to look up and update by that id, in either direction.
+CREATE TABLE IF NOT EXISTS lightspark_payments (
+    id                     TEXT PRIMARY KEY,
+    user_id                TEXT NOT NULL,
+    direction              TEXT NOT NULL,
+    lightspark_payment_id  TEXT NOT NULL UNIQUE,
+    status                 TEXT NOT NULL,
+    amount_minor           INTEGER NOT NULL,
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL
+);
 """
 
 
@@ -140,6 +158,18 @@ class PendingDeposit:
     status: str
     created_at: datetime
     completed_at: datetime | None
+
+
+@dataclass
+class LightsparkPaymentRecord:
+    id: str
+    user_id: str
+    direction: str
+    lightspark_payment_id: str
+    status: str
+    amount_minor: int
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass
@@ -590,4 +620,64 @@ class Storage:
             external_reference=row["external_reference"], amount_minor=row["amount_minor"],
             status=row["status"], created_at=datetime.fromisoformat(row["created_at"]),
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+        )
+
+    # ----------------------------------------------------------------
+    # Lightspark payments
+    # ----------------------------------------------------------------
+
+    def record_lightspark_payment(
+        self, user_id: str, direction: str, lightspark_payment_id: str,
+        status: str, amount_minor: int,
+    ) -> LightsparkPaymentRecord:
+        record_id = secrets.token_urlsafe(16)
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO lightspark_payments (id, user_id, direction, lightspark_payment_id,
+                                                 status, amount_minor, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (record_id, user_id, direction, lightspark_payment_id, status, amount_minor,
+                 now.isoformat(), now.isoformat()),
+            )
+        return LightsparkPaymentRecord(
+            id=record_id, user_id=user_id, direction=direction,
+            lightspark_payment_id=lightspark_payment_id, status=status, amount_minor=amount_minor,
+            created_at=now, updated_at=now,
+        )
+
+    def get_lightspark_payment(self, lightspark_payment_id: str) -> LightsparkPaymentRecord | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM lightspark_payments WHERE lightspark_payment_id = ?",
+                (lightspark_payment_id,),
+            ).fetchone()
+        return self._to_lightspark_payment(row) if row else None
+
+    def update_lightspark_payment_status(
+        self, lightspark_payment_id: str, status: str,
+    ) -> LightsparkPaymentRecord | None:
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE lightspark_payments SET status = ?, updated_at = ? "
+                "WHERE lightspark_payment_id = ?",
+                (status, now.isoformat(), lightspark_payment_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM lightspark_payments WHERE lightspark_payment_id = ?",
+                (lightspark_payment_id,),
+            ).fetchone()
+        return self._to_lightspark_payment(row) if row else None
+
+    @staticmethod
+    def _to_lightspark_payment(row: sqlite3.Row) -> LightsparkPaymentRecord:
+        return LightsparkPaymentRecord(
+            id=row["id"], user_id=row["user_id"], direction=row["direction"],
+            lightspark_payment_id=row["lightspark_payment_id"], status=row["status"],
+            amount_minor=row["amount_minor"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
         )

@@ -1,6 +1,8 @@
 """Test doubles shared across Registry test modules."""
 from __future__ import annotations
 
+from lightspark import WebhookEventType
+
 from tipme_registry.bitcoin_chain import OnChainError, SendResult
 from tipme_registry.lightning_node import DecodedInvoice, Invoice, InvoiceStatus, LightningNodeError, PaymentResult
 
@@ -65,6 +67,58 @@ class FakeLightningRail:
             raise LightningNodeError("unknown test invoice")
         self.paid.append(payment_request)
         return PaymentResult(payment_hash=f"paid-{payment_request}", fee_sats=1)
+
+
+class FakeIncomingPayment:
+    def __init__(self, transaction_hash: str | None):
+        self.transaction_hash = transaction_hash
+
+
+class FakeWebhookEvent:
+    def __init__(self, event_type: WebhookEventType, entity_id: str):
+        self.event_type = event_type
+        self.entity_id = entity_id
+
+
+class FakeLightsparkRail(FakeLightningRail):
+    """Adds the Lightspark-only extras (`simulate_test_payment`,
+    `verify_webhook`, `incoming_payment`) on top of `FakeLightningRail`'s
+    shared behaviour, so app-level tests can exercise the Lightspark-only
+    endpoints without the real SDK or a network."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.simulated: list[str] = []
+        self.fail_next_simulate = False
+        self._webhook_event: FakeWebhookEvent | None = None
+        self._incoming_payments: dict[str, FakeIncomingPayment] = {}
+
+    async def simulate_test_payment(self, payment_request: str, amount_sats: int | None = None) -> None:
+        if self.fail_next_simulate:
+            self.fail_next_simulate = False
+            raise LightningNodeError("simulated failure")
+        self.simulated.append(payment_request)
+        # Simulating a payment against one of our own invoices settles it,
+        # the same way a real external wallet paying it would.
+        for payment_hash, invoice in self._invoices.items():
+            if invoice.payment_request == payment_request:
+                self.settle(payment_hash)
+
+    def queue_webhook_event(self, event_type: WebhookEventType, entity_id: str) -> None:
+        self._webhook_event = FakeWebhookEvent(event_type, entity_id)
+
+    def verify_webhook(self, body: bytes, signature: str) -> FakeWebhookEvent:
+        if signature != "valid-signature":
+            raise LightningNodeError("invalid webhook signature")
+        if self._webhook_event is None:
+            raise LightningNodeError("no webhook event queued")
+        return self._webhook_event
+
+    def register_incoming_payment(self, payment_id: str, transaction_hash: str | None) -> None:
+        self._incoming_payments[payment_id] = FakeIncomingPayment(transaction_hash)
+
+    def incoming_payment(self, payment_id: str) -> FakeIncomingPayment | None:
+        return self._incoming_payments.get(payment_id)
 
 
 class FakeOnChainRail:

@@ -24,7 +24,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import accounts, bitcoin_chain, lightning, lightning_node, oauth, rates as rates_module, signing
+from lightspark import WebhookEventType as LightsparkWebhookEventType
+
+from . import accounts, bitcoin_chain, lightning, lightning_node, lightspark_rail, oauth, rates as rates_module, signing
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
 from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, PendingDeposit, Storage
 
@@ -249,10 +251,17 @@ def get_current_user(
 
 def get_lightning_rail() -> lightning_node.LightningRail:
     """Resolves fresh on every request, same convention as
-    `oauth.config_for` -- so a test can monkeypatch `lightning_node.rail_from_env`
-    without any app-level caching to reset, and so credentials added to the
-    environment after the process started are picked up without a restart."""
-    rail = lightning_node.rail_from_env()
+    `oauth.config_for` -- so a test can monkeypatch `lightspark_rail.rail_from_env`
+    /`lightning_node.rail_from_env` without any app-level caching to reset,
+    and so credentials added to the environment after the process started
+    are picked up without a restart.
+
+    Lightspark is preferred when both are configured -- see
+    `lightspark_rail`'s module docstring for why this is a second
+    implementation of the exact same `LightningRail` protocol rather than a
+    replacement for the Voltage one.
+    """
+    rail = lightspark_rail.rail_from_env() or lightning_node.rail_from_env()
     if rail is None:
         raise HTTPException(
             status_code=503,
@@ -401,6 +410,10 @@ class TransferRequest(BaseModel):
 
 class TransferResponse(BaseModel):
     balances: list[BalanceEntry]
+
+
+class SimulateTestPaymentRequest(BaseModel):
+    payment_request: str
 
 
 class RatesResponse(BaseModel):
@@ -589,6 +602,34 @@ async def check_lightning_deposit(
     return DepositStatusResponse(status=pending.status, balances=_balance_entries(user_id, storage))
 
 
+@app.post("/v1/deposit/lightning/{payment_hash}/simulate-test-payment", status_code=204)
+async def simulate_lightning_test_payment(
+    payment_hash: str,
+    request: SimulateTestPaymentRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+    rail: lightning_node.LightningRail = Depends(get_lightning_rail),
+) -> Response:
+    """Sandbox-only: makes a pending deposit's own invoice look paid,
+    without needing a second real wallet to pay it. Exists to prove the
+    deposit -> webhook -> credited-ledger loop end-to-end during
+    development -- calling this against a real mainnet rail fails with a
+    clear error rather than silently doing nothing, since only a rail
+    actually backed by a sandbox/regtest node can honour it.
+    """
+    pending = storage.get_pending_deposit("lightning_invoice", payment_hash)
+    if pending is None or pending.user_id != user_id:
+        raise HTTPException(status_code=404, detail="no such deposit")
+    if not hasattr(rail, "simulate_test_payment"):
+        raise HTTPException(status_code=400, detail="this rail does not support simulated test payments")
+
+    try:
+        await rail.simulate_test_payment(request.payment_request, pending.amount_minor)
+    except lightning_node.LightningNodeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return Response(status_code=204)
+
+
 @app.post("/v1/withdraw/lightning", response_model=WithdrawLightningResponse)
 async def withdraw_lightning(
     request: WithdrawLightningRequest,
@@ -633,12 +674,68 @@ async def withdraw_lightning(
         raise HTTPException(status_code=502, detail=str(error)) from error
 
     _paid_lightning_invoices.add(request.payment_request)
+    if isinstance(rail, lightspark_rail.LightsparkPaymentsRail):
+        # Lightspark-specific bookkeeping: `pay_invoice` above already
+        # waited for a terminal status before returning, so this is a
+        # durable record of what happened, not something the ledger effect
+        # above depends on. A later webhook for this same payment reaching
+        # the same terminal status is a harmless, idempotent no-op against
+        # this row (see `lightspark_webhook`).
+        storage.record_lightspark_payment(
+            user_id=user_id, direction="send", lightspark_payment_id=result.payment_hash,
+            status="SUCCESS", amount_minor=decoded.amount_sats,
+        )
     return WithdrawLightningResponse(
         payment_hash=result.payment_hash,
         amount_sats=decoded.amount_sats,
         fee_sats=result.fee_sats,
         balances=_balance_entries(user_id, storage),
     )
+
+
+@app.post("/v1/webhooks/lightspark", status_code=204)
+async def lightspark_webhook(
+    request: Request,
+    lightspark_signature: str = Header(alias="lightspark-signature"),
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    """Lightspark POSTs here whenever a payment on our node reaches a
+    terminal state. Verifying the signature is what makes this trustworthy
+    -- without it, anyone who found this URL could claim any deposit had
+    been paid, without ever having paid it.
+
+    Only `FUNDS_RECEIVED` is acted on today: its `entity_id` unambiguously
+    refers to an incoming payment, which is exactly what a pending deposit
+    is waiting on. The generic `PAYMENT_FINISHED` (which fires for both
+    directions on a node) is acknowledged but not yet acted on -- the
+    existing poll-based `/check` and the synchronous wait inside
+    `withdraw_lightning`'s `pay_invoice` call already cover both directions
+    without it; this is additive, not load-bearing.
+    """
+    rail = lightspark_rail.rail_from_env()
+    if rail is None:
+        raise HTTPException(status_code=503, detail="Lightspark is not configured on this registry")
+
+    body = await request.body()
+    try:
+        event = rail.verify_webhook(body, lightspark_signature)
+    except lightning_node.LightningNodeError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+
+    if event.event_type != LightsparkWebhookEventType.FUNDS_RECEIVED:
+        return Response(status_code=204)
+
+    try:
+        payment = rail.incoming_payment(event.entity_id)
+    except lightning_node.LightningNodeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    if payment is None or not payment.transaction_hash:
+        return Response(status_code=204)
+
+    storage.complete_deposit_if_pending(
+        "lightning_invoice", payment.transaction_hash, reason="lightning_deposit",
+    )
+    return Response(status_code=204)
 
 
 @app.post("/v1/deposit/bitcoin", response_model=DepositBitcoinResponse)
