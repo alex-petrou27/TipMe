@@ -50,6 +50,17 @@ public struct AccountClient: Sendable {
         public let balances: [Asset: Int64]
     }
 
+    public struct WithdrawOnChainResult: Equatable, Sendable {
+        public let txid: String
+        public let amountSats: Int64
+        public let feeSats: Int64
+        public let balances: [Asset: Int64]
+    }
+
+    public struct TransferResult: Equatable, Sendable {
+        public let balances: [Asset: Int64]
+    }
+
     public enum AccountError: Error, Equatable, Sendable {
         /// The server rejected the email or password as malformed (bad
         /// email shape, password too short). The UI validates both locally
@@ -83,6 +94,21 @@ public struct AccountClient: Sendable {
         /// Voltage was reached but the payment itself failed (502) -- the
         /// registry's own error message, since only it knows why.
         case lightningNodeError(String)
+
+        // On-chain Bitcoin deposit/withdraw specific -- see Registry's
+        // /v1/deposit/bitcoin* and /v1/withdraw/bitcoin. `.insufficientBalance`
+        // and `.depositNotFound` above are reused here too -- both mean
+        // exactly the same thing regardless of which rail hit them.
+        /// No on-chain wallet is configured on this registry (503).
+        case onchainUnavailable
+        /// The chain (or its block explorer) was reached but the request
+        /// failed -- an unsupported destination address type, a broadcast
+        /// the network rejected, not enough confirmed balance (502).
+        case onchainError(String)
+
+        // Internal transfer specific -- see Registry's /v1/transfer.
+        /// No TipMe account exists with that email (404).
+        case recipientNotFound
     }
 
     private let configuration: Configuration
@@ -221,6 +247,111 @@ public struct AccountClient: Sendable {
         }
     }
 
+    // MARK: - On-chain Bitcoin deposit/withdraw
+
+    /// Asks the registry for a fresh on-chain address for this account.
+    /// Unlike a Lightning invoice, it has no fixed amount -- the ledger is
+    /// credited with whatever confirmed amount later shows up at it.
+    public func depositBitcoinAddress(sessionToken: String) async throws -> String {
+        guard let url = url(path: "/v1/deposit/bitcoin") else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await perform(request)
+        try Self.checkOnChainStatus(response, data: data)
+
+        do {
+            return try JSONDecoder().decode(DepositBitcoinResponseBody.self, from: data).address
+        } catch {
+            throw AccountError.responseMalformed(String(describing: error))
+        }
+    }
+
+    /// Polls whether a previously-issued on-chain address has received a
+    /// confirmed payment. Safe to call repeatedly -- credits the ledger at
+    /// most once per address.
+    public func checkBitcoinDeposit(address: String, sessionToken: String) async throws -> DepositStatus {
+        guard let url = url(path: "/v1/deposit/bitcoin/\(address)/check") else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await perform(request)
+        try Self.checkOnChainStatus(response, data: data)
+
+        do {
+            let decoded = try JSONDecoder().decode(DepositStatusBody.self, from: data)
+            return DepositStatus(completed: decoded.status == "completed",
+                                 balances: Self.balancesDict(decoded.balances))
+        } catch {
+            throw AccountError.responseMalformed(String(describing: error))
+        }
+    }
+
+    /// Sends a real on-chain transaction out of this account's balance. The
+    /// balance is debited before the send is attempted and refunded
+    /// server-side on failure, same reasoning as `withdrawLightning`.
+    public func withdrawBitcoin(toAddress: String, amountSats: Int64,
+                                sessionToken: String) async throws -> WithdrawOnChainResult {
+        guard let url = url(path: "/v1/withdraw/bitcoin") else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try? JSONEncoder().encode(
+            WithdrawBitcoinRequestBody(toAddress: toAddress, amountSats: amountSats))
+
+        let (data, response) = try await perform(request)
+        try Self.checkOnChainStatus(response, data: data)
+
+        do {
+            let decoded = try JSONDecoder().decode(WithdrawBitcoinResponseBody.self, from: data)
+            return WithdrawOnChainResult(txid: decoded.txid, amountSats: decoded.amountSats,
+                                         feeSats: decoded.feeSats, balances: Self.balancesDict(decoded.balances))
+        } catch {
+            throw AccountError.responseMalformed(String(describing: error))
+        }
+    }
+
+    // MARK: - Internal transfer
+
+    /// Moves money directly to another TipMe account's ledger -- no
+    /// Lightning, no on-chain, no network call beyond this one. Only works
+    /// when the recipient already has a TipMe account under that email.
+    public func transfer(toEmail: String, asset: Asset, amountMinor: Int64,
+                         sessionToken: String) async throws -> TransferResult {
+        guard let url = url(path: "/v1/transfer") else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try? JSONEncoder().encode(
+            TransferRequestBody(toEmail: toEmail, asset: asset.rawValue, amountMinor: amountMinor))
+
+        let (data, response) = try await perform(request)
+        try Self.checkTransferStatus(response, data: data)
+
+        do {
+            let decoded = try JSONDecoder().decode(TransferResponseBody.self, from: data)
+            return TransferResult(balances: Self.balancesDict(decoded.balances))
+        } catch {
+            throw AccountError.responseMalformed(String(describing: error))
+        }
+    }
+
     // MARK: - Shared plumbing
 
     private func authenticate(path: String, email: String, password: String) async throws -> Session {
@@ -313,6 +444,53 @@ public struct AccountClient: Sendable {
             throw AccountError.lightningNodeError(Self.detail(from: data) ?? "The Lightning node rejected that.")
         case 503:
             throw AccountError.lightningUnavailable
+        default:
+            throw AccountError.transport("registry returned HTTP \(http.statusCode)")
+        }
+    }
+
+    /// Status-code mapping for the on-chain Bitcoin deposit/withdraw
+    /// endpoints. `.insufficientBalance` and `.depositNotFound` are shared
+    /// with the Lightning mapping above -- both codes mean the identical
+    /// thing regardless of which rail returned them.
+    private static func checkOnChainStatus(_ response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw AccountError.responseMalformed("non-HTTP response")
+        }
+        switch http.statusCode {
+        case 200, 201:
+            return
+        case 401:
+            throw AccountError.sessionExpired
+        case 402:
+            throw AccountError.insufficientBalance
+        case 404:
+            throw AccountError.depositNotFound
+        case 502:
+            throw AccountError.onchainError(Self.detail(from: data) ?? "The chain rejected that.")
+        case 503:
+            throw AccountError.onchainUnavailable
+        default:
+            throw AccountError.transport("registry returned HTTP \(http.statusCode)")
+        }
+    }
+
+    /// Status-code mapping for `/v1/transfer`.
+    private static func checkTransferStatus(_ response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw AccountError.responseMalformed("non-HTTP response")
+        }
+        switch http.statusCode {
+        case 200, 201:
+            return
+        case 400:
+            throw AccountError.invalidRequest
+        case 401:
+            throw AccountError.sessionExpired
+        case 402:
+            throw AccountError.insufficientBalance
+        case 404:
+            throw AccountError.recipientNotFound
         default:
             throw AccountError.transport("registry returned HTTP \(http.statusCode)")
         }
@@ -419,5 +597,49 @@ public struct AccountClient: Sendable {
             case feeSats = "fee_sats"
             case balances
         }
+    }
+
+    private struct DepositBitcoinResponseBody: Decodable {
+        let address: String
+    }
+
+    private struct WithdrawBitcoinRequestBody: Encodable {
+        let toAddress: String
+        let amountSats: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case toAddress = "to_address"
+            case amountSats = "amount_sats"
+        }
+    }
+
+    private struct WithdrawBitcoinResponseBody: Decodable {
+        let txid: String
+        let amountSats: Int64
+        let feeSats: Int64
+        let balances: [BalanceEntry]
+
+        enum CodingKeys: String, CodingKey {
+            case txid
+            case amountSats = "amount_sats"
+            case feeSats = "fee_sats"
+            case balances
+        }
+    }
+
+    private struct TransferRequestBody: Encodable {
+        let toEmail: String
+        let asset: String
+        let amountMinor: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case toEmail = "to_email"
+            case asset
+            case amountMinor = "amount_minor"
+        }
+    }
+
+    private struct TransferResponseBody: Decodable {
+        let balances: [BalanceEntry]
     }
 }

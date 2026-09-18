@@ -39,6 +39,11 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         case withdrawalUnavailable
         case withdrawalSucceeded
         case withdrawalFailed
+
+        // Internal transfers -- TipMe account to TipMe account, direct
+        // ledger movement, no Lightning or on-chain rail involved.
+        case internalTransferSucceeded
+        case internalTransferFailed
     }
 
     public enum Outcome: String, Codable, Sendable {

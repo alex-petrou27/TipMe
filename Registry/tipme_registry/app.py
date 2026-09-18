@@ -393,6 +393,16 @@ class WithdrawBitcoinResponse(BaseModel):
     balances: list[BalanceEntry]
 
 
+class TransferRequest(BaseModel):
+    to_email: str
+    asset: str
+    amount_minor: int = Field(gt=0)
+
+
+class TransferResponse(BaseModel):
+    balances: list[BalanceEntry]
+
+
 class RatesResponse(BaseModel):
     currency: str
     # Fiat major units (e.g. pounds, not pence) per one whole coin. The
@@ -730,6 +740,43 @@ async def withdraw_bitcoin(
         fee_sats=result.fee_sats,
         balances=_balance_entries(user_id, storage),
     )
+
+
+@app.post("/v1/transfer", response_model=TransferResponse)
+def transfer(
+    request: TransferRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> TransferResponse:
+    """Moves money directly between two TipMe accounts' ledgers.
+
+    No Lightning, no on-chain, no network call at all -- when both sender
+    and recipient already hold custodial TipMe balances, sending between
+    them is just two numbers changing together. This is the "internal
+    transfer" case; sending to someone without a TipMe account still goes
+    through the real Lightning/on-chain endpoints instead.
+    """
+    if request.asset not in ASSETS:
+        raise HTTPException(status_code=400, detail=f"asset must be one of {ASSETS}")
+
+    try:
+        email = accounts.normalise_email(request.to_email)
+    except accounts.InvalidEmail as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    found = storage.get_user_by_email(email)
+    if found is None:
+        raise HTTPException(status_code=404, detail="no TipMe account with that email")
+    recipient, _password_hash = found
+    if recipient.id == user_id:
+        raise HTTPException(status_code=400, detail="cannot transfer to yourself")
+
+    try:
+        storage.transfer_balance(user_id, recipient.id, request.asset, request.amount_minor)
+    except InsufficientBalance as error:
+        raise HTTPException(status_code=402, detail=str(error)) from error
+
+    return TransferResponse(balances=_balance_entries(user_id, storage))
 
 
 @app.get("/v1/rates", response_model=RatesResponse)

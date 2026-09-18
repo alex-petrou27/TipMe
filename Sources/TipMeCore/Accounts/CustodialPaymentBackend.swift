@@ -52,50 +52,79 @@ public actor CustodialPaymentBackend: PaymentBackend, WalletBackend {
         try await availableBalance(for: asset)
     }
 
+    /// Bech32 human-readable prefixes for a native segwit on-chain address,
+    /// across every network the registry's on-chain rail might be pointed
+    /// at (see Registry's `REGISTRY_BITCOIN_NETWORK`). Legacy (`1...`) and
+    /// P2SH (`3...`) addresses aren't recognised here -- the registry's
+    /// send side doesn't support them yet either.
+    private static let onchainAddressPrefixes = ["bc1", "tb1", "bcrt1"]
+
     public func resolve(destination raw: String) async throws -> WalletDestination {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Everything except a raw BOLT11 invoice is still unrecognised --
-        // see the type-level note. A Lightning address or an on-chain
-        // address has nowhere to be resolved *to* yet.
-        guard trimmed.lowercased().hasPrefix("ln"), let amountSats = BOLT11.amountSats(from: trimmed) else {
-            throw WalletDestinationError.unrecognised
+        let lowercased = trimmed.lowercased()
+
+        if lowercased.hasPrefix("ln"), let amountSats = BOLT11.amountSats(from: trimmed) {
+            return .lightningInvoice(raw: trimmed, amountSat: amountSats, description: nil)
         }
-        return .lightningInvoice(raw: trimmed, amountSat: amountSats, description: nil)
+        if Self.onchainAddressPrefixes.contains(where: lowercased.hasPrefix) {
+            return .bitcoinAddress(raw: trimmed)
+        }
+        // Everything else is still unrecognised -- see the type-level note.
+        // A Lightning address has nowhere to be resolved *to* yet.
+        throw WalletDestinationError.unrecognised
     }
 
     public func prepareSend(amount: Amount, to destination: WalletDestination) async throws -> SettlementRoute {
-        guard case .lightningInvoice(_, let invoiceAmountSats, _) = destination else {
-            throw PaymentBackendError.network(Self.notYetAvailable)
-        }
         guard amount.asset == .bitcoin else {
             throw PaymentBackendError.conversionUnavailable(from: amount.asset, to: .bitcoin)
         }
-        // Registry's withdraw endpoint only accepts fixed-amount invoices --
-        // `resolve` above never returns one with a nil amount, but the
-        // amount an unrelated caller passes in here could still disagree
-        // with what the invoice actually asks for.
-        if let invoiceAmountSats, amount.minorUnits != invoiceAmountSats {
-            throw PaymentBackendError.rejectedByNetwork(
-                "This invoice is fixed at \(Amount.sats(invoiceAmountSats).formatted).")
+        switch destination {
+        case .lightningInvoice(_, let invoiceAmountSats, _):
+            // Registry's withdraw endpoint only accepts fixed-amount
+            // invoices -- `resolve` above never returns one with a nil
+            // amount, but the amount an unrelated caller passes in here
+            // could still disagree with what the invoice actually asks for.
+            if let invoiceAmountSats, amount.minorUnits != invoiceAmountSats {
+                throw PaymentBackendError.rejectedByNetwork(
+                    "This invoice is fixed at \(Amount.sats(invoiceAmountSats).formatted).")
+            }
+            return .direct(amount, at: clock.now)
+        case .bitcoinAddress:
+            // On-chain has no fixed amount to check against -- the sender
+            // chooses it, same as any exchange withdrawal.
+            return .direct(amount, at: clock.now)
+        default:
+            throw PaymentBackendError.network(Self.notYetAvailable)
         }
-        return .direct(amount, at: clock.now)
     }
 
     public func send(route: SettlementRoute, to destination: WalletDestination,
                      idempotencyKey: String) async throws -> PaymentReceipt {
-        guard case .lightningInvoice(let raw, _, _) = destination else {
-            throw PaymentBackendError.network(Self.notYetAvailable)
-        }
         guard let token = sessionTokenProvider() else {
             throw PaymentBackendError.notConnected
         }
-        do {
-            let result = try await client.withdrawLightning(paymentRequest: raw, sessionToken: token)
-            return PaymentReceipt(status: .succeeded, paymentHash: result.paymentHash,
-                                  networkFee: .sats(result.feeSats), sentAmount: .sats(result.amountSats),
-                                  completedAt: clock.now)
-        } catch {
-            throw Self.paymentBackendError(for: error)
+        switch destination {
+        case .lightningInvoice(let raw, _, _):
+            do {
+                let result = try await client.withdrawLightning(paymentRequest: raw, sessionToken: token)
+                return PaymentReceipt(status: .succeeded, paymentHash: result.paymentHash,
+                                      networkFee: .sats(result.feeSats), sentAmount: .sats(result.amountSats),
+                                      completedAt: clock.now)
+            } catch {
+                throw Self.paymentBackendError(for: error)
+            }
+        case .bitcoinAddress(let raw):
+            do {
+                let result = try await client.withdrawBitcoin(toAddress: raw, amountSats: route.debited.minorUnits,
+                                                               sessionToken: token)
+                return PaymentReceipt(status: .succeeded, paymentHash: result.txid,
+                                      networkFee: .sats(result.feeSats), sentAmount: .sats(result.amountSats),
+                                      completedAt: clock.now)
+            } catch {
+                throw Self.paymentBackendError(for: error)
+            }
+        default:
+            throw PaymentBackendError.network(Self.notYetAvailable)
         }
     }
 
@@ -133,6 +162,62 @@ public actor CustodialPaymentBackend: PaymentBackend, WalletBackend {
         }
         do {
             return try await client.checkLightningDeposit(paymentHash: paymentHash, sessionToken: token)
+        } catch {
+            throw Self.paymentBackendError(for: error)
+        }
+    }
+
+    // MARK: - On-chain Bitcoin deposits
+    //
+    // Same reasoning as the Lightning deposit methods above: generating an
+    // address is `receive`'s job in spirit, but polling it for settlement
+    // needs its own shape. `OnChainDepositFlow` drives these directly.
+
+    /// Asks the registry for a fresh on-chain address for this account.
+    /// Unlike a Lightning invoice it has no fixed amount -- the ledger is
+    /// credited with whatever confirmed amount later shows up at it.
+    public func createOnChainDeposit() async throws -> String {
+        guard let token = sessionTokenProvider() else {
+            throw PaymentBackendError.notConnected
+        }
+        do {
+            return try await client.depositBitcoinAddress(sessionToken: token)
+        } catch {
+            throw Self.paymentBackendError(for: error)
+        }
+    }
+
+    /// Polls whether a previously-issued on-chain address has received a
+    /// confirmed payment. Safe to call repeatedly.
+    public func checkOnChainDeposit(address: String) async throws -> AccountClient.DepositStatus {
+        guard let token = sessionTokenProvider() else {
+            throw PaymentBackendError.notConnected
+        }
+        do {
+            return try await client.checkBitcoinDeposit(address: address, sessionToken: token)
+        } catch {
+            throw Self.paymentBackendError(for: error)
+        }
+    }
+
+    // MARK: - Internal transfer
+    //
+    // Not part of `WalletBackend` or `PaymentBackend` -- sending to another
+    // TipMe account by email is a different kind of destination than
+    // anything `WalletDestination` models (an invoice, an address), and
+    // forcing it through `resolve` would mean guessing whether an arbitrary
+    // string is an email. `InternalTransferFlow` drives this directly.
+
+    /// Moves money straight to another TipMe account's ledger -- no
+    /// Lightning, no on-chain, no network beyond this one call. Only works
+    /// when the recipient already has a TipMe account under that email.
+    public func transfer(toEmail: String, amount: Amount) async throws -> AccountClient.TransferResult {
+        guard let token = sessionTokenProvider() else {
+            throw PaymentBackendError.notConnected
+        }
+        do {
+            return try await client.transfer(toEmail: toEmail, asset: amount.asset,
+                                             amountMinor: amount.minorUnits, sessionToken: token)
         } catch {
             throw Self.paymentBackendError(for: error)
         }
@@ -191,6 +276,12 @@ public actor CustodialPaymentBackend: PaymentBackend, WalletBackend {
             return .rejectedByNetwork("That invoice has already been paid.")
         case .depositNotFound:
             return .rejectedByNetwork("That deposit could not be found.")
+        case .onchainUnavailable:
+            return .network("On-chain sending isn't available on this registry right now.")
+        case .onchainError(let detail):
+            return .rejectedByNetwork(detail)
+        case .recipientNotFound:
+            return .rejectedByNetwork("No TipMe account exists with that email.")
         case .invalidRequest, .emailTaken, .invalidCredentials, .tooManyAttempts,
              .transport, .responseMalformed:
             return .network(String(describing: accountError))

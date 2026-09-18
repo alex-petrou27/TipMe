@@ -137,5 +137,13 @@ public struct TipMeServices: Sendable {
         LightningDepositFlow(backend: backend)
     }
 
+    public func makeOnChainDepositFlow() -> OnChainDepositFlow {
+        OnChainDepositFlow(backend: backend)
+    }
+
+    public func makeInternalTransferFlow(clock: Clock = SystemClock()) -> InternalTransferFlow {
+        InternalTransferFlow(backend: backend, gate: gate, auditLog: auditLog, clock: clock)
+    }
+
     public var isSignedIn: Bool { accountKeychain.hasSession() }
 }

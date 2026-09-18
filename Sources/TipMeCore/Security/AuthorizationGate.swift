@@ -100,6 +100,35 @@ public struct AuthorizedIntent: Sendable {
     public func isExpired(at now: Date) -> Bool { now >= expiresAt }
 }
 
+/// Proof that a specific internal transfer (TipMe account to TipMe account,
+/// by email) was approved by a present human, just now.
+///
+/// Neither `PaymentIntent` (a registered creator's Lightning address) nor
+/// `WalletSendIntent` (a `WalletDestination` -- an invoice, an address)
+/// actually fits "send to another TipMe account's email" without
+/// conflating it with an external payment rail it has nothing to do with.
+/// This is a separate, narrower proof for that one case, minted the same
+/// way and with the same guarantee as the other two: the sole initialiser
+/// is `private` to this file, and the sole minting call
+/// (`AuthorizationGate.authorizeTransfer`) lives here too.
+public struct AuthorizedTransfer: Sendable {
+    public let authorizedAt: Date
+    public let expiresAt: Date
+    public let nonce: UUID
+
+    private init(authorizedAt: Date, expiresAt: Date) {
+        self.authorizedAt = authorizedAt
+        self.expiresAt = expiresAt
+        self.nonce = UUID()
+    }
+
+    fileprivate static func mint(authorizedAt: Date, validFor: TimeInterval) -> AuthorizedTransfer {
+        AuthorizedTransfer(authorizedAt: authorizedAt, expiresAt: authorizedAt.addingTimeInterval(validFor))
+    }
+
+    public func isExpired(at now: Date) -> Bool { now >= expiresAt }
+}
+
 /// The only route from a proposed payment to an executable one.
 public actor AuthorizationGate {
     /// How long an approval stays good. Short on purpose: it exists to cover
@@ -199,6 +228,31 @@ public actor AuthorizationGate {
 
         return AuthorizedWalletSend.mint(intent: send, authorizedAt: clock.now,
                                          validFor: Self.approvalValidity)
+    }
+
+    /// Authorises an internal transfer through the identical biometric path
+    /// every other spend in this app uses. `reason` is what the system
+    /// biometric sheet displays -- pass something concrete ("Send £5.00 to
+    /// friend@example.com"), not a generic label.
+    public func authorizeTransfer(reason: String, intentID: String) async throws -> AuthorizedTransfer {
+        await auditLog.append(AuditEvent(
+            timestamp: clock.now, intentID: intentID,
+            stage: .authorizationRequested, outcome: .ok, origin: PaymentIntent.Origin.hostApp.rawValue))
+
+        let outcome = await authorizer.evaluate(reason: reason)
+        guard case .succeeded = outcome else {
+            await auditLog.append(AuditEvent(
+                timestamp: clock.now, intentID: intentID,
+                stage: .authorizationDenied, outcome: .rejected, origin: PaymentIntent.Origin.hostApp.rawValue,
+                detail: String(describing: outcome)))
+            throw AuthorizationError.declined(outcome)
+        }
+
+        await auditLog.append(AuditEvent(
+            timestamp: clock.now, intentID: intentID,
+            stage: .authorizationGranted, outcome: .ok, origin: PaymentIntent.Origin.hostApp.rawValue))
+
+        return AuthorizedTransfer.mint(authorizedAt: clock.now, validFor: Self.approvalValidity)
     }
 }
 

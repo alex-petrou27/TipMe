@@ -511,6 +511,23 @@ class Storage:
             completed_at=now,
         )
 
+    def transfer_balance(
+        self, from_user_id: str, to_user_id: str, asset: str, amount_minor: int,
+    ) -> None:
+        """Moves `amount_minor` of `asset` from one TipMe account's ledger
+        straight to another's, in one database transaction -- no Lightning,
+        no on-chain, no network at all. This is the "internal transfer"
+        case: when both sender and recipient already hold custodial TipMe
+        balances, there is nothing to route anywhere, only two numbers to
+        update together. Raises `InsufficientBalance` (leaving both
+        balances untouched) if the sender can't cover it.
+        """
+        with self.connect() as conn:
+            self._adjust_balance(conn, from_user_id, asset, -amount_minor,
+                                 "internal_transfer_sent", counterparty=to_user_id)
+            self._adjust_balance(conn, to_user_id, asset, amount_minor,
+                                 "internal_transfer_received", counterparty=from_user_id)
+
     def complete_deposit_with_amount(
         self, method: str, external_reference: str, observed_amount_minor: int, reason: str,
     ) -> PendingDeposit | None:
