@@ -178,7 +178,9 @@ class GridRail:
                     # flow collects only an email and a password today, and
                     # real KYC collection is explicitly out of scope for
                     # proving this rail works -- see the module docstring.
-                    "fullName": email.split("@")[0],
+                    # Grid requires a first and last name, so a bare email
+                    # local-part (which may have no space at all) won't do.
+                    "fullName": f"TipMe User {platform_user_id[:8]}",
                     "birthDate": "1990-01-01",
                     "nationality": "US",
                     "email": email,
