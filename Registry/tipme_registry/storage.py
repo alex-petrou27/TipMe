@@ -112,22 +112,38 @@ CREATE TABLE IF NOT EXISTS bitcoin_derivation (
     next_index  INTEGER NOT NULL DEFAULT 0
 );
 
--- Tracks a real Lightspark payment (in either direction) against the TipMe
--- transaction it belongs to. Separate from `pending_deposits`: a deposit's
--- ledger effect is still driven by that table (method='lightspark_invoice'),
--- exactly like a Voltage deposit -- this table exists so a withdrawal has
--- somewhere durable to record Lightspark's own payment id and status too
--- (previously nothing but an in-memory dedupe set), and so a webhook has
--- something to look up and update by that id, in either direction.
-CREATE TABLE IF NOT EXISTS lightspark_payments (
-    id                     TEXT PRIMARY KEY,
-    user_id                TEXT NOT NULL,
-    direction              TEXT NOT NULL,
-    lightspark_payment_id  TEXT NOT NULL UNIQUE,
-    status                 TEXT NOT NULL,
-    amount_minor           INTEGER NOT NULL,
-    created_at             TEXT NOT NULL,
-    updated_at             TEXT NOT NULL
+-- Maps a TipMe user to the Lightspark Grid customer + internal account
+-- provisioned for them. Grid is an accounts/KYC platform, not a single
+-- shared node -- see grid_rail.py's module docstring -- so unlike Voltage
+-- or a Lightning node, every TipMe user who moves money through it needs
+-- their own Grid customer record. Provisioned lazily, once, the first time
+-- a user is party to a Grid transfer; `grid_customer_id`/`grid_account_id`
+-- are then reused forever.
+CREATE TABLE IF NOT EXISTS grid_customers (
+    user_id           TEXT PRIMARY KEY,
+    grid_customer_id  TEXT NOT NULL UNIQUE,
+    grid_account_id   TEXT NOT NULL,
+    currency          TEXT NOT NULL,
+    created_at        TEXT NOT NULL
+);
+
+-- Tracks one Grid account-to-account transfer between two TipMe users.
+-- Separate from `ledger_entries`: Grid's own ledger is the source of truth
+-- for the money this table describes (unlike the bitcoin/usdt balances in
+-- `ledger_balances`, which TipMe itself custodies) -- this table exists so
+-- a status check or a webhook has something durable to look up and update
+-- by Grid's own quote/transaction id.
+CREATE TABLE IF NOT EXISTS grid_transfers (
+    id                  TEXT PRIMARY KEY,
+    from_user_id        TEXT NOT NULL,
+    to_user_id          TEXT NOT NULL,
+    grid_quote_id       TEXT NOT NULL,
+    grid_transaction_id TEXT NOT NULL UNIQUE,
+    currency            TEXT NOT NULL,
+    amount_minor        INTEGER NOT NULL,
+    status              TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
 );
 """
 
@@ -161,13 +177,24 @@ class PendingDeposit:
 
 
 @dataclass
-class LightsparkPaymentRecord:
-    id: str
+class GridCustomer:
     user_id: str
-    direction: str
-    lightspark_payment_id: str
-    status: str
+    grid_customer_id: str
+    grid_account_id: str
+    currency: str
+    created_at: datetime
+
+
+@dataclass
+class GridTransfer:
+    id: str
+    from_user_id: str
+    to_user_id: str
+    grid_quote_id: str
+    grid_transaction_id: str
+    currency: str
     amount_minor: int
+    status: str
     created_at: datetime
     updated_at: datetime
 
@@ -623,61 +650,103 @@ class Storage:
         )
 
     # ----------------------------------------------------------------
-    # Lightspark payments
+    # Lightspark Grid
     # ----------------------------------------------------------------
 
-    def record_lightspark_payment(
-        self, user_id: str, direction: str, lightspark_payment_id: str,
-        status: str, amount_minor: int,
-    ) -> LightsparkPaymentRecord:
+    def get_grid_customer(self, user_id: str) -> GridCustomer | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM grid_customers WHERE user_id = ?", (user_id,),
+            ).fetchone()
+        return self._to_grid_customer(row) if row else None
+
+    def record_grid_customer(
+        self, user_id: str, grid_customer_id: str, grid_account_id: str, currency: str,
+    ) -> GridCustomer:
+        """Persists the mapping the first time a user is provisioned on
+        Grid. Idempotent by `user_id`: a second call (e.g. a race between
+        two requests provisioning the same user) leaves the first mapping
+        in place rather than creating a second Grid customer's worth of
+        orphaned state.
+        """
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO grid_customers (user_id, grid_customer_id, grid_account_id,
+                                            currency, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO NOTHING
+                """,
+                (user_id, grid_customer_id, grid_account_id, currency, now.isoformat()),
+            )
+            row = conn.execute(
+                "SELECT * FROM grid_customers WHERE user_id = ?", (user_id,),
+            ).fetchone()
+        return self._to_grid_customer(row)
+
+    def record_grid_transfer(
+        self, from_user_id: str, to_user_id: str, grid_quote_id: str,
+        grid_transaction_id: str, currency: str, amount_minor: int, status: str,
+    ) -> GridTransfer:
         record_id = secrets.token_urlsafe(16)
         now = datetime.now(timezone.utc)
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO lightspark_payments (id, user_id, direction, lightspark_payment_id,
-                                                 status, amount_minor, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO grid_transfers (id, from_user_id, to_user_id, grid_quote_id,
+                                            grid_transaction_id, currency, amount_minor,
+                                            status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (record_id, user_id, direction, lightspark_payment_id, status, amount_minor,
-                 now.isoformat(), now.isoformat()),
+                (record_id, from_user_id, to_user_id, grid_quote_id, grid_transaction_id,
+                 currency, amount_minor, status, now.isoformat(), now.isoformat()),
             )
-        return LightsparkPaymentRecord(
-            id=record_id, user_id=user_id, direction=direction,
-            lightspark_payment_id=lightspark_payment_id, status=status, amount_minor=amount_minor,
+        return GridTransfer(
+            id=record_id, from_user_id=from_user_id, to_user_id=to_user_id,
+            grid_quote_id=grid_quote_id, grid_transaction_id=grid_transaction_id,
+            currency=currency, amount_minor=amount_minor, status=status,
             created_at=now, updated_at=now,
         )
 
-    def get_lightspark_payment(self, lightspark_payment_id: str) -> LightsparkPaymentRecord | None:
+    def get_grid_transfer(self, grid_transaction_id: str) -> GridTransfer | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT * FROM lightspark_payments WHERE lightspark_payment_id = ?",
-                (lightspark_payment_id,),
+                "SELECT * FROM grid_transfers WHERE grid_transaction_id = ?",
+                (grid_transaction_id,),
             ).fetchone()
-        return self._to_lightspark_payment(row) if row else None
+        return self._to_grid_transfer(row) if row else None
 
-    def update_lightspark_payment_status(
-        self, lightspark_payment_id: str, status: str,
-    ) -> LightsparkPaymentRecord | None:
+    def update_grid_transfer_status(
+        self, grid_transaction_id: str, status: str,
+    ) -> GridTransfer | None:
         now = datetime.now(timezone.utc)
         with self.connect() as conn:
             conn.execute(
-                "UPDATE lightspark_payments SET status = ?, updated_at = ? "
-                "WHERE lightspark_payment_id = ?",
-                (status, now.isoformat(), lightspark_payment_id),
+                "UPDATE grid_transfers SET status = ?, updated_at = ? "
+                "WHERE grid_transaction_id = ?",
+                (status, now.isoformat(), grid_transaction_id),
             )
             row = conn.execute(
-                "SELECT * FROM lightspark_payments WHERE lightspark_payment_id = ?",
-                (lightspark_payment_id,),
+                "SELECT * FROM grid_transfers WHERE grid_transaction_id = ?",
+                (grid_transaction_id,),
             ).fetchone()
-        return self._to_lightspark_payment(row) if row else None
+        return self._to_grid_transfer(row) if row else None
 
     @staticmethod
-    def _to_lightspark_payment(row: sqlite3.Row) -> LightsparkPaymentRecord:
-        return LightsparkPaymentRecord(
-            id=row["id"], user_id=row["user_id"], direction=row["direction"],
-            lightspark_payment_id=row["lightspark_payment_id"], status=row["status"],
-            amount_minor=row["amount_minor"],
+    def _to_grid_customer(row: sqlite3.Row) -> GridCustomer:
+        return GridCustomer(
+            user_id=row["user_id"], grid_customer_id=row["grid_customer_id"],
+            grid_account_id=row["grid_account_id"], currency=row["currency"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    @staticmethod
+    def _to_grid_transfer(row: sqlite3.Row) -> GridTransfer:
+        return GridTransfer(
+            id=row["id"], from_user_id=row["from_user_id"], to_user_id=row["to_user_id"],
+            grid_quote_id=row["grid_quote_id"], grid_transaction_id=row["grid_transaction_id"],
+            currency=row["currency"], amount_minor=row["amount_minor"], status=row["status"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )

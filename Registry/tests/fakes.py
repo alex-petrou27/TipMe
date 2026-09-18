@@ -1,9 +1,10 @@
 """Test doubles shared across Registry test modules."""
 from __future__ import annotations
 
-from lightspark import WebhookEventType
+import json
 
 from tipme_registry.bitcoin_chain import OnChainError, SendResult
+from tipme_registry.grid_rail import GridCustomerHandle, GridError, GridTransferResult
 from tipme_registry.lightning_node import DecodedInvoice, Invoice, InvoiceStatus, LightningNodeError, PaymentResult
 
 
@@ -69,56 +70,81 @@ class FakeLightningRail:
         return PaymentResult(payment_hash=f"paid-{payment_request}", fee_sats=1)
 
 
-class FakeIncomingPayment:
-    def __init__(self, transaction_hash: str | None):
-        self.transaction_hash = transaction_hash
+class FakeGridRail:
+    """In-memory Grid rail -- never touches a network or the real REST API.
 
-
-class FakeWebhookEvent:
-    def __init__(self, event_type: WebhookEventType, entity_id: str):
-        self.event_type = event_type
-        self.entity_id = entity_id
-
-
-class FakeLightsparkRail(FakeLightningRail):
-    """Adds the Lightspark-only extras (`simulate_test_payment`,
-    `verify_webhook`, `incoming_payment`) on top of `FakeLightningRail`'s
-    shared behaviour, so app-level tests can exercise the Lightspark-only
-    endpoints without the real SDK or a network."""
+    A test drives it directly: `fail_next_transfer`/`fail_next_fund` make
+    the next call raise, `queue_webhook_event` primes what `verify_webhook`
+    returns, exactly like `FakeLightningRail` above.
+    """
 
     def __init__(self) -> None:
-        super().__init__()
-        self.simulated: list[str] = []
-        self.fail_next_simulate = False
-        self._webhook_event: FakeWebhookEvent | None = None
-        self._incoming_payments: dict[str, FakeIncomingPayment] = {}
+        self.currency = "USD"
+        self._customers: dict[str, GridCustomerHandle] = {}
+        self._accounts: dict[str, int] = {}
+        self._transactions: dict[str, str] = {}
+        self.funded: list[tuple[str, int]] = []
+        self.transferred: list[tuple[str, str, int]] = []
+        self.fail_next_ensure_customer = False
+        self.fail_next_fund = False
+        self.fail_next_transfer = False
+        self._webhook_body: bytes | None = None
+        self._counter = 0
 
-    async def simulate_test_payment(self, payment_request: str, amount_sats: int | None = None) -> None:
-        if self.fail_next_simulate:
-            self.fail_next_simulate = False
-            raise LightningNodeError("simulated failure")
-        self.simulated.append(payment_request)
-        # Simulating a payment against one of our own invoices settles it,
-        # the same way a real external wallet paying it would.
-        for payment_hash, invoice in self._invoices.items():
-            if invoice.payment_request == payment_request:
-                self.settle(payment_hash)
+    async def ensure_customer(self, platform_user_id: str, email: str) -> GridCustomerHandle:
+        if self.fail_next_ensure_customer:
+            self.fail_next_ensure_customer = False
+            raise GridError("simulated customer provisioning failure")
+        existing = self._customers.get(platform_user_id)
+        if existing is not None:
+            return existing
+        self._counter += 1
+        handle = GridCustomerHandle(
+            customer_id=f"Customer:{self._counter}", account_id=f"InternalAccount:{self._counter}",
+        )
+        self._customers[platform_user_id] = handle
+        self._accounts[handle.account_id] = 0
+        return handle
 
-    def queue_webhook_event(self, event_type: WebhookEventType, entity_id: str) -> None:
-        self._webhook_event = FakeWebhookEvent(event_type, entity_id)
+    async def fund_sandbox(self, account_id: str, amount_minor: int) -> None:
+        if self.fail_next_fund:
+            self.fail_next_fund = False
+            raise GridError("simulated funding failure")
+        self.funded.append((account_id, amount_minor))
+        self._accounts[account_id] = self._accounts.get(account_id, 0) + amount_minor
 
-    def verify_webhook(self, body: bytes, signature: str) -> FakeWebhookEvent:
+    async def transfer(
+        self, source_account_id: str, destination_account_id: str, amount_minor: int,
+    ) -> GridTransferResult:
+        if self.fail_next_transfer:
+            self.fail_next_transfer = False
+            raise GridError("simulated transfer failure")
+        self.transferred.append((source_account_id, destination_account_id, amount_minor))
+        self._counter += 1
+        transaction_id = f"Transaction:{self._counter}"
+        self._transactions[transaction_id] = "COMPLETED"
+        return GridTransferResult(
+            quote_id=f"Quote:{self._counter}", transaction_id=transaction_id, status="COMPLETED",
+        )
+
+    async def get_transaction_status(self, transaction_id: str) -> str:
+        status = self._transactions.get(transaction_id)
+        if status is None:
+            raise GridError(f"unknown transaction: {transaction_id}")
+        return status
+
+    def set_transaction_status(self, transaction_id: str, status: str) -> None:
+        self._transactions[transaction_id] = status
+
+    def queue_webhook_event(self, transaction_id: str, status: str) -> None:
+        self._webhook_body = json.dumps({"transactionId": transaction_id, "status": status}).encode()
+
+    def verify_webhook(self, body: bytes, signature: str) -> dict:
         if signature != "valid-signature":
-            raise LightningNodeError("invalid webhook signature")
-        if self._webhook_event is None:
-            raise LightningNodeError("no webhook event queued")
-        return self._webhook_event
-
-    def register_incoming_payment(self, payment_id: str, transaction_hash: str | None) -> None:
-        self._incoming_payments[payment_id] = FakeIncomingPayment(transaction_hash)
-
-    def incoming_payment(self, payment_id: str) -> FakeIncomingPayment | None:
-        return self._incoming_payments.get(payment_id)
+            raise GridError("invalid webhook signature")
+        if self._webhook_body is None:
+            raise GridError("no webhook event queued")
+        return json.loads(self._webhook_body)
 
 
 class FakeOnChainRail:

@@ -24,9 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from lightspark import WebhookEventType as LightsparkWebhookEventType
-
-from . import accounts, bitcoin_chain, lightning, lightning_node, lightspark_rail, oauth, rates as rates_module, signing
+from . import accounts, bitcoin_chain, grid_rail, lightning, lightning_node, oauth, rates as rates_module, signing
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
 from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, PendingDeposit, Storage
 
@@ -251,17 +249,12 @@ def get_current_user(
 
 def get_lightning_rail() -> lightning_node.LightningRail:
     """Resolves fresh on every request, same convention as
-    `oauth.config_for` -- so a test can monkeypatch `lightspark_rail.rail_from_env`
-    /`lightning_node.rail_from_env` without any app-level caching to reset,
+    `oauth.config_for` -- so a test can monkeypatch
+    `lightning_node.rail_from_env` without any app-level caching to reset,
     and so credentials added to the environment after the process started
     are picked up without a restart.
-
-    Lightspark is preferred when both are configured -- see
-    `lightspark_rail`'s module docstring for why this is a second
-    implementation of the exact same `LightningRail` protocol rather than a
-    replacement for the Voltage one.
     """
-    rail = lightspark_rail.rail_from_env() or lightning_node.rail_from_env()
+    rail = lightning_node.rail_from_env()
     if rail is None:
         raise HTTPException(
             status_code=503,
@@ -277,6 +270,17 @@ def get_onchain_rail() -> bitcoin_chain.OnChainRail:
         raise HTTPException(
             status_code=503,
             detail="On-chain Bitcoin deposits/withdrawals are not configured on this registry yet",
+        )
+    return rail
+
+
+def get_grid_rail() -> grid_rail.GridRail:
+    """Same fail-closed, resolve-fresh convention as `get_lightning_rail`."""
+    rail = grid_rail.rail_from_env()
+    if rail is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Grid transfers are not configured on this registry yet",
         )
     return rail
 
@@ -414,6 +418,17 @@ class TransferResponse(BaseModel):
 
 class SimulateTestPaymentRequest(BaseModel):
     payment_request: str
+
+
+class GridTransferRequest(BaseModel):
+    to_email: str
+    amount_minor: int = Field(gt=0)
+
+
+class GridTransferResponse(BaseModel):
+    transfer_id: str
+    grid_transaction_id: str
+    status: str
 
 
 class RatesResponse(BaseModel):
@@ -674,17 +689,6 @@ async def withdraw_lightning(
         raise HTTPException(status_code=502, detail=str(error)) from error
 
     _paid_lightning_invoices.add(request.payment_request)
-    if isinstance(rail, lightspark_rail.LightsparkPaymentsRail):
-        # Lightspark-specific bookkeeping: `pay_invoice` above already
-        # waited for a terminal status before returning, so this is a
-        # durable record of what happened, not something the ledger effect
-        # above depends on. A later webhook for this same payment reaching
-        # the same terminal status is a harmless, idempotent no-op against
-        # this row (see `lightspark_webhook`).
-        storage.record_lightspark_payment(
-            user_id=user_id, direction="send", lightspark_payment_id=result.payment_hash,
-            status="SUCCESS", amount_minor=decoded.amount_sats,
-        )
     return WithdrawLightningResponse(
         payment_hash=result.payment_hash,
         amount_sats=decoded.amount_sats,
@@ -693,48 +697,132 @@ async def withdraw_lightning(
     )
 
 
-@app.post("/v1/webhooks/lightspark", status_code=204)
-async def lightspark_webhook(
+async def _ensure_grid_customer(
+    storage: Storage, rail: grid_rail.GridRail, user_id: str,
+) -> tuple[str, str]:
+    """Returns `(grid_customer_id, grid_account_id)` for a TipMe user,
+    provisioning them on Grid the first time they're party to a transfer.
+    See `grid_rail`'s module docstring for why every user needs their own
+    Grid customer, unlike the single shared node Voltage/classic Lightspark
+    used.
+    """
+    existing = storage.get_grid_customer(user_id)
+    if existing is not None:
+        return existing.grid_customer_id, existing.grid_account_id
+
+    account = storage.get_user(user_id)
+    if account is None:
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    try:
+        handle = await rail.ensure_customer(user_id, account.email)
+    except grid_rail.GridError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    record = storage.record_grid_customer(
+        user_id=user_id, grid_customer_id=handle.customer_id,
+        grid_account_id=handle.account_id, currency=rail.currency,
+    )
+    return record.grid_customer_id, record.grid_account_id
+
+
+@app.post("/v1/transfer/grid", response_model=GridTransferResponse)
+async def transfer_via_grid(
+    request: GridTransferRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+    rail: grid_rail.GridRail = Depends(get_grid_rail),
+) -> GridTransferResponse:
+    """Moves real money between two TipMe users' Grid-backed accounts --
+    the first proof that TipMe can settle a payment through an external
+    rail rather than only ever updating its own ledger (see `/v1/transfer`
+    for the ledger-only case). Sandbox-only for now: the sender's Grid
+    account is funded on demand via Grid's sandbox harness rather than
+    requiring a real funding source, exactly like `simulate_test_payment`
+    did for the classic Lightning rail.
+    """
+    try:
+        email = accounts.normalise_email(request.to_email)
+    except accounts.InvalidEmail as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    found = storage.get_user_by_email(email)
+    if found is None:
+        raise HTTPException(status_code=404, detail="no TipMe account with that email")
+    recipient, _password_hash = found
+    if recipient.id == user_id:
+        raise HTTPException(status_code=400, detail="cannot transfer to yourself")
+
+    _sender_customer_id, sender_account_id = await _ensure_grid_customer(storage, rail, user_id)
+    _recipient_customer_id, recipient_account_id = await _ensure_grid_customer(
+        storage, rail, recipient.id,
+    )
+
+    try:
+        await rail.fund_sandbox(sender_account_id, request.amount_minor)
+        result = await rail.transfer(sender_account_id, recipient_account_id, request.amount_minor)
+    except grid_rail.GridError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    record = storage.record_grid_transfer(
+        from_user_id=user_id, to_user_id=recipient.id, grid_quote_id=result.quote_id,
+        grid_transaction_id=result.transaction_id, currency=rail.currency,
+        amount_minor=request.amount_minor, status=result.status,
+    )
+    return GridTransferResponse(
+        transfer_id=record.id, grid_transaction_id=record.grid_transaction_id,
+        status=record.status,
+    )
+
+
+@app.post("/v1/transfer/grid/{transaction_id}/check", response_model=GridTransferResponse)
+async def check_grid_transfer(
+    transaction_id: str,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+    rail: grid_rail.GridRail = Depends(get_grid_rail),
+) -> GridTransferResponse:
+    record = storage.get_grid_transfer(transaction_id)
+    if record is None or user_id not in (record.from_user_id, record.to_user_id):
+        raise HTTPException(status_code=404, detail="no such transfer")
+
+    try:
+        status = await rail.get_transaction_status(transaction_id)
+    except grid_rail.GridError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    record = storage.update_grid_transfer_status(transaction_id, status) or record
+    return GridTransferResponse(
+        transfer_id=record.id, grid_transaction_id=record.grid_transaction_id,
+        status=record.status,
+    )
+
+
+@app.post("/v1/webhooks/grid", status_code=204)
+async def grid_webhook(
     request: Request,
-    lightspark_signature: str = Header(alias="lightspark-signature"),
+    x_grid_signature: str = Header(alias="X-Grid-Signature"),
     storage: Storage = Depends(get_storage),
 ) -> Response:
-    """Lightspark POSTs here whenever a payment on our node reaches a
-    terminal state. Verifying the signature is what makes this trustworthy
-    -- without it, anyone who found this URL could claim any deposit had
-    been paid, without ever having paid it.
-
-    Only `FUNDS_RECEIVED` is acted on today: its `entity_id` unambiguously
-    refers to an incoming payment, which is exactly what a pending deposit
-    is waiting on. The generic `PAYMENT_FINISHED` (which fires for both
-    directions on a node) is acknowledged but not yet acted on -- the
-    existing poll-based `/check` and the synchronous wait inside
-    `withdraw_lightning`'s `pay_invoice` call already cover both directions
-    without it; this is additive, not load-bearing.
+    """Grid POSTs here whenever a transaction reaches a terminal state.
+    Verifying the signature is what makes this trustworthy -- without it,
+    anyone who found this URL could claim any transfer had completed
+    without it ever having happened.
     """
-    rail = lightspark_rail.rail_from_env()
+    rail = grid_rail.rail_from_env()
     if rail is None:
-        raise HTTPException(status_code=503, detail="Lightspark is not configured on this registry")
+        raise HTTPException(status_code=503, detail="Grid is not configured on this registry")
 
     body = await request.body()
     try:
-        event = rail.verify_webhook(body, lightspark_signature)
-    except lightning_node.LightningNodeError as error:
+        event = rail.verify_webhook(body, x_grid_signature)
+    except grid_rail.GridError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
 
-    if event.event_type != LightsparkWebhookEventType.FUNDS_RECEIVED:
+    transaction_id = event.get("transactionId")
+    status = event.get("status")
+    if not transaction_id or not status:
         return Response(status_code=204)
 
-    try:
-        payment = rail.incoming_payment(event.entity_id)
-    except lightning_node.LightningNodeError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    if payment is None or not payment.transaction_hash:
-        return Response(status_code=204)
-
-    storage.complete_deposit_if_pending(
-        "lightning_invoice", payment.transaction_hash, reason="lightning_deposit",
-    )
+    storage.update_grid_transfer_status(transaction_id, status)
     return Response(status_code=204)
 
 
