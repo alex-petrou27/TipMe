@@ -29,21 +29,27 @@ covering the two primitives Grid's auth flow needs:
 
 The seal here is RFC 9180 base-mode HPKE with a standard suite
 (DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM), computed directly
-from the spec (`_kem_extract_and_expand`, `_key_schedule`) rather than via
-an HPKE library, so nothing about the derivation depends on a library's
-particular API conventions -- the wire-format detail that did trip up an
-early version (Grid wants the ephemeral sender key uncompressed in
-`encappedPublic`, confirmed against a real sandbox response) is the kind
-of thing worth controlling directly rather than trusting a wrapper to get
-right. An earlier version of this module replicated a zero-padded
-`LabeledExpand` length-prefix quirk found in Turnkey's published JS client
-(`@turnkey/crypto`'s `buildLabeledInfo`), on the theory that Grid's
-enclave might mirror it since Grid's embedded-wallet stack is built on
-Turnkey. Live testing against a real sandbox account rejected every OTP
-bundle sealed that way ("Invalid encryptedOtpBundle"); this version
-computes the real RFC 9180 length prefix instead, on the theory that the
-JS quirk is specific to a client-side flow and Grid's actual backend
-enclave implements the spec as written.
+from the spec (`_kem_extract_and_expand`, `_key_schedule`, both checked
+against the official RFC 9180 test vectors for this exact suite) rather
+than via a library, so nothing about the derivation depends on a
+library's particular conventions. Two wrong guesses along the way, each
+found by testing live against a real sandbox account and reading Grid's
+own `mintlify/snippets/global-accounts/client-keys.mdx` guide (fetched
+from the `lightsparkdev/grid-api` repo directly -- the rendered docs site
+blocks this sandbox's egress) rather than the OpenAPI spec's prose alone:
+
+1. `encappedPublic` must be the ephemeral key **uncompressed**, not
+   compressed -- confirmed against a real sandbox response.
+2. There is no custom AAD for the OTP seal. An earlier version reused the
+   `sender || recipient` AAD from Turnkey's own JS client
+   (`@turnkey/crypto`'s `hpkeEncrypt`), on the theory that Grid's
+   embedded-wallet stack, being built on Turnkey, might mirror it. Grid's
+   own client-keys guide shows the OTP bundle built through a plain
+   `hpkeEncryptToGridBundle({plainTextBuf, targetKeyBuf})` helper with no
+   `info`/`aad` parameters at all -- that custom AAD convention turned out
+   to belong to a separate, legacy-only session-key-decrypt flow the same
+   guide documents with its own explicit AAD, not to the OTP seal. This
+   version uses HPKE's own empty defaults for both `info` and `aad`.
 
 ## What is not verified
 
@@ -183,27 +189,27 @@ def _uncompressed_bytes(public_key: ec.EllipticCurvePublicKey) -> bytes:
 
 
 def _hpke_seal(plaintext: bytes, target_public_key_hex: str) -> tuple[str, bytes]:
-    """RFC 9180 base-mode HPKE seal, byte-for-byte matching `@turnkey/
-    crypto`'s `hpkeEncrypt` -- specifically the wire format its own
-    `formatHpkeBuf` produces, which re-uncompresses the ephemeral sender
-    key rather than leaving it compressed. Returns
-    `(uncompressed_ephemeral_public_hex, ciphertext_bytes)`.
+    """RFC 9180 base-mode HPKE seal for Grid's OTP target bundle. Grid's own
+    guide shows this built via a plain `hpkeEncryptToGridBundle({
+    plainTextBuf, targetKeyBuf})` helper with no `info`/`aad` parameters
+    exposed at all -- unlike a separate, legacy-only session-key-decrypt
+    flow the same guide documents with an explicit custom AAD -- so this
+    uses HPKE's own empty defaults for both rather than inventing either.
+    Returns `(uncompressed_ephemeral_public_hex, ciphertext_bytes)`.
     """
     target_key = _load_public_key(bytes.fromhex(target_public_key_hex))
-    target_uncompressed = _uncompressed_bytes(target_key)
 
     ephemeral_private = ec.generate_private_key(_CURVE)
     ephemeral_public = ephemeral_private.public_key()
     ephemeral_uncompressed = _uncompressed_bytes(ephemeral_public)
 
-    aad = ephemeral_uncompressed + target_uncompressed
     shared_point = ephemeral_private.exchange(ec.ECDH(), target_key)
-    kem_context = ephemeral_uncompressed + target_uncompressed
+    kem_context = ephemeral_uncompressed + _uncompressed_bytes(target_key)
 
     shared_secret = _kem_extract_and_expand(shared_point, kem_context)
     key, base_nonce = _key_schedule(shared_secret)
 
-    ciphertext = AESGCM(key).encrypt(base_nonce, plaintext, aad)
+    ciphertext = AESGCM(key).encrypt(base_nonce, plaintext, None)
     return ephemeral_uncompressed.hex(), ciphertext
 
 

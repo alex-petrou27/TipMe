@@ -23,14 +23,13 @@ def _decrypt_seal(sealed: dict, target_private: ec.EllipticCurvePrivateKey) -> b
     ephemeral_uncompressed = ts._uncompressed_bytes(ephemeral_pub)
     target_uncompressed = ts._uncompressed_bytes(target_private.public_key())
 
-    aad = ephemeral_uncompressed + target_uncompressed
     shared_point = target_private.exchange(ec.ECDH(), ephemeral_pub)
     kem_context = ephemeral_uncompressed + target_uncompressed
 
     shared_secret = ts._kem_extract_and_expand(shared_point, kem_context)
     key, iv = ts._key_schedule(shared_secret)
 
-    return AESGCM(key).decrypt(iv, bytes.fromhex(sealed["ciphertext"]), aad)
+    return AESGCM(key).decrypt(iv, bytes.fromhex(sealed["ciphertext"]), None)
 
 
 def _decode_stamp(stamp: str) -> dict:
