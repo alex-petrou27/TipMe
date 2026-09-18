@@ -17,7 +17,7 @@ from tipme_registry.grid_rail import GridConfig, GridError, GridRail
 def _config(base_url: str = "https://grid.test") -> GridConfig:
     return GridConfig(
         client_id="test-id", client_secret="test-secret",
-        webhook_public_key_pem=None, base_url=base_url, currency="USD",
+        webhook_public_key_pem=None, base_url=base_url, currency="USDB",
     )
 
 
@@ -37,8 +37,8 @@ def test_ensure_customer_returns_an_existing_customer_without_creating_one():
         if request.url.path == "/customers/internal-accounts":
             assert request.url.params["customerId"] == "Customer:1"
             return httpx.Response(200, json={"data": [
-                {"id": "InternalAccount:1", "type": "INTERNAL_FIAT",
-                 "totalBalance": {"currency": {"code": "USD"}}},
+                {"id": "InternalAccount:1", "type": "EMBEDDED_WALLET",
+                 "totalBalance": {"currency": {"code": "USDB"}}},
             ]})
         raise AssertionError(f"unexpected request: {request.url}")
 
@@ -62,8 +62,8 @@ def test_ensure_customer_creates_one_when_none_exists():
             return httpx.Response(201, json={"id": "Customer:2"})
         if request.url.path == "/customers/internal-accounts":
             return httpx.Response(200, json={"data": [
-                {"id": "InternalAccount:2", "type": "INTERNAL_FIAT",
-                 "totalBalance": {"currency": {"code": "USD"}}},
+                {"id": "InternalAccount:2", "type": "EMBEDDED_WALLET",
+                 "totalBalance": {"currency": {"code": "USDB"}}},
             ]})
         raise AssertionError(f"unexpected request: {request.url}")
 

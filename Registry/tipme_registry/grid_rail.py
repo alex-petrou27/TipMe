@@ -18,8 +18,16 @@ another," so this module implements its own, smaller protocol instead.
 Grid is not one shared node the way a Voltage or classic-Lightspark
 integration is -- it is a platform for *your customers*. Moving money
 between two TipMe users means each of them has their own Grid `Customer`
-record, and each customer's `INTERNAL_FIAT` account is what actually holds
-a Grid-tracked balance. `ensure_customer` provisions that lazily, the first
+record. Each customer is also auto-provisioned an `INTERNAL_FIAT` (bank
+rail) account, but Grid rejects an account-to-account quote between two
+different customers' `INTERNAL_FIAT` accounts outright -- confirmed live,
+not from docs: "Internal account transfers are only allowed between
+accounts owned by the same customer, between matching Spark-token embedded
+wallets, or between the platform and one of its members' embedded wallets
+when enabled." So this targets each customer's `EMBEDDED_WALLET` (Spark)
+account instead -- which happens to be exactly the "move it across with a
+Spark" mechanism this was always meant to prove, not a workaround bolted on
+after the fact. `ensure_customer` provisions the customer lazily, the first
 time a TipMe user is party to a Grid transfer, using obviously-synthetic
 placeholder profile data (name/DOB/nationality) rather than real KYC
 collection -- TipMe's signup flow only asks for an email and a password
@@ -77,7 +85,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 DEFAULT_BASE_URL = "https://api.lightspark.com/grid/2025-10-13"
-DEFAULT_CURRENCY = "USD"
+DEFAULT_CURRENCY = "USDB"
 
 
 class GridError(Exception):
@@ -174,7 +182,10 @@ class GridRail:
                     "customerType": "INDIVIDUAL",
                     "platformCustomerId": platform_user_id,
                     "region": "US",
-                    "currencies": [self._config.currency],
+                    # Not the currency transfers actually move through --
+                    # see below -- just a customer-level preference Grid
+                    # asks for at creation time.
+                    "currencies": ["USD"],
                     # Sandbox-only placeholder identity data: TipMe's signup
                     # flow collects only an email and a password today, and
                     # real KYC collection is explicitly out of scope for
@@ -189,24 +200,24 @@ class GridRail:
             )
             customer_id = created["id"]
 
-        # A brand-new customer's INTERNAL_FIAT account is provisioned
-        # asynchronously, moments after creation -- an existing customer's
-        # is already long since ready, but a customer created just above by
-        # this same call can briefly 404/come back empty. Retry a few times
-        # rather than failing a transfer over a race that resolves itself
-        # within a second or two.
+        # A brand-new customer's EMBEDDED_WALLET (Spark) account is
+        # provisioned asynchronously, moments after creation -- an existing
+        # customer's is already long since ready, but a customer created
+        # just above by this same call can briefly come back empty. Retry a
+        # few times rather than failing a transfer over a race that
+        # resolves itself within a second or two.
         for attempt in range(5):
             accounts = await self._request(
                 "GET", "/customers/internal-accounts", params={"customerId": customer_id},
             )
             for account in accounts.get("data", []):
                 currency = account.get("totalBalance", {}).get("currency", {}).get("code")
-                if account.get("type") == "INTERNAL_FIAT" and currency == self._config.currency:
+                if account.get("type") == "EMBEDDED_WALLET" and currency == self._config.currency:
                     return GridCustomerHandle(customer_id=customer_id, account_id=account["id"])
             if attempt < 4:
                 await asyncio.sleep(0.5)
         raise GridError(
-            f"customer {customer_id} has no INTERNAL_FIAT account in {self._config.currency} yet"
+            f"customer {customer_id} has no EMBEDDED_WALLET account in {self._config.currency} yet"
         )
 
     async def fund_sandbox(self, account_id: str, amount_minor: int) -> None:
