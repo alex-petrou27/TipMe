@@ -27,15 +27,23 @@ covering the two primitives Grid's auth flow needs:
 
 ## Why this is hand-rolled instead of using an HPKE library
 
-Turnkey's `hpkeEncrypt` is RFC 9180 base-mode HPKE with a real, standard
-suite (DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM) -- except its
-`buildLabeledInfo` leaves the 2-byte length prefix RFC 9180's
-`LabeledExpand` specifies as zero rather than populating it, a deliberate
-(if non-conformant) deviation their own server-side decrypt must mirror
-exactly to interoperate. A strictly RFC-correct HPKE library would produce
-different ciphertext bytes and fail against Grid's real enclave. Matching
-Turnkey's actual implementation -- quirk included -- was only possible by
-reading their source directly, not by implementing the RFC as written.
+The seal here is RFC 9180 base-mode HPKE with a standard suite
+(DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM), computed directly
+from the spec (`_kem_extract_and_expand`, `_key_schedule`) rather than via
+an HPKE library, so nothing about the derivation depends on a library's
+particular API conventions -- the wire-format detail that did trip up an
+early version (Grid wants the ephemeral sender key uncompressed in
+`encappedPublic`, confirmed against a real sandbox response) is the kind
+of thing worth controlling directly rather than trusting a wrapper to get
+right. An earlier version of this module replicated a zero-padded
+`LabeledExpand` length-prefix quirk found in Turnkey's published JS client
+(`@turnkey/crypto`'s `buildLabeledInfo`), on the theory that Grid's
+enclave might mirror it since Grid's embedded-wallet stack is built on
+Turnkey. Live testing against a real sandbox account rejected every OTP
+bundle sealed that way ("Invalid encryptedOtpBundle"); this version
+computes the real RFC 9180 length prefix instead, on the theory that the
+JS quirk is specific to a client-side flow and Grid's actual backend
+enclave implements the spec as written.
 
 ## What is not verified
 
@@ -71,25 +79,11 @@ _SUITE_ID_HPKE = bytes([72, 80, 75, 69, 0, 16, 0, 1, 0, 2])  # "HPKE" || kem_id 
 _LABEL_EAE_PRK = b"eae_prk"
 _LABEL_SHARED_SECRET = b"shared_secret"
 _LABEL_SECRET = b"secret"
-# Precomputed `labeled_info` for label="key"/"base_nonce" under an empty
-# application info and empty PSK -- fixed regardless of the actual shared
-# secret, so Turnkey (and this port) hardcode them rather than rebuilding
-# the full `key_schedule_context` on every call.
-_AES_KEY_INFO = bytes([
-    0, 32, 72, 80, 75, 69, 45, 118, 49, 72, 80, 75, 69, 0, 16, 0, 1, 0, 2, 107,
-    101, 121, 0, 143, 195, 174, 184, 50, 73, 10, 75, 90, 179, 228, 32, 35, 40,
-    125, 178, 154, 31, 75, 199, 194, 34, 192, 223, 34, 135, 39, 183, 10, 64, 33,
-    18, 47, 63, 4, 233, 32, 108, 209, 36, 19, 80, 53, 41, 180, 122, 198, 166, 48,
-    185, 46, 196, 207, 125, 35, 69, 8, 208, 175, 151, 113, 201, 158, 80,
-])
-_IV_INFO = bytes([
-    0, 12, 72, 80, 75, 69, 45, 118, 49, 72, 80, 75, 69, 0, 16, 0, 1, 0, 2, 98, 97,
-    115, 101, 95, 110, 111, 110, 99, 101, 0, 143, 195, 174, 184, 50, 73, 10, 75,
-    90, 179, 228, 32, 35, 40, 125, 178, 154, 31, 75, 199, 194, 34, 192, 223, 34,
-    135, 39, 183, 10, 64, 33, 18, 47, 63, 4, 233, 32, 108, 209, 36, 19, 80, 53,
-    41, 180, 122, 198, 166, 48, 185, 46, 196, 207, 125, 35, 69, 8, 208, 175, 151,
-    113, 201, 158, 80,
-])
+_LABEL_PSK_ID_HASH = b"psk_id_hash"
+_LABEL_INFO_HASH = b"info_hash"
+_LABEL_KEY = b"key"
+_LABEL_BASE_NONCE = b"base_nonce"
+_MODE_BASE = bytes([0x00])
 
 
 class TurnkeyStampError(Exception):
@@ -147,19 +141,37 @@ def _hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
     return HKDFExpand(algorithm=hashes.SHA256(), length=length, info=info).derive(prk)
 
 
-def _labeled_ikm(label: bytes, ikm: bytes, suite_id: bytes) -> bytes:
-    return _HPKE_VERSION + suite_id + label + ikm
+def _labeled_extract(salt: bytes, label: bytes, ikm: bytes, suite_id: bytes) -> bytes:
+    labeled_ikm = _HPKE_VERSION + suite_id + label + ikm
+    return _hkdf_extract(salt, labeled_ikm)
 
 
-def _labeled_info(label: bytes, info: bytes, suite_id: bytes) -> bytes:
-    # The leading 2 bytes are RFC 9180's length prefix for LabeledExpand,
-    # left as zero rather than populated -- see the module docstring.
-    return b"\x00\x00" + _HPKE_VERSION + suite_id + label + info
+def _labeled_expand(prk: bytes, label: bytes, info: bytes, length: int, suite_id: bytes) -> bytes:
+    labeled_info = length.to_bytes(2, "big") + _HPKE_VERSION + suite_id + label + info
+    return _hkdf_expand(prk, labeled_info, length)
 
 
-def _extract_and_expand(salt: bytes, ikm: bytes, info: bytes, length: int) -> bytes:
-    prk = _hkdf_extract(salt, ikm)
-    return _hkdf_expand(prk, info, length)
+def _kem_extract_and_expand(dh: bytes, kem_context: bytes) -> bytes:
+    """RFC 9180 DHKEM's `ExtractAndExpand`: derives the KEM shared secret
+    from the raw ECDH output."""
+    eae_prk = _labeled_extract(b"", _LABEL_EAE_PRK, dh, _SUITE_ID_KEM)
+    return _labeled_expand(eae_prk, _LABEL_SHARED_SECRET, kem_context, 32, _SUITE_ID_KEM)
+
+
+def _key_schedule(shared_secret: bytes) -> tuple[bytes, bytes]:
+    """RFC 9180's `KeySchedule` in base mode (no PSK, no application info):
+    returns `(key, base_nonce)` for the AEAD. Computed from scratch rather
+    than reusing any precomputed constant, so nothing here depends on
+    matching another implementation's shortcuts -- only the spec itself.
+    """
+    psk_id_hash = _labeled_extract(b"", _LABEL_PSK_ID_HASH, b"", _SUITE_ID_HPKE)
+    info_hash = _labeled_extract(b"", _LABEL_INFO_HASH, b"", _SUITE_ID_HPKE)
+    key_schedule_context = _MODE_BASE + psk_id_hash + info_hash
+
+    secret = _labeled_extract(shared_secret, _LABEL_SECRET, b"", _SUITE_ID_HPKE)
+    key = _labeled_expand(secret, _LABEL_KEY, key_schedule_context, 32, _SUITE_ID_HPKE)
+    base_nonce = _labeled_expand(secret, _LABEL_BASE_NONCE, key_schedule_context, 12, _SUITE_ID_HPKE)
+    return key, base_nonce
 
 
 def _load_public_key(uncompressed_or_compressed: bytes) -> ec.EllipticCurvePublicKey:
@@ -188,15 +200,10 @@ def _hpke_seal(plaintext: bytes, target_public_key_hex: str) -> tuple[str, bytes
     shared_point = ephemeral_private.exchange(ec.ECDH(), target_key)
     kem_context = ephemeral_uncompressed + target_uncompressed
 
-    eae_ikm = _labeled_ikm(_LABEL_EAE_PRK, shared_point, _SUITE_ID_KEM)
-    shared_secret_info = _labeled_info(_LABEL_SHARED_SECRET, kem_context, _SUITE_ID_KEM)
-    shared_secret = _extract_and_expand(b"", eae_ikm, shared_secret_info, 32)
+    shared_secret = _kem_extract_and_expand(shared_point, kem_context)
+    key, base_nonce = _key_schedule(shared_secret)
 
-    secret_ikm = _labeled_ikm(_LABEL_SECRET, b"", _SUITE_ID_HPKE)
-    key = _extract_and_expand(shared_secret, secret_ikm, _AES_KEY_INFO, 32)
-    iv = _extract_and_expand(shared_secret, secret_ikm, _IV_INFO, 12)
-
-    ciphertext = AESGCM(key).encrypt(iv, plaintext, aad)
+    ciphertext = AESGCM(key).encrypt(base_nonce, plaintext, aad)
     return ephemeral_uncompressed.hex(), ciphertext
 
 

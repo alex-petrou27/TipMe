@@ -27,13 +27,8 @@ def _decrypt_seal(sealed: dict, target_private: ec.EllipticCurvePrivateKey) -> b
     shared_point = target_private.exchange(ec.ECDH(), ephemeral_pub)
     kem_context = ephemeral_uncompressed + target_uncompressed
 
-    eae_ikm = ts._labeled_ikm(ts._LABEL_EAE_PRK, shared_point, ts._SUITE_ID_KEM)
-    shared_secret_info = ts._labeled_info(ts._LABEL_SHARED_SECRET, kem_context, ts._SUITE_ID_KEM)
-    shared_secret = ts._extract_and_expand(b"", eae_ikm, shared_secret_info, 32)
-
-    secret_ikm = ts._labeled_ikm(ts._LABEL_SECRET, b"", ts._SUITE_ID_HPKE)
-    key = ts._extract_and_expand(shared_secret, secret_ikm, ts._AES_KEY_INFO, 32)
-    iv = ts._extract_and_expand(shared_secret, secret_ikm, ts._IV_INFO, 12)
+    shared_secret = ts._kem_extract_and_expand(shared_point, kem_context)
+    key, iv = ts._key_schedule(shared_secret)
 
     return AESGCM(key).decrypt(iv, bytes.fromhex(sealed["ciphertext"]), aad)
 
