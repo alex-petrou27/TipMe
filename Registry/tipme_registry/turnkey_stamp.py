@@ -172,8 +172,10 @@ def _uncompressed_bytes(public_key: ec.EllipticCurvePublicKey) -> bytes:
 
 def _hpke_seal(plaintext: bytes, target_public_key_hex: str) -> tuple[str, bytes]:
     """RFC 9180 base-mode HPKE seal, byte-for-byte matching `@turnkey/
-    crypto`'s `hpkeEncrypt`. Returns `(compressed_ephemeral_public_hex,
-    ciphertext_bytes)`.
+    crypto`'s `hpkeEncrypt` -- specifically the wire format its own
+    `formatHpkeBuf` produces, which re-uncompresses the ephemeral sender
+    key rather than leaving it compressed. Returns
+    `(uncompressed_ephemeral_public_hex, ciphertext_bytes)`.
     """
     target_key = _load_public_key(bytes.fromhex(target_public_key_hex))
     target_uncompressed = _uncompressed_bytes(target_key)
@@ -181,9 +183,6 @@ def _hpke_seal(plaintext: bytes, target_public_key_hex: str) -> tuple[str, bytes
     ephemeral_private = ec.generate_private_key(_CURVE)
     ephemeral_public = ephemeral_private.public_key()
     ephemeral_uncompressed = _uncompressed_bytes(ephemeral_public)
-    ephemeral_compressed = ephemeral_public.public_bytes(
-        Encoding.X962, PublicFormat.CompressedPoint,
-    )
 
     aad = ephemeral_uncompressed + target_uncompressed
     shared_point = ephemeral_private.exchange(ec.ECDH(), target_key)
@@ -198,7 +197,7 @@ def _hpke_seal(plaintext: bytes, target_public_key_hex: str) -> tuple[str, bytes
     iv = _extract_and_expand(shared_secret, secret_ikm, _IV_INFO, 12)
 
     ciphertext = AESGCM(key).encrypt(iv, plaintext, aad)
-    return ephemeral_compressed.hex(), ciphertext
+    return ephemeral_uncompressed.hex(), ciphertext
 
 
 def _parse_otp_target_bundle(bundle: str) -> str:
