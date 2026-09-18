@@ -11,7 +11,8 @@ import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from tipme_registry.grid_rail import GridConfig, GridError, GridRail
+from tipme_registry.grid_rail import GridConfig, GridError, GridRail, WalletSession
+from tipme_registry.turnkey_stamp import build_stamp, generate_keypair, seal_otp_bundle
 
 
 def _config(base_url: str = "https://grid.test") -> GridConfig:
@@ -101,23 +102,118 @@ def test_fund_sandbox_posts_the_amount():
     assert seen["body"] == {"amount": 500}
 
 
-def test_transfer_creates_and_immediately_executes_a_quote():
+def test_transfer_creates_a_quote_then_signs_and_executes_it():
+    keypair = generate_keypair()
+    session = WalletSession(
+        account_id="InternalAccount:1", keypair=keypair, expires_at="2099-01-01T00:00:00+00:00",
+    )
+    payload_to_sign = '{"type":"ACTIVITY_TYPE_SIGN_TRANSACTION_V2","parameters":{}}'
+
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/quotes"
-        body = json.loads(request.content)
-        assert body["source"] == {"sourceType": "ACCOUNT", "accountId": "InternalAccount:1"}
-        assert body["destination"] == {"destinationType": "ACCOUNT", "accountId": "InternalAccount:2"}
-        assert body["lockedCurrencyAmount"] == 500
-        assert body["immediatelyExecute"] is True
-        return httpx.Response(201, json={
-            "id": "Quote:1", "status": "COMPLETED", "transactionId": "Transaction:1",
-        })
+        if request.url.path == "/quotes":
+            body = json.loads(request.content)
+            assert body["source"] == {"sourceType": "ACCOUNT", "accountId": "InternalAccount:1"}
+            assert body["destination"] == {"destinationType": "ACCOUNT", "accountId": "InternalAccount:2"}
+            assert body["lockedCurrencyAmount"] == 500
+            assert "immediatelyExecute" not in body
+            return httpx.Response(201, json={
+                "id": "Quote:1", "status": "PENDING", "transactionId": "Transaction:1",
+                "paymentInstructions": [
+                    {"accountOrWalletInfo": {
+                        "accountType": "EMBEDDED_WALLET", "payloadToSign": payload_to_sign,
+                    }},
+                ],
+            })
+        if request.url.path == "/quotes/Quote:1/execute":
+            signature = request.headers["grid-wallet-signature"]
+            stamp = json.loads(_decode_stamp(signature))
+            assert stamp["publicKey"] == keypair.public_key_hex
+            return httpx.Response(200, json={
+                "id": "Quote:1", "status": "COMPLETED", "transactionId": "Transaction:1",
+            })
+        raise AssertionError(f"unexpected request: {request.url}")
 
     rail = _rail(handler)
-    result = asyncio.run(rail.transfer("InternalAccount:1", "InternalAccount:2", 500))
+    result = asyncio.run(rail.transfer("InternalAccount:1", "InternalAccount:2", 500, session))
     assert result.quote_id == "Quote:1"
     assert result.transaction_id == "Transaction:1"
     assert result.status == "COMPLETED"
+
+
+def test_transfer_raises_when_the_quote_has_no_embedded_wallet_payload():
+    session = WalletSession(
+        account_id="InternalAccount:1", keypair=generate_keypair(),
+        expires_at="2099-01-01T00:00:00+00:00",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={
+            "id": "Quote:1", "status": "PENDING", "transactionId": "Transaction:1",
+            "paymentInstructions": [],
+        })
+
+    rail = _rail(handler)
+    with pytest.raises(GridError):
+        asyncio.run(rail.transfer("InternalAccount:1", "InternalAccount:2", 500, session))
+
+
+def _decode_stamp(stamp: str) -> bytes:
+    padded = stamp.replace("-", "+").replace("_", "/")
+    padded += "=" * (-len(padded) % 4)
+    return base64.b64decode(padded)
+
+
+def test_create_wallet_session_completes_the_two_leg_otp_verification():
+    target_private = ec.generate_private_key(ec.SECP256R1())
+    target_public_hex = target_private.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint,
+    ).hex()
+    bundle = json.dumps({
+        "data": json.dumps({"targetPublicKey": target_public_hex}).encode().hex(),
+    })
+
+    calls = {"verify": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/auth/credentials":
+            assert request.url.params["accountId"] == "InternalAccount:1"
+            return httpx.Response(200, json={"data": [
+                {"id": "AuthMethod:1", "accountId": "InternalAccount:1", "type": "EMAIL_OTP"},
+            ]})
+        if request.url.path == "/auth/credentials/AuthMethod:1/challenge":
+            return httpx.Response(200, json={
+                "id": "AuthMethod:1", "type": "EMAIL_OTP", "otpEncryptionTargetBundle": bundle,
+            })
+        if request.url.path == "/auth/credentials/AuthMethod:1/verify":
+            calls["verify"] += 1
+            if calls["verify"] == 1:
+                return httpx.Response(202, json={
+                    "type": "EMAIL_OTP", "payloadToSign": "verification-token",
+                    "requestId": "Request:1", "expiresAt": "2099-01-01T00:05:00Z",
+                })
+            assert request.headers["request-id"] == "Request:1"
+            signature = request.headers["grid-wallet-signature"]
+            stamp = json.loads(_decode_stamp(signature))
+            assert stamp["scheme"] == "SIGNATURE_SCHEME_TK_API_P256"
+            return httpx.Response(200, json={
+                "id": "AuthSession:1", "expiresAt": "2099-01-01T01:00:00Z",
+            })
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    rail = _rail(handler)
+    session = asyncio.run(rail.create_wallet_session("InternalAccount:1"))
+    assert session.account_id == "InternalAccount:1"
+    assert session.expires_at == "2099-01-01T01:00:00Z"
+    assert calls["verify"] == 2
+
+
+def test_create_wallet_session_raises_when_there_is_no_email_otp_credential():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": []})
+
+    rail = _rail(handler)
+    with pytest.raises(GridError):
+        asyncio.run(rail.create_wallet_session("InternalAccount:1"))
 
 
 def test_get_transaction_status_returns_the_status_field():

@@ -145,6 +145,23 @@ CREATE TABLE IF NOT EXISTS grid_transfers (
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
+
+-- A verified session on one Grid Embedded Wallet (Spark) account -- see
+-- grid_rail.py's and turnkey_stamp.py's module docstrings for why this
+-- exists at all: releasing a transfer sourced from that account needs a
+-- signature from this session's key on every request, not just Basic
+-- Auth. The private key lives here in plaintext, same trust level as
+-- every other secret this registry already custodies (password hashes
+-- aside) -- there is no separate secrets store in this codebase to put it
+-- in instead. Re-verified (a new row replacing the old one) once
+-- `expires_at` passes.
+CREATE TABLE IF NOT EXISTS grid_wallet_sessions (
+    account_id         TEXT PRIMARY KEY,
+    session_private_key TEXT NOT NULL,
+    session_public_key  TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    created_at          TEXT NOT NULL
+);
 """
 
 
@@ -197,6 +214,15 @@ class GridTransfer:
     status: str
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass
+class GridWalletSession:
+    account_id: str
+    session_private_key: str
+    session_public_key: str
+    expires_at: datetime
+    created_at: datetime
 
 
 @dataclass
@@ -749,4 +775,48 @@ class Storage:
             currency=row["currency"], amount_minor=row["amount_minor"], status=row["status"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    def get_grid_wallet_session(self, account_id: str) -> GridWalletSession | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM grid_wallet_sessions WHERE account_id = ?", (account_id,),
+            ).fetchone()
+        return self._to_grid_wallet_session(row) if row else None
+
+    def record_grid_wallet_session(
+        self, account_id: str, session_private_key: str, session_public_key: str,
+        expires_at: datetime,
+    ) -> GridWalletSession:
+        """Replaces any previous session for this account -- a fresh
+        verification always supersedes an old one, whether the old one
+        merely expired or is simply being renewed early."""
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO grid_wallet_sessions (account_id, session_private_key,
+                                                  session_public_key, expires_at, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(account_id) DO UPDATE SET
+                    session_private_key = excluded.session_private_key,
+                    session_public_key  = excluded.session_public_key,
+                    expires_at          = excluded.expires_at,
+                    created_at          = excluded.created_at
+                """,
+                (account_id, session_private_key, session_public_key,
+                 expires_at.isoformat(), now.isoformat()),
+            )
+        return GridWalletSession(
+            account_id=account_id, session_private_key=session_private_key,
+            session_public_key=session_public_key, expires_at=expires_at, created_at=now,
+        )
+
+    @staticmethod
+    def _to_grid_wallet_session(row: sqlite3.Row) -> GridWalletSession:
+        return GridWalletSession(
+            account_id=row["account_id"], session_private_key=row["session_private_key"],
+            session_public_key=row["session_public_key"],
+            expires_at=datetime.fromisoformat(row["expires_at"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
         )

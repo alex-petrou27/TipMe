@@ -51,6 +51,25 @@ end-to-end proof of this rail does not need a real funding source. Like
 `simulate_test_payment` on the old node-backed module, this is not part of
 transferring money in general -- no real rail can satisfy it.
 
+## Wallet sessions -- why `transfer` needs more than an API call
+
+An `EMBEDDED_WALLET` account is self-custodial: Grid will not execute a
+quote sourced from one on Basic Auth alone, confirmed live -- "immediately
+Execute is not supported for embedded-wallet source quotes. Create the
+quote, then execute it via `POST /quotes/{id}/execute` with the
+`Grid-Wallet-Signature` header." That header is a Turnkey API-key stamp
+(Grid's embedded-wallet infrastructure is built on Turnkey), which needs a
+verified session on the account, which needs an HPKE-sealed OTP round trip
+-- see `turnkey_stamp.py`'s module docstring for the whole chain and why
+it is hand-ported rather than borrowed from an SDK. `create_wallet_session`
+does that round trip once per account (using the sandbox's fixed OTP,
+since the account's email is a synthetic placeholder anyway); the
+resulting `WalletSession.keypair` *is* the session signing key from then
+on, and `transfer` uses it to build the `Grid-Wallet-Signature` for the
+execute call. `app.py`'s `_ensure_wallet_session` caches the result in
+`Storage.grid_wallet_sessions` against `WalletSession.expires_at`, the
+same lazy-provision-once pattern `ensure_customer`/`grid_customers` uses.
+
 ## Webhooks
 
 Grid signs webhook payloads with an asymmetric Secp256r1 (P-256) signature
@@ -67,7 +86,9 @@ API token from the Grid dashboard's Developers page -- HTTP Basic auth,
 required for `verify_webhook` but not for transfers themselves.
 ``REGISTRY_GRID_BASE_URL`` and ``REGISTRY_GRID_CURRENCY`` are optional,
 defaulting to Grid's production host (sandbox vs. production is a property
-of the API token itself, not the URL) and ``USD``. Until the first two are
+of the API token itself, not the URL) and ``USDB`` -- the Spark/embedded-
+wallet stablecoin, the only account type a cross-customer transfer can
+move through. Until the first two are
 set, ``rail_from_env`` returns ``None`` and the transfer endpoint fails
 closed with a 503, the same convention every other rail in this codebase
 uses.
@@ -76,6 +97,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 from dataclasses import dataclass
 
@@ -83,6 +105,8 @@ import httpx
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+
+from . import turnkey_stamp
 
 DEFAULT_BASE_URL = "https://api.lightspark.com/grid/2025-10-13"
 DEFAULT_CURRENCY = "USDB"
@@ -126,6 +150,18 @@ class GridTransferResult:
     quote_id: str
     transaction_id: str
     status: str
+
+
+@dataclass(frozen=True)
+class WalletSession:
+    """A verified session on one Embedded Wallet account: `keypair` is the
+    TEK keypair generated for the login that verified it, which -- in
+    Grid's client-held-key model -- *becomes* the long-lived session
+    signing key, valid until `expires_at`. See `turnkey_stamp`'s module
+    docstring for what this is proving and why."""
+    account_id: str
+    keypair: turnkey_stamp.TurnkeyKeyPair
+    expires_at: str
 
 
 class GridRail:
@@ -229,11 +265,89 @@ class GridRail:
             json={"amount": amount_minor},
         )
 
+    async def _poll_until_ready(self, method: str, path: str, **kwargs) -> dict:
+        """Grid can answer a signed-wallet-flow call with `{"status":
+        "PROCESSING"}` while the underlying wallet-provider activity is
+        still in flight, and documents the client re-sending the
+        byte-identical request until it clears -- see e.g. `POST /auth/
+        credentials/{id}/verify`'s and `/challenge`'s response docs.
+        """
+        for attempt in range(5):
+            response = await self._request(method, path, **kwargs)
+            if response.get("status") != "PROCESSING":
+                return response
+            if attempt < 4:
+                await asyncio.sleep(0.5)
+        raise GridError(f"{method} {path} did not leave PROCESSING in time")
+
+    async def create_wallet_session(self, account_id: str) -> WalletSession:
+        """Verifies the Embedded Wallet account's auto-created `EMAIL_OTP`
+        credential and returns the resulting session. See `turnkey_stamp`'s
+        module docstring for what this proves and why Grid requires it at
+        all: releasing a transfer sourced from an `EMBEDDED_WALLET` account
+        needs a `Grid-Wallet-Signature` from a verified credential's
+        session key, and a freshly created account has no verified session
+        yet.
+
+        Uses the sandbox's fixed magic OTP (`turnkey_stamp.sandbox_otp_code`)
+        rather than an interactive code -- this account's email is a
+        synthetic placeholder anyway (see `ensure_customer`), so there is
+        no real inbox to read a real OTP from.
+        """
+        credentials = await self._request(
+            "GET", "/auth/credentials", params={"accountId": account_id},
+        )
+        email_otp_id = next(
+            (c["id"] for c in credentials.get("data", []) if c.get("type") == "EMAIL_OTP"), None,
+        )
+        if email_otp_id is None:
+            raise GridError(f"account {account_id} has no EMAIL_OTP credential")
+
+        challenge = await self._poll_until_ready(
+            "POST", f"/auth/credentials/{email_otp_id}/challenge", json={},
+        )
+        target_bundle = challenge.get("otpEncryptionTargetBundle")
+        if not target_bundle:
+            raise GridError(f"challenge response has no otpEncryptionTargetBundle: {challenge}")
+
+        tek_keypair = turnkey_stamp.generate_keypair()
+        try:
+            sealed = turnkey_stamp.seal_otp_bundle(
+                turnkey_stamp.sandbox_otp_code(), tek_keypair.public_key_hex, target_bundle,
+            )
+        except turnkey_stamp.TurnkeyStampError as error:
+            raise GridError(f"could not seal OTP bundle: {error}") from error
+        verify_body = {"type": "EMAIL_OTP", "encryptedOtpBundle": json.dumps(sealed)}
+
+        first_leg = await self._poll_until_ready(
+            "POST", f"/auth/credentials/{email_otp_id}/verify", json=verify_body,
+        )
+        payload_to_sign = first_leg.get("payloadToSign")
+        request_id = first_leg.get("requestId")
+        if not payload_to_sign or not request_id:
+            raise GridError(f"unexpected OTP verification challenge: {first_leg}")
+
+        signature = turnkey_stamp.build_stamp(payload_to_sign, tek_keypair)
+        session = await self._poll_until_ready(
+            "POST", f"/auth/credentials/{email_otp_id}/verify", json=verify_body,
+            headers={"Grid-Wallet-Signature": signature, "Request-Id": request_id},
+        )
+        expires_at = session.get("expiresAt")
+        if not expires_at:
+            raise GridError(f"unexpected auth session response: {session}")
+        return WalletSession(account_id=account_id, keypair=tek_keypair, expires_at=expires_at)
+
     async def transfer(
         self, source_account_id: str, destination_account_id: str, amount_minor: int,
+        session: WalletSession,
     ) -> GridTransferResult:
         """Moves `amount_minor` (in `self._config.currency`'s minor units)
-        from one Grid internal account to another, in a single request."""
+        from one Grid internal account to another. `session` must be a
+        verified `WalletSession` for `source_account_id` -- an
+        `EMBEDDED_WALLET`-sourced quote cannot use `immediatelyExecute`
+        (confirmed live: Grid rejects it outright), so this always takes
+        the two-step create-quote-then-sign-and-execute path.
+        """
         quote = await self._request(
             "POST", "/quotes",
             json={
@@ -241,11 +355,27 @@ class GridRail:
                 "destination": {"destinationType": "ACCOUNT", "accountId": destination_account_id},
                 "lockedCurrencySide": "SENDING",
                 "lockedCurrencyAmount": amount_minor,
-                "immediatelyExecute": True,
             },
         )
+        quote_id = quote["id"]
+        payload_to_sign = next(
+            (
+                instruction["accountOrWalletInfo"]["payloadToSign"]
+                for instruction in quote.get("paymentInstructions", [])
+                if instruction.get("accountOrWalletInfo", {}).get("accountType") == "EMBEDDED_WALLET"
+            ),
+            None,
+        )
+        if payload_to_sign is None:
+            raise GridError(f"quote {quote_id} has no EMBEDDED_WALLET payload to sign")
+
+        signature = turnkey_stamp.build_stamp(payload_to_sign, session.keypair)
+        executed = await self._request(
+            "POST", f"/quotes/{quote_id}/execute",
+            headers={"Grid-Wallet-Signature": signature},
+        )
         return GridTransferResult(
-            quote_id=quote["id"], transaction_id=quote["transactionId"], status=quote["status"],
+            quote_id=quote_id, transaction_id=executed["transactionId"], status=executed["status"],
         )
 
     async def get_transaction_status(self, transaction_id: str) -> str:
@@ -258,8 +388,6 @@ class GridRail:
         signature does not verify, or if no webhook public key is
         configured at all -- a webhook endpoint that can't verify its
         sender must fail closed, not process the event anyway."""
-        import json
-
         if not self._config.webhook_public_key_pem:
             raise GridError("REGISTRY_GRID_WEBHOOK_PUBLIC_KEY is not set")
         try:

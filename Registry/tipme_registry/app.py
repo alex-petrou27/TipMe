@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from . import accounts, bitcoin_chain, grid_rail, lightning, lightning_node, oauth, rates as rates_module, signing
+from . import accounts, bitcoin_chain, grid_rail, lightning, lightning_node, oauth, rates as rates_module, signing, turnkey_stamp
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
 from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, PendingDeposit, Storage
 
@@ -724,6 +724,36 @@ async def _ensure_grid_customer(
     return record.grid_customer_id, record.grid_account_id
 
 
+async def _ensure_wallet_session(
+    storage: Storage, rail: grid_rail.GridRail, account_id: str,
+) -> grid_rail.WalletSession:
+    """Returns a verified `WalletSession` for a Grid Embedded Wallet
+    account, reusing a cached one from `storage` if it hasn't expired yet,
+    and verifying a fresh one (persisting it) otherwise. See
+    `grid_rail.GridRail.create_wallet_session` for what "verifying" means
+    here -- an HPKE-sealed OTP round trip, not just an API call.
+    """
+    cached = storage.get_grid_wallet_session(account_id)
+    if cached is not None and cached.expires_at > datetime.now(timezone.utc):
+        keypair = turnkey_stamp.TurnkeyKeyPair(
+            private_key_hex=cached.session_private_key, public_key_hex=cached.session_public_key,
+        )
+        return grid_rail.WalletSession(
+            account_id=account_id, keypair=keypair, expires_at=cached.expires_at.isoformat(),
+        )
+
+    try:
+        session = await rail.create_wallet_session(account_id)
+    except grid_rail.GridError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    storage.record_grid_wallet_session(
+        account_id=account_id, session_private_key=session.keypair.private_key_hex,
+        session_public_key=session.keypair.public_key_hex,
+        expires_at=datetime.fromisoformat(session.expires_at),
+    )
+    return session
+
+
 @app.post("/v1/transfer/grid", response_model=GridTransferResponse)
 async def transfer_via_grid(
     request: GridTransferRequest,
@@ -758,7 +788,10 @@ async def transfer_via_grid(
 
     try:
         await rail.fund_sandbox(sender_account_id, request.amount_minor)
-        result = await rail.transfer(sender_account_id, recipient_account_id, request.amount_minor)
+        session = await _ensure_wallet_session(storage, rail, sender_account_id)
+        result = await rail.transfer(
+            sender_account_id, recipient_account_id, request.amount_minor, session,
+        )
     except grid_rail.GridError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 

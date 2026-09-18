@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 
 from tipme_registry.bitcoin_chain import OnChainError, SendResult
-from tipme_registry.grid_rail import GridCustomerHandle, GridError, GridTransferResult
+from tipme_registry.grid_rail import GridCustomerHandle, GridError, GridTransferResult, WalletSession
 from tipme_registry.lightning_node import DecodedInvoice, Invoice, InvoiceStatus, LightningNodeError, PaymentResult
+from tipme_registry.turnkey_stamp import generate_keypair
 
 
 class FakeLightningRail:
@@ -88,8 +89,19 @@ class FakeGridRail:
         self.fail_next_ensure_customer = False
         self.fail_next_fund = False
         self.fail_next_transfer = False
+        self.fail_next_wallet_session = False
+        self.wallet_sessions_created: list[str] = []
         self._webhook_body: bytes | None = None
         self._counter = 0
+
+    async def create_wallet_session(self, account_id: str) -> WalletSession:
+        if self.fail_next_wallet_session:
+            self.fail_next_wallet_session = False
+            raise GridError("simulated wallet session failure")
+        self.wallet_sessions_created.append(account_id)
+        return WalletSession(
+            account_id=account_id, keypair=generate_keypair(), expires_at="2099-01-01T00:00:00+00:00",
+        )
 
     async def ensure_customer(self, platform_user_id: str, email: str) -> GridCustomerHandle:
         if self.fail_next_ensure_customer:
@@ -115,6 +127,7 @@ class FakeGridRail:
 
     async def transfer(
         self, source_account_id: str, destination_account_id: str, amount_minor: int,
+        session: WalletSession,
     ) -> GridTransferResult:
         if self.fail_next_transfer:
             self.fail_next_transfer = False
