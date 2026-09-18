@@ -192,7 +192,8 @@ class GridRail:
             "GET", "/customers/internal-accounts", params={"customerId": customer_id},
         )
         for account in accounts.get("data", []):
-            if account.get("type") == "INTERNAL_FIAT" and account.get("currency") == self._config.currency:
+            currency = account.get("totalBalance", {}).get("currency", {}).get("code")
+            if account.get("type") == "INTERNAL_FIAT" and currency == self._config.currency:
                 return GridCustomerHandle(customer_id=customer_id, account_id=account["id"])
         raise GridError(
             f"customer {customer_id} has no INTERNAL_FIAT account in {self._config.currency} yet"

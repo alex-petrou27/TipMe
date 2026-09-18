@@ -37,7 +37,8 @@ def test_ensure_customer_returns_an_existing_customer_without_creating_one():
         if request.url.path == "/customers/internal-accounts":
             assert request.url.params["customerId"] == "Customer:1"
             return httpx.Response(200, json={"data": [
-                {"id": "InternalAccount:1", "type": "INTERNAL_FIAT", "currency": "USD"},
+                {"id": "InternalAccount:1", "type": "INTERNAL_FIAT",
+                 "totalBalance": {"currency": {"code": "USD"}}},
             ]})
         raise AssertionError(f"unexpected request: {request.url}")
 
@@ -61,7 +62,8 @@ def test_ensure_customer_creates_one_when_none_exists():
             return httpx.Response(201, json={"id": "Customer:2"})
         if request.url.path == "/customers/internal-accounts":
             return httpx.Response(200, json={"data": [
-                {"id": "InternalAccount:2", "type": "INTERNAL_FIAT", "currency": "USD"},
+                {"id": "InternalAccount:2", "type": "INTERNAL_FIAT",
+                 "totalBalance": {"currency": {"code": "USD"}}},
             ]})
         raise AssertionError(f"unexpected request: {request.url}")
 
