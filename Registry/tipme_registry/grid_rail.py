@@ -186,6 +186,18 @@ class GridRail:
         return self._config.currency
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
+        # httpx's `json=` serializes with compact separators (no space after
+        # `:`/`,`). Confirmed live: an identical payload sent that way fails
+        # signed-wallet-flow calls that the exact same bytes, spaced the way
+        # `json.dumps`'s own default (and every manually-typed curl `-d`
+        # here) would produce, complete successfully -- so build the body
+        # ourselves rather than let httpx re-encode it compactly.
+        if "json" in kwargs:
+            payload = kwargs.pop("json")
+            kwargs["content"] = json.dumps(payload).encode()
+            headers = dict(kwargs.get("headers") or {})
+            headers.setdefault("Content-Type", "application/json")
+            kwargs["headers"] = headers
         try:
             response = await self._client.request(method, path, **kwargs)
         except httpx.HTTPError as error:
