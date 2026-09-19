@@ -70,6 +70,23 @@ execute call. `app.py`'s `_ensure_wallet_session` caches the result in
 `Storage.grid_wallet_sessions` against `WalletSession.expires_at`, the
 same lazy-provision-once pattern `ensure_customer`/`grid_customers` uses.
 
+Confirmed live end-to-end: `create_wallet_session`'s whole OTP/HPKE/stamp
+chain completes successfully (a verified session, `expiresAt` and all)
+against a real sandbox account -- this code path is correct.
+
+## Remaining blocker is account configuration, not code
+
+`POST /quotes` for a cross-customer `EMBEDDED_WALLET`-to-`EMBEDDED_WALLET`
+transfer currently returns `403 {"code": "FORBIDDEN", "reason": "Embedded
+Wallet transfers are not enabled for this platform."}` -- confirmed live,
+after a fully verified wallet session. This matches the same pattern as
+Grid's other platform-level gates (e.g. rule-based accounts, or requesting
+Grid enablement for a stablecoin): a feature Lightspark turns on per
+platform, not a self-service API call or request body field. There is no
+field in `PlatformConfig`/`PlatformConfigUpdateRequest` that toggles it.
+Enabling it needs either a Grid dashboard setting or a request to
+Lightspark support for this platform's account -- not a code change here.
+
 ## Webhooks
 
 Grid signs webhook payloads with an asymmetric Secp256r1 (P-256) signature
