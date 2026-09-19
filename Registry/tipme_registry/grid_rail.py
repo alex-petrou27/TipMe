@@ -319,9 +319,14 @@ class GridRail:
             raise GridError(f"could not seal OTP bundle: {error}") from error
         verify_body = {"type": "EMAIL_OTP", "encryptedOtpBundle": json.dumps(sealed)}
 
-        first_leg = await self._poll_until_ready(
-            "POST", f"/auth/credentials/{email_otp_id}/verify", json=verify_body,
-        )
+        try:
+            first_leg = await self._poll_until_ready(
+                "POST", f"/auth/credentials/{email_otp_id}/verify", json=verify_body,
+            )
+        except GridError as error:
+            raise GridError(
+                f"{error} || DEBUG target_bundle={target_bundle!r} sealed={sealed!r}"
+            ) from error
         payload_to_sign = first_leg.get("payloadToSign")
         request_id = first_leg.get("requestId")
         if not payload_to_sign or not request_id:
