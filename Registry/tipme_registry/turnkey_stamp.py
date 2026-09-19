@@ -29,34 +29,41 @@ covering the two primitives Grid's auth flow needs:
 ## deliberately does not match strict RFC 9180
 
 The seal here matches `@turnkey/crypto`'s `hpkeEncrypt` byte-for-byte --
-including a `LabeledExpand` that leaves RFC 9180's 2-byte length prefix
-zero instead of populating it, and an automatic AAD
-(`ephemeral_sender_uncompressed || recipient_uncompressed`) baked into the
-function itself. Both are deviations from the RFC as written, confirmed
-necessary the hard way:
+including a `LabeledExpand` whose 2-byte RFC 9180 length prefix is written
+as a single trailing byte (`[0, len]`) rather than a true big-endian
+uint16, and an automatic AAD (`ephemeral_sender_uncompressed ||
+recipient_uncompressed`) baked into the function itself. Both are
+deviations from the RFC as written (well-formed RFC 9180 would use
+`I2OSP(len, 2)`, and would never fold AAD into a HPKE library's public
+`seal` API), confirmed necessary -- and, in one case, mis-diagnosed --
+the hard way:
 
 1. `encappedPublic` must be the ephemeral key **uncompressed**, not
    compressed -- confirmed against a real sandbox response.
-2. A strictly RFC-9180-correct `LabeledExpand` (real length prefix) was
-   tried next, on the theory that Grid's actual backend enclave -- not the
-   JS client the quirk came from -- would implement the spec as written.
-   Live testing rejected it too.
+2. Zeroing the `LabeledExpand` length prefix entirely (`\x00\x00`
+   unconditionally) was tried next, misreading Turnkey's `[0, len]` as
+   always-zero because every length this module happens to need (32, 12)
+   is small enough that the high byte of `I2OSP(len, 2)` is zero too --
+   masking the bug for months. Rejected live (`UNAUTHORIZED: Invalid
+   encryptedOtpBundle`, every time, including with a genuinely fresh
+   single-use OTP challenge).
 3. Dropping the AAD entirely was tried third, on the theory that Grid's
    own client-keys guide shows the OTP bundle built through a plain
    `hpkeEncryptToGridBundle({plainTextBuf, targetKeyBuf})` helper with no
    `info`/`aad` parameters exposed -- suggesting empty defaults. Also
    rejected live.
-4. What actually works, confirmed with a fully standalone test (a fresh
-   customer, account, and credential no other code had ever touched, one
-   single-use challenge, one HPKE seal, one verify attempt -- Grid's own
-   OTP activities are single-use, so any reuse of a previous attempt's
-   bundle produces a misleading "already failed" or "expired" response
-   instead of a true read on whether the crypto itself was accepted): the
-   *original*, unmodified `@turnkey/crypto` behavior from step 1, quirk and
-   AAD included. The Grid API repo's own reference script
-   (`scripts/embedded-wallet-sign.js`) calls `hpkeEncrypt` directly with no
-   override of either -- which in hindsight was the answer the whole time,
-   and would have saved two wrong detours if found first.
+4. What actually works, confirmed byte-for-byte against the real, compiled
+   `@turnkey/crypto` npm package (patched in place to dump its own
+   intermediate values -- `ephemeralPriv`, `senderPub`, `ss`, `kemContext`,
+   `sharedSecret`, `key`, `iv` -- for a captured run, then reproduced from
+   scratch in Python from the same inputs): `buildLabeledInfo` sets its
+   2-byte prefix to `[0, len]`, i.e. the *actual* requested output length
+   in the low byte, not zero. For the one call site that builds this
+   dynamically (the KEM's `shared_secret` derivation, `len=32`) that byte
+   must be `0x20`, not `0x00`. The `_AES_KEY_INFO`/`_IV_INFO` constants
+   below were never affected by this bug -- they're precomputed with the
+   correct prefix already baked in, copied byte-for-byte from
+   `@turnkey/crypto`'s `constants.js`.
 
 ## What is not verified
 
@@ -94,13 +101,11 @@ _LABEL_SHARED_SECRET = b"shared_secret"
 _LABEL_SECRET = b"secret"
 # Precomputed `labeled_info` for label="key"/"base_nonce" under an empty
 # application info and empty PSK -- copied byte-for-byte from
-# `@turnkey/crypto`'s constants.js (`AES_KEY_INFO`/`IV_INFO`). Notably NOT
-# RFC 9180's `LabeledExpand` as specified: the real spec's 2-byte length
-# prefix is left as zero here instead of populated with the output length --
-# a deliberate (if non-conformant) Turnkey quirk their own enclave-side
-# decrypt mirrors. Confirmed live: a strictly RFC-correct derivation is
-# rejected by Grid's enclave; this one is accepted. See the module
-# docstring for the two wrong turns that preceded this conclusion.
+# `@turnkey/crypto`'s constants.js (`AES_KEY_INFO`/`IV_INFO`). The leading
+# `0, 32` / `0, 12` bytes are the `LabeledExpand` length prefix already
+# baked in for these fixed output lengths -- see `_labeled_info` below for
+# why that prefix is a single trailing length byte, not a true RFC 9180
+# big-endian uint16.
 _AES_KEY_INFO = bytes([
     0, 32, 72, 80, 75, 69, 45, 118, 49, 72, 80, 75, 69, 0, 16, 0, 1, 0, 2, 107,
     101, 121, 0, 143, 195, 174, 184, 50, 73, 10, 75, 90, 179, 228, 32, 35, 40,
@@ -177,12 +182,14 @@ def _labeled_ikm(label: bytes, ikm: bytes, suite_id: bytes) -> bytes:
     return _HPKE_VERSION + suite_id + label + ikm
 
 
-def _labeled_info(label: bytes, info: bytes, suite_id: bytes) -> bytes:
-    # The leading 2 bytes are RFC 9180's LabeledExpand length prefix, left
-    # as zero rather than populated with the output length -- see the
-    # `_AES_KEY_INFO`/`_IV_INFO` comment above for why this non-conformant
-    # form is the one that actually works.
-    return b"\x00\x00" + _HPKE_VERSION + suite_id + label + info
+def _labeled_info(label: bytes, info: bytes, suite_id: bytes, length: int) -> bytes:
+    # The leading 2 bytes are RFC 9180's LabeledExpand length prefix. Turnkey's
+    # own `buildLabeledInfo` writes it as `[0, len]` -- a single trailing byte
+    # holding the output length, not a true big-endian uint16 -- which is only
+    # byte-identical to the RFC-correct `I2OSP(len, 2)` because every length
+    # this module ever needs (32, 12) fits in one byte. Confirmed byte-for-byte
+    # against the real, compiled `@turnkey/crypto` package.
+    return bytes([0, length]) + _HPKE_VERSION + suite_id + label + info
 
 
 def _extract_and_expand(salt: bytes, ikm: bytes, info: bytes, length: int) -> bytes:
@@ -195,7 +202,7 @@ def _kem_extract_and_expand(dh: bytes, kem_context: bytes) -> bytes:
     `LabeledExpand`: derives the KEM shared secret from the raw ECDH
     output."""
     eae_ikm = _labeled_ikm(_LABEL_EAE_PRK, dh, _SUITE_ID_KEM)
-    shared_secret_info = _labeled_info(_LABEL_SHARED_SECRET, kem_context, _SUITE_ID_KEM)
+    shared_secret_info = _labeled_info(_LABEL_SHARED_SECRET, kem_context, _SUITE_ID_KEM, 32)
     return _extract_and_expand(b"", eae_ikm, shared_secret_info, 32)
 
 
