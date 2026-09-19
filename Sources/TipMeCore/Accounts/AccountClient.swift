@@ -61,6 +61,10 @@ public struct AccountClient: Sendable {
         public let balances: [Asset: Int64]
     }
 
+    public struct ApplePayDepositResult: Equatable, Sendable {
+        public let balances: [Asset: Int64]
+    }
+
     public enum AccountError: Error, Equatable, Sendable {
         /// The server rejected the email or password as malformed (bad
         /// email shape, password too short). The UI validates both locally
@@ -323,6 +327,39 @@ public struct AccountClient: Sendable {
         }
     }
 
+    // MARK: - Apple Pay deposit
+
+    /// Credits `amountMinor` of USDT to this account, no real charge behind
+    /// it yet -- see the registry's `deposit_apple_pay` docstring for why.
+    /// One call, not a create-then-check pair like Lightning/on-chain: there
+    /// is no external settlement to wait on. `reference` is this call's own
+    /// idempotency key -- a PKPayment transaction identifier from a real
+    /// Apple Pay sheet, or any unique string from the no-card test path --
+    /// so retrying after a lost response never double-credits.
+    public func depositApplePay(amountMinor: Int64, reference: String,
+                                sessionToken: String) async throws -> ApplePayDepositResult {
+        guard let url = url(path: "/v1/deposit/apple_pay") else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try? JSONEncoder().encode(
+            DepositApplePayRequestBody(amountMinor: amountMinor, reference: reference))
+
+        let (data, response) = try await perform(request)
+        try Self.checkApplePayStatus(response)
+
+        do {
+            let decoded = try JSONDecoder().decode(DepositStatusBody.self, from: data)
+            return ApplePayDepositResult(balances: Self.balancesDict(decoded.balances))
+        } catch {
+            throw AccountError.responseMalformed(String(describing: error))
+        }
+    }
+
     // MARK: - Internal transfer
 
     /// Moves money directly to another TipMe account's ledger -- no
@@ -475,6 +512,25 @@ public struct AccountClient: Sendable {
         }
     }
 
+    /// Status-code mapping for `/v1/deposit/apple_pay`. `.depositNotFound`
+    /// covers the one real failure mode here: reusing another account's
+    /// idempotency reference.
+    private static func checkApplePayStatus(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw AccountError.responseMalformed("non-HTTP response")
+        }
+        switch http.statusCode {
+        case 200, 201:
+            return
+        case 401:
+            throw AccountError.sessionExpired
+        case 404:
+            throw AccountError.depositNotFound
+        default:
+            throw AccountError.transport("registry returned HTTP \(http.statusCode)")
+        }
+    }
+
     /// Status-code mapping for `/v1/transfer`.
     private static func checkTransferStatus(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else {
@@ -601,6 +657,16 @@ public struct AccountClient: Sendable {
 
     private struct DepositBitcoinResponseBody: Decodable {
         let address: String
+    }
+
+    private struct DepositApplePayRequestBody: Encodable {
+        let amountMinor: Int64
+        let reference: String
+
+        enum CodingKeys: String, CodingKey {
+            case amountMinor = "amount_minor"
+            case reference
+        }
     }
 
     private struct WithdrawBitcoinRequestBody: Encodable {

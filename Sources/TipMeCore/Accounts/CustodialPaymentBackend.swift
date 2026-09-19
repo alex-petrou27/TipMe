@@ -200,6 +200,29 @@ public actor CustodialPaymentBackend: PaymentBackend, WalletBackend {
         }
     }
 
+    // MARK: - Apple Pay deposit
+    //
+    // Same reasoning as the Lightning/on-chain deposit methods above: a
+    // single trusted credit, not a create-then-poll pair, because there is
+    // no external settlement to wait on -- see the registry's
+    // `deposit_apple_pay` docstring. `ApplePayDepositFlow` drives this
+    // directly against the concrete type.
+
+    /// Credits `amount` of USDT to this account. `reference` must be unique
+    /// per attempt so a retry after a lost response can't double-credit --
+    /// see `AccountClient.depositApplePay`.
+    public func depositApplePay(amount: Amount, reference: String) async throws -> AccountClient.ApplePayDepositResult {
+        guard let token = sessionTokenProvider() else {
+            throw PaymentBackendError.notConnected
+        }
+        do {
+            return try await client.depositApplePay(amountMinor: amount.minorUnits, reference: reference,
+                                                     sessionToken: token)
+        } catch {
+            throw Self.paymentBackendError(for: error)
+        }
+    }
+
     // MARK: - Internal transfer
     //
     // Not part of `WalletBackend` or `PaymentBackend` -- sending to another

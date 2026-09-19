@@ -141,6 +141,10 @@ public struct TipMeServices: Sendable {
         OnChainDepositFlow(backend: backend)
     }
 
+    public func makeApplePayDepositFlow() -> ApplePayDepositFlow {
+        ApplePayDepositFlow(backend: backend)
+    }
+
     public func makeInternalTransferFlow(clock: Clock = SystemClock()) -> InternalTransferFlow {
         InternalTransferFlow(backend: backend, gate: gate, auditLog: auditLog, clock: clock)
     }

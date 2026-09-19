@@ -10,5 +10,20 @@
 	<array>
 		<string>$(AppIdentifierPrefix)$(TIPME_KEYCHAIN_GROUP_SUFFIX)</string>
 	</array>
+	<!--
+	Placeholder merchant ID -- the real Apple Pay sheet in DepositView
+	cannot actually authorize a payment until this is a real merchant
+	identifier registered at developer.apple.com (Certificates, Identifiers
+	& Profiles > Identifiers > Merchant IDs), matching
+	ApplePayConfiguration.merchantIdentifier in ApplePayAuthorizer.swift.
+	Until then `PKPaymentAuthorizationController.canMakePayments()` may
+	still say yes (it only checks the device has cards in Wallet), but
+	authorization will not go through -- DepositView's "Test deposit"
+	button is the fallback for testing before that's set up.
+	-->
+	<key>com.apple.developer.in-app-payments</key>
+	<array>
+		<string>merchant.com.tipme.app</string>
+	</array>
 </dict>
 </plist>

@@ -4,11 +4,13 @@ import TipMeCore
 enum DepositMethodChoice: String, CaseIterable {
     case lightning
     case onchain
+    case applePay
 
     var label: String {
         switch self {
         case .lightning: return "Lightning"
         case .onchain: return "On-chain"
+        case .applePay: return "Apple Pay"
         }
     }
 }
@@ -19,22 +21,32 @@ final class DepositViewModel: ObservableObject {
     @Published var amountText = ""
     @Published private(set) var lightningState: LightningDepositState = .idle
     @Published private(set) var onchainState: OnChainDepositState = .idle
+    @Published private(set) var applePayState: ApplePayDepositState = .idle
     @Published private(set) var copied = false
 
     private let lightningFlow: LightningDepositFlow
     private let onchainFlow: OnChainDepositFlow
+    private let applePayFlow: ApplePayDepositFlow
+    private let applePayAuthorizer = ApplePayAuthorizer()
 
     init(services: TipMeServices) {
         self.lightningFlow = services.makeLightningDepositFlow()
         self.onchainFlow = services.makeOnChainDepositFlow()
+        self.applePayFlow = services.makeApplePayDepositFlow()
     }
 
     var isBusy: Bool {
         switch method {
         case .lightning: return lightningState == .creating
         case .onchain: return onchainState == .creating
+        case .applePay: return applePayState == .paying
         }
     }
+
+    /// Whether the device can show a real Apple Pay sheet at all -- says
+    /// nothing about whether `ApplePayConfiguration.merchantIdentifier` is a
+    /// real, registered merchant ID yet. See `ApplePayAuthorizer`.
+    var canUseRealApplePay: Bool { ApplePayAuthorizer.canPay() }
 
     func create() async {
         switch method {
@@ -48,7 +60,45 @@ final class DepositViewModel: ObservableObject {
         case .onchain:
             onchainState = .creating
             onchainState = await onchainFlow.create()
+        case .applePay:
+            await payWithApplePay()
         }
+    }
+
+    /// Dummy funding source -- see the registry's `deposit_apple_pay`
+    /// docstring. Shows the real Apple Pay sheet when the device can
+    /// present one; either way, what actually credits the ledger is the
+    /// same one call with a fresh idempotency reference.
+    private func payWithApplePay() async {
+        guard let amountMinor = Self.parseDollarsToMinorUnits(amountText), amountMinor > 0 else {
+            applePayState = .failed("Enter an amount.")
+            return
+        }
+        applePayState = .paying
+
+        if canUseRealApplePay {
+            let dollars = Decimal(amountMinor) / 100
+            guard let payment = await applePayAuthorizer.requestPayment(
+                amount: dollars, currencyCode: "USD", label: "TipMe balance top-up",
+            ) else {
+                applePayState = .idle // cancelled or the sheet didn't present -- not a failure
+                return
+            }
+            applePayState = await applePayFlow.pay(
+                amountMinor: amountMinor, reference: payment.token.transactionIdentifier)
+        } else {
+            applePayState = await applePayFlow.pay(
+                amountMinor: amountMinor, reference: "test-\(UUID().uuidString)")
+        }
+    }
+
+    /// "12.34" -> 1234 minor units. Apple Pay's amount is naturally a dollar
+    /// figure, unlike Lightning's sats -- this is the one deposit method
+    /// here that needs decimal parsing rather than a bare integer.
+    private static func parseDollarsToMinorUnits(_ text: String) -> Int64? {
+        let normalised = text.replacingOccurrences(of: ",", with: ".")
+        guard let dollars = Decimal(string: normalised), dollars > 0 else { return nil }
+        return NSDecimalNumber(decimal: dollars * 100).int64Value
     }
 
     func checkStatus() async {
@@ -62,6 +112,8 @@ final class DepositViewModel: ObservableObject {
             guard case .awaitingPayment(let address) = onchainState else { return }
             onchainState = .checking(address: address)
             onchainState = await onchainFlow.checkStatus(address: address)
+        case .applePay:
+            return // nothing to poll -- payWithApplePay already resolves synchronously.
         }
     }
 
@@ -75,6 +127,7 @@ final class DepositViewModel: ObservableObject {
         copied = false
         lightningState = .idle
         onchainState = .idle
+        applePayState = .idle
     }
 }
 
@@ -109,6 +162,8 @@ struct DepositView: View {
             lightningContent
         case .onchain:
             onchainContent
+        case .applePay:
+            applePayContent
         }
     }
 
@@ -144,6 +199,18 @@ struct DepositView: View {
         }
     }
 
+    @ViewBuilder
+    private var applePayContent: some View {
+        switch viewModel.applePayState {
+        case .idle, .paying:
+            amountEntry
+        case .completed(let balances):
+            successState(balances, asset: .usdt)
+        case .failed(let message):
+            failureState(message)
+        }
+    }
+
     private var methodPicker: some View {
         Picker("Method", selection: $viewModel.method) {
             ForEach(DepositMethodChoice.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -169,13 +236,30 @@ struct DepositView: View {
                     Text("Get a real Bitcoin address. Send whatever amount you like to it from any wallet.")
                         .font(Theme.caption)
                         .foregroundStyle(Theme.textSecondary)
+                case .applePay:
+                    Text(viewModel.canUseRealApplePay
+                         ? "Add funds with Apple Pay."
+                         : "Apple Pay isn't set up on this device. Add test funds instead — no card needed.")
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                    TextField("Amount (USD)", text: $viewModel.amountText)
+                        .keyboardType(.decimalPad)
+                        .font(Theme.amountLarge)
+                        .multilineTextAlignment(.center)
                 }
             }
 
-            PrimaryButton(title: viewModel.method == .lightning ? "Create invoice" : "Get address",
-                         isLoading: viewModel.isBusy) {
+            PrimaryButton(title: amountEntryButtonTitle, isLoading: viewModel.isBusy) {
                 Task { await viewModel.create() }
             }
+        }
+    }
+
+    private var amountEntryButtonTitle: String {
+        switch viewModel.method {
+        case .lightning: return "Create invoice"
+        case .onchain: return "Get address"
+        case .applePay: return viewModel.canUseRealApplePay ? "Pay with Apple Pay" : "Add test funds"
         }
     }
 
@@ -221,18 +305,25 @@ struct DepositView: View {
         }
     }
 
-    private func successState(_ balances: [Asset: Int64]) -> some View {
+    private func successState(_ balances: [Asset: Int64], asset: Asset = .bitcoin) -> some View {
         VStack(spacing: Theme.spacing) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(Theme.positive)
             Text("Deposited").font(Theme.title)
-            if let sats = balances[.bitcoin] {
-                Text(TipMeCore.Amount.sats(sats).formatted).font(Theme.amountMedium)
+            if let minorUnits = balances[asset] {
+                Text(Self.formatted(minorUnits, asset: asset)).font(Theme.amountMedium)
             }
             PrimaryButton(title: "Done") { dismiss() }
         }
         .padding(.vertical, 24)
+    }
+
+    private static func formatted(_ minorUnits: Int64, asset: Asset) -> String {
+        switch asset {
+        case .bitcoin: return TipMeCore.Amount.sats(minorUnits).formatted
+        case .usdt: return TipMeCore.Amount.usdtCents(minorUnits).formatted
+        }
     }
 
     private func failureState(_ message: String) -> some View {

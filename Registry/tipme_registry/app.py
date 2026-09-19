@@ -420,6 +420,15 @@ class SimulateTestPaymentRequest(BaseModel):
     payment_request: str
 
 
+class DepositApplePayRequest(BaseModel):
+    amount_minor: int = Field(gt=0)
+    # The client's own idempotency key -- a PKPayment transaction
+    # identifier when a real Apple Pay sheet was shown, or any
+    # caller-chosen unique string for the no-card dummy path. See
+    # `deposit_apple_pay`.
+    reference: str = Field(min_length=1)
+
+
 class GridTransferRequest(BaseModel):
     to_email: str
     amount_minor: int = Field(gt=0)
@@ -958,6 +967,46 @@ async def withdraw_bitcoin(
         fee_sats=result.fee_sats,
         balances=_balance_entries(user_id, storage),
     )
+
+
+@app.post("/v1/deposit/apple_pay", response_model=DepositStatusResponse)
+async def deposit_apple_pay(
+    request: DepositApplePayRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> DepositStatusResponse:
+    """Credits the signed-in user's USDT balance for an Apple Pay top-up.
+
+    This is a dummy funding source, not a real one: there is no payment
+    processor (Stripe or similar) wired in yet to actually charge a card or
+    verify an Apple Pay payment token, so this trusts the client-reported
+    amount and credits it immediately -- no separate "check" step, unlike
+    the Lightning/on-chain deposits above, because there is no external
+    settlement to wait on. Same trust level as `simulate_lightning_test_payment`
+    and Grid's `fund_sandbox`, just for a rail that has no real backing at
+    all yet rather than a sandboxed real one; replacing this with a real
+    charge is future work, not something this endpoint's callers need to
+    know about when that happens -- the request/response shape does not
+    have to change.
+
+    `reference` is the caller's own idempotency key (a PKPayment
+    transaction identifier from a real Apple Pay sheet, or any unique
+    string for the no-card test path) so a retried request after a lost
+    response does not double-credit -- same pattern `complete_deposit_if_
+    pending` already gives the Lightning and on-chain rails.
+    """
+    existing = storage.get_pending_deposit("apple_pay", request.reference)
+    if existing is not None and existing.user_id != user_id:
+        raise HTTPException(status_code=404, detail="no such deposit")
+    if existing is None:
+        existing = storage.create_pending_deposit(
+            user_id=user_id, asset="usdt", method="apple_pay",
+            external_reference=request.reference, amount_minor=request.amount_minor,
+        )
+    if existing.status == "pending":
+        storage.complete_deposit_if_pending("apple_pay", request.reference, reason="apple_pay_deposit")
+
+    return DepositStatusResponse(status="completed", balances=_balance_entries(user_id, storage))
 
 
 @app.post("/v1/transfer", response_model=TransferResponse)
