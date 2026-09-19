@@ -25,31 +25,38 @@ covering the two primitives Grid's auth flow needs:
   OTP code Grid "sends" (in sandbox, the fixed code `"000000"`) never
   crosses the wire in plaintext.
 
-## Why this is hand-rolled instead of using an HPKE library
+## Why this is hand-rolled instead of using an HPKE library, and why it
+## deliberately does not match strict RFC 9180
 
-The seal here is RFC 9180 base-mode HPKE with a standard suite
-(DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM), computed directly
-from the spec (`_kem_extract_and_expand`, `_key_schedule`, both checked
-against the official RFC 9180 test vectors for this exact suite) rather
-than via a library, so nothing about the derivation depends on a
-library's particular conventions. Two wrong guesses along the way, each
-found by testing live against a real sandbox account and reading Grid's
-own `mintlify/snippets/global-accounts/client-keys.mdx` guide (fetched
-from the `lightsparkdev/grid-api` repo directly -- the rendered docs site
-blocks this sandbox's egress) rather than the OpenAPI spec's prose alone:
+The seal here matches `@turnkey/crypto`'s `hpkeEncrypt` byte-for-byte --
+including a `LabeledExpand` that leaves RFC 9180's 2-byte length prefix
+zero instead of populating it, and an automatic AAD
+(`ephemeral_sender_uncompressed || recipient_uncompressed`) baked into the
+function itself. Both are deviations from the RFC as written, confirmed
+necessary the hard way:
 
 1. `encappedPublic` must be the ephemeral key **uncompressed**, not
    compressed -- confirmed against a real sandbox response.
-2. There is no custom AAD for the OTP seal. An earlier version reused the
-   `sender || recipient` AAD from Turnkey's own JS client
-   (`@turnkey/crypto`'s `hpkeEncrypt`), on the theory that Grid's
-   embedded-wallet stack, being built on Turnkey, might mirror it. Grid's
+2. A strictly RFC-9180-correct `LabeledExpand` (real length prefix) was
+   tried next, on the theory that Grid's actual backend enclave -- not the
+   JS client the quirk came from -- would implement the spec as written.
+   Live testing rejected it too.
+3. Dropping the AAD entirely was tried third, on the theory that Grid's
    own client-keys guide shows the OTP bundle built through a plain
    `hpkeEncryptToGridBundle({plainTextBuf, targetKeyBuf})` helper with no
-   `info`/`aad` parameters at all -- that custom AAD convention turned out
-   to belong to a separate, legacy-only session-key-decrypt flow the same
-   guide documents with its own explicit AAD, not to the OTP seal. This
-   version uses HPKE's own empty defaults for both `info` and `aad`.
+   `info`/`aad` parameters exposed -- suggesting empty defaults. Also
+   rejected live.
+4. What actually works, confirmed with a fully standalone test (a fresh
+   customer, account, and credential no other code had ever touched, one
+   single-use challenge, one HPKE seal, one verify attempt -- Grid's own
+   OTP activities are single-use, so any reuse of a previous attempt's
+   bundle produces a misleading "already failed" or "expired" response
+   instead of a true read on whether the crypto itself was accepted): the
+   *original*, unmodified `@turnkey/crypto` behavior from step 1, quirk and
+   AAD included. The Grid API repo's own reference script
+   (`scripts/embedded-wallet-sign.js`) calls `hpkeEncrypt` directly with no
+   override of either -- which in hindsight was the answer the whole time,
+   and would have saved two wrong detours if found first.
 
 ## What is not verified
 
@@ -85,11 +92,30 @@ _SUITE_ID_HPKE = bytes([72, 80, 75, 69, 0, 16, 0, 1, 0, 2])  # "HPKE" || kem_id 
 _LABEL_EAE_PRK = b"eae_prk"
 _LABEL_SHARED_SECRET = b"shared_secret"
 _LABEL_SECRET = b"secret"
-_LABEL_PSK_ID_HASH = b"psk_id_hash"
-_LABEL_INFO_HASH = b"info_hash"
-_LABEL_KEY = b"key"
-_LABEL_BASE_NONCE = b"base_nonce"
-_MODE_BASE = bytes([0x00])
+# Precomputed `labeled_info` for label="key"/"base_nonce" under an empty
+# application info and empty PSK -- copied byte-for-byte from
+# `@turnkey/crypto`'s constants.js (`AES_KEY_INFO`/`IV_INFO`). Notably NOT
+# RFC 9180's `LabeledExpand` as specified: the real spec's 2-byte length
+# prefix is left as zero here instead of populated with the output length --
+# a deliberate (if non-conformant) Turnkey quirk their own enclave-side
+# decrypt mirrors. Confirmed live: a strictly RFC-correct derivation is
+# rejected by Grid's enclave; this one is accepted. See the module
+# docstring for the two wrong turns that preceded this conclusion.
+_AES_KEY_INFO = bytes([
+    0, 32, 72, 80, 75, 69, 45, 118, 49, 72, 80, 75, 69, 0, 16, 0, 1, 0, 2, 107,
+    101, 121, 0, 143, 195, 174, 184, 50, 73, 10, 75, 90, 179, 228, 32, 35, 40,
+    125, 178, 154, 31, 75, 199, 194, 34, 192, 223, 34, 135, 39, 183, 10, 64, 33,
+    18, 47, 63, 4, 233, 32, 108, 209, 36, 19, 80, 53, 41, 180, 122, 198, 166, 48,
+    185, 46, 196, 207, 125, 35, 69, 8, 208, 175, 151, 113, 201, 158, 80,
+])
+_IV_INFO = bytes([
+    0, 12, 72, 80, 75, 69, 45, 118, 49, 72, 80, 75, 69, 0, 16, 0, 1, 0, 2, 98, 97,
+    115, 101, 95, 110, 111, 110, 99, 101, 0, 143, 195, 174, 184, 50, 73, 10, 75,
+    90, 179, 228, 32, 35, 40, 125, 178, 154, 31, 75, 199, 194, 34, 192, 223, 34,
+    135, 39, 183, 10, 64, 33, 18, 47, 63, 4, 233, 32, 108, 209, 36, 19, 80, 53,
+    41, 180, 122, 198, 166, 48, 185, 46, 196, 207, 125, 35, 69, 8, 208, 175, 151,
+    113, 201, 158, 80,
+])
 
 
 class TurnkeyStampError(Exception):
@@ -147,36 +173,43 @@ def _hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
     return HKDFExpand(algorithm=hashes.SHA256(), length=length, info=info).derive(prk)
 
 
-def _labeled_extract(salt: bytes, label: bytes, ikm: bytes, suite_id: bytes) -> bytes:
-    labeled_ikm = _HPKE_VERSION + suite_id + label + ikm
-    return _hkdf_extract(salt, labeled_ikm)
+def _labeled_ikm(label: bytes, ikm: bytes, suite_id: bytes) -> bytes:
+    return _HPKE_VERSION + suite_id + label + ikm
 
 
-def _labeled_expand(prk: bytes, label: bytes, info: bytes, length: int, suite_id: bytes) -> bytes:
-    labeled_info = length.to_bytes(2, "big") + _HPKE_VERSION + suite_id + label + info
-    return _hkdf_expand(prk, labeled_info, length)
+def _labeled_info(label: bytes, info: bytes, suite_id: bytes) -> bytes:
+    # The leading 2 bytes are RFC 9180's LabeledExpand length prefix, left
+    # as zero rather than populated with the output length -- see the
+    # `_AES_KEY_INFO`/`_IV_INFO` comment above for why this non-conformant
+    # form is the one that actually works.
+    return b"\x00\x00" + _HPKE_VERSION + suite_id + label + info
+
+
+def _extract_and_expand(salt: bytes, ikm: bytes, info: bytes, length: int) -> bytes:
+    prk = _hkdf_extract(salt, ikm)
+    return _hkdf_expand(prk, info, length)
 
 
 def _kem_extract_and_expand(dh: bytes, kem_context: bytes) -> bytes:
-    """RFC 9180 DHKEM's `ExtractAndExpand`: derives the KEM shared secret
-    from the raw ECDH output."""
-    eae_prk = _labeled_extract(b"", _LABEL_EAE_PRK, dh, _SUITE_ID_KEM)
-    return _labeled_expand(eae_prk, _LABEL_SHARED_SECRET, kem_context, 32, _SUITE_ID_KEM)
+    """DHKEM's `ExtractAndExpand`, with Turnkey's non-conformant
+    `LabeledExpand`: derives the KEM shared secret from the raw ECDH
+    output."""
+    eae_ikm = _labeled_ikm(_LABEL_EAE_PRK, dh, _SUITE_ID_KEM)
+    shared_secret_info = _labeled_info(_LABEL_SHARED_SECRET, kem_context, _SUITE_ID_KEM)
+    return _extract_and_expand(b"", eae_ikm, shared_secret_info, 32)
 
 
 def _key_schedule(shared_secret: bytes) -> tuple[bytes, bytes]:
-    """RFC 9180's `KeySchedule` in base mode (no PSK, no application info):
-    returns `(key, base_nonce)` for the AEAD. Computed from scratch rather
-    than reusing any precomputed constant, so nothing here depends on
-    matching another implementation's shortcuts -- only the spec itself.
+    """Base-mode key schedule (no PSK, no application info): returns
+    `(key, base_nonce)` for the AEAD, using the precomputed
+    `_AES_KEY_INFO`/`_IV_INFO` constants rather than rebuilding
+    `key_schedule_context` -- they are fixed for empty info/PSK regardless
+    of the actual shared secret, exactly as `@turnkey/crypto` hardcodes
+    them.
     """
-    psk_id_hash = _labeled_extract(b"", _LABEL_PSK_ID_HASH, b"", _SUITE_ID_HPKE)
-    info_hash = _labeled_extract(b"", _LABEL_INFO_HASH, b"", _SUITE_ID_HPKE)
-    key_schedule_context = _MODE_BASE + psk_id_hash + info_hash
-
-    secret = _labeled_extract(shared_secret, _LABEL_SECRET, b"", _SUITE_ID_HPKE)
-    key = _labeled_expand(secret, _LABEL_KEY, key_schedule_context, 32, _SUITE_ID_HPKE)
-    base_nonce = _labeled_expand(secret, _LABEL_BASE_NONCE, key_schedule_context, 12, _SUITE_ID_HPKE)
+    secret_ikm = _labeled_ikm(_LABEL_SECRET, b"", _SUITE_ID_HPKE)
+    key = _extract_and_expand(shared_secret, secret_ikm, _AES_KEY_INFO, 32)
+    base_nonce = _extract_and_expand(shared_secret, secret_ikm, _IV_INFO, 12)
     return key, base_nonce
 
 
@@ -189,27 +222,31 @@ def _uncompressed_bytes(public_key: ec.EllipticCurvePublicKey) -> bytes:
 
 
 def _hpke_seal(plaintext: bytes, target_public_key_hex: str) -> tuple[str, bytes]:
-    """RFC 9180 base-mode HPKE seal for Grid's OTP target bundle. Grid's own
-    guide shows this built via a plain `hpkeEncryptToGridBundle({
-    plainTextBuf, targetKeyBuf})` helper with no `info`/`aad` parameters
-    exposed at all -- unlike a separate, legacy-only session-key-decrypt
-    flow the same guide documents with an explicit custom AAD -- so this
-    uses HPKE's own empty defaults for both rather than inventing either.
-    Returns `(uncompressed_ephemeral_public_hex, ciphertext_bytes)`.
+    """HPKE seal matching `@turnkey/crypto`'s `hpkeEncrypt` exactly --
+    including its automatic AAD (`ephemeral_sender || recipient`, both
+    uncompressed) and its non-conformant key schedule (see `_key_schedule`).
+    This is what the Grid API repo's own reference script
+    (`scripts/embedded-wallet-sign.js`) calls directly for `encrypt-otp`,
+    confirmed to be the one Grid's enclave actually accepts after two
+    wrong turns trying to "correct" it toward strict RFC 9180 -- see the
+    module docstring. Returns `(uncompressed_ephemeral_public_hex,
+    ciphertext_bytes)`.
     """
     target_key = _load_public_key(bytes.fromhex(target_public_key_hex))
+    target_uncompressed = _uncompressed_bytes(target_key)
 
     ephemeral_private = ec.generate_private_key(_CURVE)
     ephemeral_public = ephemeral_private.public_key()
     ephemeral_uncompressed = _uncompressed_bytes(ephemeral_public)
 
+    aad = ephemeral_uncompressed + target_uncompressed
     shared_point = ephemeral_private.exchange(ec.ECDH(), target_key)
-    kem_context = ephemeral_uncompressed + _uncompressed_bytes(target_key)
+    kem_context = ephemeral_uncompressed + target_uncompressed
 
     shared_secret = _kem_extract_and_expand(shared_point, kem_context)
     key, base_nonce = _key_schedule(shared_secret)
 
-    ciphertext = AESGCM(key).encrypt(base_nonce, plaintext, None)
+    ciphertext = AESGCM(key).encrypt(base_nonce, plaintext, aad)
     return ephemeral_uncompressed.hex(), ciphertext
 
 

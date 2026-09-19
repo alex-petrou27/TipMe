@@ -186,18 +186,6 @@ class GridRail:
         return self._config.currency
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
-        # httpx's `json=` serializes with compact separators (no space after
-        # `:`/`,`). Confirmed live: an identical payload sent that way fails
-        # signed-wallet-flow calls that the exact same bytes, spaced the way
-        # `json.dumps`'s own default (and every manually-typed curl `-d`
-        # here) would produce, complete successfully -- so build the body
-        # ourselves rather than let httpx re-encode it compactly.
-        if "json" in kwargs:
-            payload = kwargs.pop("json")
-            kwargs["content"] = json.dumps(payload).encode()
-            headers = dict(kwargs.get("headers") or {})
-            headers.setdefault("Content-Type", "application/json")
-            kwargs["headers"] = headers
         try:
             response = await self._client.request(method, path, **kwargs)
         except httpx.HTTPError as error:
@@ -306,12 +294,23 @@ class GridRail:
         synthetic placeholder anyway (see `ensure_customer`), so there is
         no real inbox to read a real OTP from.
         """
-        credentials = await self._request(
-            "GET", "/auth/credentials", params={"accountId": account_id},
-        )
-        email_otp_id = next(
-            (c["id"] for c in credentials.get("data", []) if c.get("type") == "EMAIL_OTP"), None,
-        )
+        # The account's auto-created EMAIL_OTP credential can briefly lag
+        # the account itself becoming visible -- confirmed live: querying
+        # immediately after a brand-new account can see zero credentials
+        # for a moment. Same race, same retry shape as `ensure_customer`'s
+        # account-provisioning wait.
+        email_otp_id = None
+        for attempt in range(5):
+            credentials = await self._request(
+                "GET", "/auth/credentials", params={"accountId": account_id},
+            )
+            email_otp_id = next(
+                (c["id"] for c in credentials.get("data", []) if c.get("type") == "EMAIL_OTP"), None,
+            )
+            if email_otp_id is not None:
+                break
+            if attempt < 4:
+                await asyncio.sleep(0.5)
         if email_otp_id is None:
             raise GridError(f"account {account_id} has no EMAIL_OTP credential")
 
@@ -331,14 +330,9 @@ class GridRail:
             raise GridError(f"could not seal OTP bundle: {error}") from error
         verify_body = {"type": "EMAIL_OTP", "encryptedOtpBundle": json.dumps(sealed)}
 
-        try:
-            first_leg = await self._poll_until_ready(
-                "POST", f"/auth/credentials/{email_otp_id}/verify", json=verify_body,
-            )
-        except GridError as error:
-            raise GridError(
-                f"{error} || DEBUG target_bundle={target_bundle!r} sealed={sealed!r}"
-            ) from error
+        first_leg = await self._poll_until_ready(
+            "POST", f"/auth/credentials/{email_otp_id}/verify", json=verify_body,
+        )
         payload_to_sign = first_leg.get("payloadToSign")
         request_id = first_leg.get("requestId")
         if not payload_to_sign or not request_id:
