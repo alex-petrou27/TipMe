@@ -2,9 +2,9 @@ import SwiftUI
 import TipMeCore
 
 enum DepositMethodChoice: String, CaseIterable {
+    case applePay
     case lightning
     case onchain
-    case applePay
 
     var label: String {
         switch self {
@@ -17,7 +17,13 @@ enum DepositMethodChoice: String, CaseIterable {
 
 @MainActor
 final class DepositViewModel: ObservableObject {
-    @Published var method: DepositMethodChoice = .lightning
+    // Apple Pay first: it's the only deposit method that works without real
+    // Lightning/on-chain infrastructure configured (Voltage credentials,
+    // etc.), which this registry almost certainly doesn't have set up for
+    // a prototype. Landing on Lightning by default meant "Deposit" silently
+    // failed with a 503 for anyone testing without that configured --
+    // confirmed live, read as "it just won't let me deposit."
+    @Published var method: DepositMethodChoice = .applePay
     @Published var amountText = ""
     @Published private(set) var lightningState: LightningDepositState = .idle
     @Published private(set) var onchainState: OnChainDepositState = .idle
