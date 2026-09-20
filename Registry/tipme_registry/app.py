@@ -24,9 +24,22 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
+from dotenv import load_dotenv
+
 from . import accounts, bitcoin_chain, grid_rail, lightning, lightning_node, oauth, rates as rates_module, signing, turnkey_stamp
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
 from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, PendingDeposit, Storage
+
+# `.env` lives at the repo root, one level above `Registry/`, and populates
+# Config/Secrets.xcconfig for the iOS side -- but nothing was ever loading it
+# into *this* process's environment, which every setting below reads via
+# os.environ. Running `uvicorn` in a fresh terminal after filling in .env
+# failed with "REGISTRY_SIGNING_PRIVATE_KEY is not set" even though the key
+# was right there in the file, because a file on disk isn't the same thing as
+# an exported environment variable. A no-op when the file doesn't exist (a
+# real deployment like Fly.io sets real secrets instead -- see fly.toml) or
+# when a variable is already exported some other way, since override=False.
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env", override=False)
 
 ASSETS = ("bitcoin", "usdt")
 

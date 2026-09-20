@@ -16,29 +16,46 @@ mapping, and this is it.
 
 ## Running it
 
+Every setting below is read from `os.environ` — `app.py` loads `../.env` (the
+same file the iOS app's `Config/Secrets.xcconfig` is generated from, one
+level up from this directory) automatically on startup via `python-dotenv`,
+so filling in `.env` at the repo root is enough; `export`ing them by hand in
+the shell instead works identically and is what a real deployment's secrets
+(e.g. `fly secrets set` — see the root README's "Deploying the registry")
+amount to.
+
 ```bash
 pip install -e ".[dev]"
 
-# Generate a signing keypair. Private half stays here; public half is baked
-# into the iOS app as TIPME_REGISTRY_PUBLIC_KEY.
+# Generate a signing keypair. Private half goes in .env (REGISTRY_SIGNING_
+# PRIVATE_KEY); public half is baked into the iOS app as
+# TIPME_REGISTRY_PUBLIC_KEY, also in .env.
 python -m tipme_registry.keygen
+```
 
-export REGISTRY_SIGNING_PRIVATE_KEY=...
-export REGISTRY_DATABASE_PATH=tipme_registry.sqlite3
-export REGISTRY_ADMIN_TOKEN=...          # required for verify/delete
+`.env` (at the repo root) needs at least:
+
+```
+REGISTRY_SIGNING_PRIVATE_KEY=...         # from keygen, above
+REGISTRY_DATABASE_PATH=tipme_registry.sqlite3
+REGISTRY_ADMIN_TOKEN=...                 # required for verify/delete
 
 # Optional. Only needed for self-service "Connect Instagram/TikTok"
 # verification — see "Platform sign-in" below. Either pair can be left unset;
 # that platform's /start endpoint then fails closed with a 503 instead of
 # offering a sign-in it cannot complete.
-export INSTAGRAM_CLIENT_ID=...
-export INSTAGRAM_CLIENT_SECRET=...
-export INSTAGRAM_REDIRECT_URI=https://your-registry-host/v1/oauth/instagram/callback
-export TIKTOK_CLIENT_KEY=...
-export TIKTOK_CLIENT_SECRET=...
-export TIKTOK_REDIRECT_URI=https://your-registry-host/v1/oauth/tiktok/callback
-export TIPME_APP_URL_SCHEME=tipme        # defaults to "tipme"; must match the app's CFBundleURLTypes
+INSTAGRAM_CLIENT_ID=...
+INSTAGRAM_CLIENT_SECRET=...
+INSTAGRAM_REDIRECT_URI=https://your-registry-host/v1/oauth/instagram/callback
+TIKTOK_CLIENT_KEY=...
+TIKTOK_CLIENT_SECRET=...
+TIKTOK_REDIRECT_URI=https://your-registry-host/v1/oauth/tiktok/callback
+TIPME_APP_URL_SCHEME=tipme               # defaults to "tipme"; must match the app's CFBundleURLTypes
+```
 
+Then:
+
+```bash
 uvicorn tipme_registry.app:app --reload
 pytest
 ```
