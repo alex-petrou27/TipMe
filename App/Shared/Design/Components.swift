@@ -58,17 +58,17 @@ extension ButtonStyle where Self == PressableStyle {
     static var pressable: PressableStyle { PressableStyle() }
 }
 
-/// A small, neutral icon badge -- the same rounded-square-icon language
-/// Apple's own Settings app uses per row, kept to the app's existing
-/// monochrome palette (`Theme.surfaceRaised`/`textPrimary`) rather than a
+/// A small icon badge -- the same rounded-square-icon language Apple's own
+/// Settings app uses per row, in the app's own brand color rather than a
 /// different system color per row, so a Settings screen built from these
-/// still reads as the same product as the rest of the app. `tint` exists
-/// for the one or two rows that genuinely warrant standing out -- most
-/// call sites should leave it at the default.
+/// reads as TipMe rather than a stock settings list. `tint`/`foreground`
+/// exist for the rare row that should read as neutral or destructive
+/// (see `Theme.negative`) instead -- most call sites should leave them at
+/// the default.
 struct IconBadge: View {
     let systemImage: String
-    var tint: Color = Theme.surfaceRaised
-    var foreground: Color = Theme.textPrimary
+    var tint: Color = Theme.brand.opacity(0.14)
+    var foreground: Color = Theme.brand
     var size: CGFloat = 32
 
     var body: some View {
@@ -80,11 +80,11 @@ struct IconBadge: View {
     }
 }
 
-/// The one accented, full-width button per screen — Send it, Confirm,
-/// Withdraw. There is exactly one of these visible at a time by convention.
-/// `Theme.brand`, not `Theme.accent`: this is the one place the app's single
-/// signature color shows up, so every primary action reads as the same
-/// action wherever it appears.
+/// The one full-width call-to-action button per screen — Send it, Confirm,
+/// Withdraw. There is exactly one of these visible at a time by convention,
+/// in `Theme.brand` (same color as `Theme.accent` now, kept as its own token
+/// since a button and a tint color are different concepts even when they
+/// currently render identically).
 struct PrimaryButton: View {
     let title: String
     var systemImage: String? = nil

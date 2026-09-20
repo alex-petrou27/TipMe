@@ -23,22 +23,25 @@ struct OnboardingView: View {
     @State private var connectingPlatform: Platform?
     @State private var socialError: String?
 
-    private enum Mode { case welcome, signup, login, shareSetup, connectSocials }
+    private enum Mode: Equatable { case welcome, signup, login, shareSetup, connectSocials }
 
     var body: some View {
         NavigationStack {
-            Group {
-                switch mode {
-                case .welcome: welcome
-                case .signup: signup
-                case .login: login
-                case .shareSetup: shareSetup
-                case .connectSocials: connectSocials
+            ScrollView {
+                Group {
+                    switch mode {
+                    case .welcome: welcome
+                    case .signup: signup
+                    case .login: login
+                    case .shareSetup: shareSetup
+                    case .connectSocials: connectSocials
+                    }
                 }
+                .padding(24)
             }
-            .padding(24)
-            .navigationTitle("TipMe")
-            .tint(Theme.accent)
+            .background(Theme.background)
+            .animation(Theme.motion, value: mode)
+            .tint(Theme.brand)
         }
     }
 
@@ -46,25 +49,36 @@ struct OnboardingView: View {
 
     private var welcome: some View {
         VStack(spacing: 20) {
-            Spacer()
-            Image(systemName: "bolt.circle.fill")
-                .font(.system(size: 64))
+            Spacer(minLength: 60)
+
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 30, weight: .bold))
+                .foregroundStyle(Theme.onBrand)
+                .frame(width: 76, height: 76)
+                .background(Theme.brand, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+            Text("TipMe")
+                .font(Theme.balance(34))
                 .foregroundStyle(Theme.textPrimary)
-            Text("Tip creators from the share sheet")
-                .font(.title2.weight(.semibold))
+
+            Text("Tip creators straight from the share sheet")
+                .font(Theme.headline)
+                .foregroundStyle(Theme.textPrimary)
                 .multilineTextAlignment(.center)
             Text("Sign up with your email — no recovery phrase, no crypto knowledge needed. TipMe holds your balance for you.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(Theme.body)
+                .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
-            Spacer()
 
-            Button("Create account") { errorMessage = nil; mode = .signup }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
+            Spacer(minLength: 40)
 
-            Button("I already have an account") { errorMessage = nil; mode = .login }
-                .font(.footnote)
+            PrimaryButton(title: "Create account") { errorMessage = nil; mode = .signup }
+
+            Button("Log in") { errorMessage = nil; mode = .login }
+                .font(Theme.headline)
+                .foregroundStyle(Theme.brand)
+                .buttonStyle(.pressable)
+                .padding(.vertical, 4)
         }
     }
 
@@ -99,55 +113,62 @@ struct OnboardingView: View {
                                  submit: @escaping () async -> Void,
                                  switchPrompt: String, switchTitle: String,
                                  switchMode: Mode) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(title).font(.title2.weight(.semibold))
-            if let subtitle {
-                Text(subtitle).font(.callout).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 20) {
+            Button {
+                errorMessage = nil; password = ""; mode = .welcome
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 32, height: 32)
+                    .background(Theme.surfaceRaised, in: Circle())
+            }
+            .buttonStyle(.pressable)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(Theme.title).foregroundStyle(Theme.textPrimary)
+                if let subtitle {
+                    Text(subtitle).font(Theme.body).foregroundStyle(Theme.textSecondary)
+                }
             }
 
-            TextField("Email", text: $email)
-                .textContentType(.emailAddress)
-                .keyboardType(.emailAddress)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .padding(12)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+            Card {
+                VStack(spacing: 0) {
+                    TextField("Email", text: $email)
+                        .textContentType(.emailAddress)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(Theme.body)
+                        .padding(.vertical, 13)
 
-            SecureField("Password", text: $password)
-                .textContentType(passwordFieldContentType)
-                .padding(12)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                    Divider().overlay(Theme.divider)
+
+                    SecureField("Password", text: $password)
+                        .textContentType(passwordFieldContentType)
+                        .font(Theme.body)
+                        .padding(.vertical, 13)
+                }
+            }
 
             if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(Theme.negative)
+                Text(errorMessage).font(Theme.caption).foregroundStyle(Theme.negative)
             }
 
-            Button {
+            PrimaryButton(title: submitTitle, isLoading: isSubmitting,
+                         isDisabled: email.isEmpty || password.isEmpty) {
                 Task { await submit() }
-            } label: {
-                Group {
-                    if isSubmitting {
-                        ProgressView()
-                    } else {
-                        Text(submitTitle)
-                    }
-                }
-                .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(isSubmitting || email.isEmpty || password.isEmpty)
 
             HStack(spacing: 4) {
-                Text(switchPrompt).foregroundStyle(.secondary)
+                Text(switchPrompt).foregroundStyle(Theme.textSecondary)
                 Button(switchTitle) { errorMessage = nil; password = ""; mode = switchMode }
+                    .foregroundStyle(Theme.brand)
+                    .fontWeight(.semibold)
             }
-            .font(.footnote)
-
-            Button("Back") { errorMessage = nil; password = ""; mode = .welcome }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            Spacer()
+            .font(Theme.caption)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 4)
         }
     }
 
@@ -223,49 +244,51 @@ struct OnboardingView: View {
     /// copy says what to do rather than confirming that it happened.
     private var shareSetup: some View {
         VStack(spacing: 20) {
-            Spacer()
+            Spacer(minLength: 40)
 
-            Image(systemName: "square.and.arrow.up.circle.fill")
-                .font(.system(size: 56))
-                .foregroundStyle(.primary)
+            IconBadge(systemImage: "square.and.arrow.up.fill", size: 64)
 
             Text("Add TipMe to your share sheet")
-                .font(.title2.weight(.semibold))
+                .font(Theme.title)
+                .foregroundStyle(Theme.textPrimary)
                 .multilineTextAlignment(.center)
             Text("This is a one-time setup so TipMe shows up right away next time, instead of behind “More”.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(Theme.body)
+                .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
 
-            VStack(alignment: .leading, spacing: 14) {
-                shareSetupStep(1, "Tap the button below to open the real share sheet.")
-                shareSetupStep(2, "Scroll the icon row to the end and tap **More**.")
-                shareSetupStep(3, "Turn on **TipMe**, then drag it to the top.")
+            Card {
+                VStack(alignment: .leading, spacing: 14) {
+                    shareSetupStep(1, "Tap the button below to open the real share sheet.")
+                    shareSetupStep(2, "Scroll the icon row to the end and tap **More**.")
+                    shareSetupStep(3, "Turn on **TipMe**, then drag it to the top.")
+                }
             }
-            .padding(18)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
 
-            Spacer()
+            Spacer(minLength: 20)
 
             // The genuine system share sheet — not a lookalike. What the user
             // shares here doesn't matter; this exists to put them inside the
             // real "More → Edit" screen where the actual toggle lives.
             ShareLink(item: "I just set up TipMe to tip creators straight from my share sheet ⚡️") {
-                Label("Open the share sheet", systemImage: "square.and.arrow.up")
-                    .font(.headline)
-                    .foregroundStyle(Color(uiColor: .systemBackground))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 15)
-                    .background(.primary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-
-            Button("Continue") { mode = .connectSocials }
-                .buttonStyle(.borderedProminent)
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("Open the share sheet")
+                }
+                .font(Theme.headline)
+                .foregroundStyle(Theme.onBrand)
                 .frame(maxWidth: .infinity)
+                .padding(.vertical, 17)
+                .background(Theme.brand, in: Capsule())
+            }
+            .buttonStyle(.pressable)
+
+            PrimaryButton(title: "Continue") { mode = .connectSocials }
 
             Button("I'll do this later") { mode = .connectSocials }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .buttonStyle(.pressable)
         }
     }
 
@@ -273,11 +296,12 @@ struct OnboardingView: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text("\(number)")
                 .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(Color(uiColor: .systemBackground))
+                .foregroundStyle(Theme.onBrand)
                 .frame(width: 20, height: 20)
-                .background(.primary, in: Circle())
+                .background(Theme.brand, in: Circle())
             Text(.init(text))
-                .font(.callout)
+                .font(Theme.body)
+                .foregroundStyle(Theme.textPrimary)
         }
     }
 
@@ -285,58 +309,63 @@ struct OnboardingView: View {
 
     private var connectSocials: some View {
         VStack(spacing: 20) {
-            Spacer()
+            Spacer(minLength: 40)
 
-            Image(systemName: "person.crop.circle.badge.checkmark")
-                .font(.system(size: 56))
-                .foregroundStyle(.primary)
+            IconBadge(systemImage: "person.crop.circle.badge.checkmark", size: 64)
 
             Text("Connect your accounts")
-                .font(.title2.weight(.semibold))
+                .font(Theme.title)
+                .foregroundStyle(Theme.textPrimary)
                 .multilineTextAlignment(.center)
             Text("So people can see it's really you when you tip. You can always do this later in Settings.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(Theme.body)
+                .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
 
-            VStack(spacing: 12) {
-                connectRow(.instagram)
-                connectRow(.tiktok)
+            Card {
+                VStack(spacing: 12) {
+                    connectRow(.instagram)
+                    Divider().overlay(Theme.divider)
+                    connectRow(.tiktok)
+                }
             }
-            .padding(18)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
 
             if let socialError {
-                Text(socialError).font(.caption).foregroundStyle(Theme.negative)
+                Text(socialError).font(Theme.caption).foregroundStyle(Theme.negative)
             }
 
-            Spacer()
+            Spacer(minLength: 20)
 
-            Button("Continue to TipMe") { Task { await onComplete() } }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
+            PrimaryButton(title: "Continue to TipMe") { Task { await onComplete() } }
 
             Button("I'll do this later") { Task { await onComplete() } }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .buttonStyle(.pressable)
         }
     }
 
     private func connectRow(_ platform: Platform) -> some View {
-        HStack {
+        HStack(spacing: 12) {
+            IconBadge(systemImage: platform == .instagram ? "camera.fill" : "music.note")
             Text(platform.displayName)
+                .font(Theme.body)
+                .foregroundStyle(Theme.textPrimary)
             Spacer()
             if connectingPlatform == platform {
                 ProgressView()
             } else if let username = connectedHandles[platform] {
-                Label("@\(username)", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.secondary)
-                    .font(.callout)
+                Text("@\(username)")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
             } else {
                 Button("Connect") { Task { await connectSocial(platform) } }
-                    .font(.callout)
+                    .font(Theme.caption.weight(.semibold))
+                    .foregroundStyle(Theme.brand)
+                    .buttonStyle(.pressable)
             }
         }
+        .padding(.vertical, 2)
     }
 
     private func connectSocial(_ platform: Platform) async {

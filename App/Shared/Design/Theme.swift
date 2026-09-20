@@ -2,28 +2,29 @@ import SwiftUI
 
 /// TipMe's visual language in one place.
 ///
-/// Black, white, and gray everywhere except one place: `Theme.brand`, the
-/// single signature color, reserved for a primary action and for money
-/// actually landing. Everything else — `Theme.accent` included — stays the
-/// inverting near-black/near-white this palette started as (Strike-style).
-/// Every screen in `App/TipMe` and `App/Shared` draws from here rather than
-/// ad hoc `.foregroundColor` calls, so the app reads as one product.
+/// White and near-black for the surface and text -- readable, restrained,
+/// Apple-Wallet-plain -- and one warm coral-red (`Theme.brand`, the app
+/// icon's own color) carried through every interactive surface: nav tint,
+/// icon badges, selected states, the primary button. This used to reserve
+/// that color for a single button and run everything else in monochrome;
+/// that read as generic rather than as TipMe, so `accent` now *is* `brand`
+/// rather than its own near-black. Every screen in `App/TipMe` and
+/// `App/Shared` draws from here rather than ad hoc `.foregroundColor` calls,
+/// so the app reads as one product.
 enum Theme {
 
     // MARK: - Color
 
-    /// The single "accent": black in light mode, white in dark mode. Used for
-    /// secondary emphasis — a `.tint`, a step marker — that should feel like
-    /// part of the monochrome surface rather than a call to action.
-    static let accent = Color(light: (0.04, 0.04, 0.05), dark: (1.00, 1.00, 1.00))
+    /// The "accent": TipMe's own brand color, not a neutral black/white one.
+    /// Used for a `.tint`, a step marker, a selected segment -- anything that
+    /// should read as "this app" rather than as system chrome.
+    static let accent: Color = brand
     /// The exact complement of `accent`, for whatever renders on top of it.
-    static let onAccent = Color(light: (1.00, 1.00, 1.00), dark: (0.04, 0.04, 0.05))
+    static let onAccent: Color = onBrand
 
-    /// The one signature color in an otherwise colorless palette: every
-    /// primary action (`PrimaryButton`) and the moment money actually moves
-    /// -- a successful send, a landed tip -- and nothing else. A screen with
-    /// three things in `brand` has no brand color at all, same rule
-    /// `accent` was always held to. Warm rather than the money-green or
+    /// The app icon's own color, and now the color behind almost every
+    /// interactive element -- nav tint, icon badges, a primary action, the
+    /// moment money actually moves. Warm rather than the money-green or
     /// payment-blue every other wallet already owns; a little brighter in
     /// dark mode so it still reads as vivid against true black rather than
     /// receding into it.
