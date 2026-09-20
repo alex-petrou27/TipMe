@@ -71,6 +71,15 @@ public struct AccountClient: Sendable {
         /// before ever sending a request, so this is a defence-in-depth
         /// path, not the primary way a user learns their password is weak.
         case invalidRequest
+        /// A 400 from an endpoint that explains *why* in its own words --
+        /// `/v1/transfer` and `/v1/tip/{platform}/{username}` (e.g. "cannot
+        /// tip yourself"). Kept distinct from the bare `invalidRequest`
+        /// above (used only by signup/login, which has its own tailored
+        /// message) precisely so that detail reaches the screen instead of
+        /// being discarded -- collapsing every 400 into one generic case
+        /// meant a real, specific server answer showed up to a user as the
+        /// word "invalidRequest" and nothing else.
+        case requestRejected(String)
         case emailTaken
         case invalidCredentials
         case tooManyAttempts
@@ -558,7 +567,10 @@ public struct AccountClient: Sendable {
         }
     }
 
-    /// Status-code mapping for `/v1/transfer`.
+    /// Status-code mapping for `/v1/transfer` and `/v1/tip/{platform}/
+    /// {username}` -- both return a 400 with a real, specific explanation in
+    /// `detail` (e.g. "cannot tip yourself"), which `requestRejected` carries
+    /// through rather than discarding.
     private static func checkTransferStatus(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else {
             throw AccountError.responseMalformed("non-HTTP response")
@@ -567,7 +579,7 @@ public struct AccountClient: Sendable {
         case 200, 201:
             return
         case 400:
-            throw AccountError.invalidRequest
+            throw AccountError.requestRejected(Self.detail(from: data) ?? "That request was invalid.")
         case 401:
             throw AccountError.sessionExpired
         case 402:

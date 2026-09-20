@@ -335,6 +335,8 @@ public actor CustodialPaymentBackend: PaymentBackend, WalletBackend {
             return .rejectedByNetwork(detail)
         case .recipientNotFound:
             return .rejectedByNetwork("No TipMe account exists with that email.")
+        case .requestRejected(let detail):
+            return .rejectedByNetwork(detail)
         case .invalidRequest, .emailTaken, .invalidCredentials, .tooManyAttempts,
              .transport, .responseMalformed:
             return .network(String(describing: accountError))
