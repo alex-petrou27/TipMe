@@ -29,6 +29,7 @@ struct CreatorSetupView: View {
 
     @State private var isSelfVerifying = false
     @State private var selfVerifyError: String?
+    @State private var showingBusinessSignIn = false
 
     private enum Phase: Equatable {
         case editing
@@ -72,8 +73,24 @@ struct CreatorSetupView: View {
         LightningAddress(lightningAddress)
     }
 
+    /// The address actually registered. Signed in, this is never shown or
+    /// typed by the creator at all: it is never paid (tips route ledger-to-
+    /// ledger once linked — see `CreatorRegistrar.register`'s own doc), so
+    /// asking someone to invent a fake-looking email address before they can
+    /// get tipped was pure friction with no payoff, and confusingly
+    /// crypto-flavored for a product whose whole point is not needing to
+    /// know this exists. Signed out, there's no account to route to yet, so
+    /// a real address the creator actually controls is what a tip needs.
+    private var effectiveAddress: LightningAddress? {
+        guard let handle = parsedHandle else { return nil }
+        if services.isSignedIn {
+            return LightningAddress("\(handle.username)@tipme.internal")
+        }
+        return parsedAddress
+    }
+
     private var canSubmit: Bool {
-        parsedHandle != nil && parsedAddress != nil && phase == .editing
+        parsedHandle != nil && effectiveAddress != nil && phase == .editing
     }
 
     var body: some View {
@@ -139,23 +156,26 @@ struct CreatorSetupView: View {
             }
         }
 
-        Section("Where tips go") {
-            TextField("name@wallet.com", text: $lightningAddress)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.emailAddress)
+        // Only shown signed out: signed in, tips route straight to the
+        // account and this address is never paid, so it's never asked for
+        // — see `effectiveAddress`.
+        if !services.isSignedIn {
+            Section("Where tips go") {
+                TextField("name@wallet.com", text: $lightningAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.emailAddress)
 
-            if !lightningAddress.isEmpty && parsedAddress == nil {
-                Text("That doesn't look like a Lightning address.")
+                if !lightningAddress.isEmpty && parsedAddress == nil {
+                    Text("That doesn't look like a Lightning address.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Text("Any Lightning address works — Alby, Strike, Wallet of Satoshi, Coinos, or your own node. Tips go straight there; TipMe never holds them.")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.secondary)
             }
-
-            Text(services.isSignedIn
-                 ? "You're signed in, so tips to this handle go straight to your TipMe balance — this address is just a fallback for senders who aren't on TipMe yet. Any placeholder in this shape works (e.g. \(username.isEmpty ? "you" : username)@example.com)."
-                 : "Any Lightning address works — Alby, Strike, Wallet of Satoshi, Coinos, or your own node. Tips go straight there; TipMe never holds them.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
 
         Section("Preferences") {
@@ -173,30 +193,6 @@ struct CreatorSetupView: View {
                 .foregroundStyle(.secondary)
         }
 
-        Section("Verify instantly") {
-            Button {
-                Task { await connect() }
-            } label: {
-                HStack {
-                    switch phase {
-                    case .connecting: Text("Connecting to \(platform.displayName)…")
-                    default: Label("Connect \(platform.displayName)", systemImage: "checkmark.seal")
-                    }
-                    if phase == .connecting {
-                        Spacer()
-                        ProgressView()
-                    }
-                }
-            }
-            .disabled(!canSubmit)
-
-            Text(platform == .instagram
-                 ? "Signs you into Instagram to prove this handle is yours. Needs a Business or Creator account — Instagram allows no sign-in at all for a personal one. On a personal account, use \"Link my account (bio code)\" below instead; you can self-verify it on the next screen."
-                 : "Signs you into TikTok to prove this handle is yours — no bio code needed.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-
         if let errorMessage {
             Section {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -205,15 +201,23 @@ struct CreatorSetupView: View {
             }
         }
 
+        // One button. It used to sit alongside an equally-weighted "Connect
+        // Instagram" OAuth button above it -- two competing top-level ways to
+        // do the same thing, one of which (OAuth) cannot work at all for a
+        // personal account, which is what everyone testing this has. That
+        // read as "none of these work" rather than "one of these works."
+        // The next screen (bio code, then Verify) is the one real path;
+        // OAuth is now the disclosed alternative below, for whoever actually
+        // has a Business/Creator account.
         Section {
             Button {
                 Task { await submit() }
             } label: {
                 HStack {
                     switch phase {
-                    case .verifying: Text("Checking your wallet…")
-                    case .registering: Text(isUpdatingOwnHandle ? "Updating…" : "Registering…")
-                    default: Text(isUpdatingOwnHandle ? "Update where tips go" : "Link my account (bio code)")
+                    case .verifying: Text("Checking…")
+                    case .registering: Text(isUpdatingOwnHandle ? "Updating…" : "Getting you set up…")
+                    default: Text(isUpdatingOwnHandle ? "Update where tips go" : "Get tipped")
                     }
                     if phase == .verifying || phase == .registering {
                         Spacer()
@@ -224,10 +228,38 @@ struct CreatorSetupView: View {
             .disabled(!canSubmit)
 
             Text(services.isSignedIn
-                 ? "Tips will go straight to your TipMe balance."
+                 ? "Tips will go straight to your TipMe balance. You'll confirm it's really your account on the next screen."
                  : "We check your wallet can actually receive a payment before saving it. A typo here would mean every tip silently fails.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+
+        Section {
+            DisclosureGroup("Have a Business or Creator account?", isExpanded: $showingBusinessSignIn) {
+                Button {
+                    Task { await connect() }
+                } label: {
+                    HStack {
+                        switch phase {
+                        case .connecting: Text("Connecting to \(platform.displayName)…")
+                        default: Label("Sign in with \(platform.displayName) instead", systemImage: "checkmark.seal")
+                        }
+                        if phase == .connecting {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(!canSubmit)
+
+                Text(platform == .instagram
+                     ? "Only works for a Business or Creator account — Instagram allows no sign-in at all for a personal one. Skip this unless you know you have one; \"Get tipped\" above works for any account."
+                     : "Signs you into TikTok to prove this handle is yours instantly, no bio code needed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -366,7 +398,7 @@ struct CreatorSetupView: View {
     // MARK: - Submitting
 
     private func submit() async {
-        guard let handle = parsedHandle, let address = parsedAddress else { return }
+        guard let handle = parsedHandle, let address = effectiveAddress else { return }
         errorMessage = nil
         phase = .verifying
 
@@ -451,7 +483,7 @@ struct CreatorSetupView: View {
     /// it is really this creator's, and mark it verified, all in the same
     /// sign-in.
     private func connect() async {
-        guard let handle = parsedHandle, let address = parsedAddress else { return }
+        guard let handle = parsedHandle, let address = effectiveAddress else { return }
         errorMessage = nil
         phase = .connecting
 
