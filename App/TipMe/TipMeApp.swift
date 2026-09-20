@@ -10,11 +10,13 @@ struct TipMeApp: App {
             Group {
                 switch appModel.phase {
                 case .loading:
-                    ProgressView().task { await appModel.bootstrap() }
+                    LaunchScreenView().task { await appModel.bootstrap() }
                 case .misconfigured(let message):
                     MisconfiguredView(message: message)
                 case .onboarding(let services):
-                    OnboardingView(services: services) { await appModel.bootstrap() }
+                    OnboardingView(services: services) { appModel.finishedOnboarding(services: services) }
+                case .locked(let services):
+                    AppLockView { appModel.unlock(services: services) }
                 case .ready(let services):
                     HomeView(services: services) {
                         appModel.returnToOnboarding(services: services)
@@ -31,6 +33,7 @@ final class AppModel: ObservableObject {
         case loading
         case misconfigured(String)
         case onboarding(TipMeServices)
+        case locked(TipMeServices)
         case ready(TipMeServices)
     }
 
@@ -43,10 +46,28 @@ final class AppModel: ObservableObject {
                 phase = .onboarding(services)
                 return
             }
-            phase = .ready(services)
+            // A signed-in session used to go straight to the balance --
+            // no different from an app with nothing worth protecting.
+            // TipMe is custodial; re-checking who's holding the phone on
+            // every open (not only before a payment) matters here the
+            // same way it does in Cash App or Venmo. See AppLockView.
+            phase = .locked(services)
         } catch {
             phase = .misconfigured(String(describing: error))
         }
+    }
+
+    func unlock(services: TipMeServices) {
+        phase = .ready(services)
+    }
+
+    /// Signing in already proves someone is present and holding the phone --
+    /// re-checking with Face ID one line of code later would be redundant
+    /// friction, not the security check `.locked` exists for. That gate is
+    /// for a *return visit* to an already-signed-in session, not the moment
+    /// right after typing a password.
+    func finishedOnboarding(services: TipMeServices) {
+        phase = .ready(services)
     }
 
     /// Called after logging out — the session is already cleared from the
