@@ -86,17 +86,17 @@ struct TipSheetView: View {
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                ForEach(viewModel.presets, id: \.self) { amount in
-                    PresetAmountButton(title: amount.formatted) {
+                ForEach(viewModel.presets, id: \.self) { fiat in
+                    PresetAmountButton(title: fiat.formatted) {
                         Haptics.tap()
-                        Task { await viewModel.selectAmount(amount) }
+                        Task { await viewModel.selectAmount(fiat) }
                     }
                 }
             }
 
             HStack(spacing: 10) {
                 TextField("Other amount", text: $viewModel.customAmountText)
-                    .keyboardType(.numberPad)
+                    .keyboardType(.decimalPad)
                     .font(Theme.headline)
                     .padding(.vertical, 13)
                     .padding(.horizontal, 16)
@@ -115,10 +115,6 @@ struct TipSheetView: View {
                 }
                 .disabled(viewModel.customAmountText.isEmpty)
             }
-
-            AssetSwitcher(selection: Binding(
-                get: { viewModel.selectedAsset },
-                set: { viewModel.changeAsset($0) }))
 
             cancelButton
         }

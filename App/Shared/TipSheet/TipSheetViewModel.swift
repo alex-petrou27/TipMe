@@ -48,16 +48,24 @@ final class TipSheetViewModel: ObservableObject {
 
     @Published private(set) var screen: Screen = .loading("Reading link…")
     @Published var manualAddress: String = ""
-    @Published var selectedAsset: Asset = .bitcoin
 
-    /// Preset tips, in the sender's asset. Chosen so the common case is one tap.
-    @Published private(set) var presets: [Amount] = [.sats(1_000), .sats(2_000), .sats(5_000), .sats(10_000)]
+    /// Preset tips, in the currency the sender actually thinks in -- never an
+    /// asset. There is no "which crypto do you want to send" choice anywhere
+    /// in this flow: a tip always settles in whatever the creator already
+    /// asked to be paid in (`CreatorRecord.preferredAsset`), converted at
+    /// spend time. The sender never sees or picks that asset -- see
+    /// `selectAmount`.
+    @Published private(set) var presets: [FiatAmount]
     @Published var customAmountText: String = ""
 
     private let services: TipMeServices
     private let flow: TipFlow
     private let onFinish: () -> Void
     private var sourceLink: URL?
+    /// The sender's own currency -- `AppConfiguration.fiatCurrency` defaults
+    /// to the device's locale, not a hardcoded one, so this reads as "how
+    /// much" in whatever currency the sender actually uses day to day.
+    private let fiatCurrency: String
 
     init(services: TipMeServices,
          origin: PaymentIntent.Origin,
@@ -65,6 +73,13 @@ final class TipSheetViewModel: ObservableObject {
         self.services = services
         self.flow = services.makeFlow(origin: origin)
         self.onFinish = onFinish
+        let currency = services.configuration.fiatCurrency
+        self.fiatCurrency = currency
+        self.presets = Self.defaultPresets(currencyCode: currency)
+    }
+
+    private static func defaultPresets(currencyCode: String) -> [FiatAmount] {
+        [100, 200, 500, 1_000].map { FiatAmount(currencyCode: currencyCode, minorUnits: $0) }
     }
 
     // MARK: - Step 1: identify
@@ -80,27 +95,28 @@ final class TipSheetViewModel: ObservableObject {
 
     // MARK: - Step 2: amount
 
-    func selectAmount(_ amount: Amount) async {
+    /// Converts a fiat figure into whatever the creator actually gets paid
+    /// in, at the current rate, then quotes exactly that -- the one place a
+    /// dollar amount ever becomes a crypto one in this flow.
+    func selectAmount(_ fiat: FiatAmount) async {
         guard case .amount(let creator) = screen else { return }
         screen = .loading("Checking amount…")
-        apply(await flow.quote(tip: amount, for: creator))
+        do {
+            let rate = try await services.backend.rate(for: creator.preferredAsset, in: fiatCurrency)
+            apply(await flow.quote(tip: rate.assetAmount(for: fiat), for: creator))
+        } catch {
+            screen = .error("Couldn't price that tip. Try again in a moment.")
+        }
     }
 
     func selectCustomAmount() async {
-        guard case .amount(let creator) = screen else { return }
-        guard let value = Int64(customAmountText.filter(\.isNumber)), value > 0 else {
-            screen = .error("Enter a whole number of \(selectedAsset.symbol).")
+        let normalised = customAmountText.replacingOccurrences(of: ",", with: ".")
+        guard let value = Decimal(string: normalised), value > 0 else {
+            screen = .error("Enter an amount.")
             return
         }
-        screen = .loading("Checking amount…")
-        apply(await flow.quote(tip: Amount(asset: selectedAsset, minorUnits: value), for: creator))
-    }
-
-    func changeAsset(_ asset: Asset) {
-        selectedAsset = asset
-        presets = asset == .bitcoin
-            ? [.sats(1_000), .sats(2_000), .sats(5_000), .sats(10_000)]
-            : [.usdtCents(50), .usdtCents(100), .usdtCents(250), .usdtCents(500)]
+        let minorUnits = NSDecimalNumber(decimal: value * 100).int64Value
+        await selectAmount(FiatAmount(currencyCode: fiatCurrency, minorUnits: minorUnits))
     }
 
     // MARK: - Manual fallback

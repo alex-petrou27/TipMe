@@ -11,16 +11,12 @@ struct HomeView: View {
     let services: TipMeServices
     let onLogout: () -> Void
 
-    @State private var displayedAsset: Asset = .bitcoin
     @State private var bitcoinBalance: Amount = .sats(0)
     @State private var usdtBalance: Amount = .usdtCents(0)
+    @State private var fiatTotal: FiatAmount?
     @State private var recentActivity: [WalletTransaction] = []
     @State private var isRefreshing = false
     @State private var showingMore = false
-
-    private var currentBalance: Amount {
-        displayedAsset == .bitcoin ? bitcoinBalance : usdtBalance
-    }
 
     var body: some View {
         NavigationStack {
@@ -53,22 +49,22 @@ struct HomeView: View {
         .tint(Theme.accent)
     }
 
+    /// One number: what the balance is worth, in the currency the person
+    /// actually thinks in. Nothing here says "bitcoin" or "USDT" -- which
+    /// asset is actually backing it is exactly the kind of payment
+    /// infrastructure this product exists to hide.
     private var balancePanel: some View {
         VStack(spacing: Theme.spacingSmall) {
-            AssetSwitcher(selection: $displayedAsset)
+            Text("Your balance")
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
 
-            Text(currentBalance.formatted)
+            Text(fiatTotal?.formatted ?? "—")
                 .font(Theme.balance())
                 .foregroundStyle(Theme.textPrimary)
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
                 .padding(.top, Theme.spacingSmall)
-
-            if displayedAsset == .bitcoin, usdtBalance.isPositive {
-                Text("+ \(usdtBalance.formatted)")
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.textTertiary)
-            }
         }
         .padding(.horizontal, Theme.spacing)
     }
@@ -126,6 +122,20 @@ struct HomeView: View {
         bitcoinBalance = (try? await services.backend.availableBalance(for: .bitcoin)) ?? .sats(0)
         usdtBalance = (try? await services.backend.availableBalance(for: .usdt)) ?? .usdtCents(0)
         recentActivity = (try? await services.backend.transactionHistory(limit: 5)) ?? []
+
+        // Best-effort per asset: a rate outage on one shouldn't blank the
+        // whole figure when the other is available. Both missing shows "—"
+        // rather than a guessed total.
+        let currency = services.configuration.fiatCurrency
+        var total: FiatAmount?
+        if let rate = try? await services.backend.rate(for: .bitcoin, in: currency) {
+            total = rate.fiatValue(of: bitcoinBalance)
+        }
+        if let rate = try? await services.backend.rate(for: .usdt, in: currency) {
+            let usdtFiat = rate.fiatValue(of: usdtBalance)
+            total = total.map { $0 + usdtFiat } ?? usdtFiat
+        }
+        fiatTotal = total
     }
 }
 

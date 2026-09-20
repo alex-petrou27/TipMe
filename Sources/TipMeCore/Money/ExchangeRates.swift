@@ -32,6 +32,19 @@ public struct AssetRate: Equatable, Codable, Sendable {
     public func isStale(at now: Date, tolerance: TimeInterval) -> Bool {
         now.timeIntervalSince(asOf) > tolerance
     }
+
+    /// The inverse of `fiatValue(of:)`: how much of `asset` a fiat figure buys
+    /// at this rate. What lets the tip sheet's amount picker be denominated in
+    /// dollars/pounds -- the currency a person actually thinks in -- while the
+    /// asset itself stays whatever the creator is actually paid in underneath.
+    public func assetAmount(for fiat: FiatAmount) -> Amount {
+        precondition(fiat.currencyCode == currencyCode, "rate is in \(currencyCode), got \(fiat.currencyCode)")
+        let (product, overflow) = fiat.minorUnits.multipliedReportingOverflow(by: Self.scale)
+        precondition(!overflow, "asset conversion overflow")
+        // Round half up.
+        let minor = (product + scaledPricePerMinorUnit / 2) / scaledPricePerMinorUnit
+        return Amount(asset: asset, minorUnits: minor)
+    }
 }
 
 public protocol ExchangeRateProvider: Sendable {

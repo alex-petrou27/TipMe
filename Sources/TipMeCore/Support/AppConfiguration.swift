@@ -82,6 +82,12 @@ public struct AppConfiguration: Sendable {
                 globalWindow: TimeInterval(int("TIPME_RATELIMIT_GLOBAL_WINDOW_S", default: 3600))),
             appGroup: try string("TIPME_APP_GROUP"),
             keychainAccessGroup: try string("TIPME_KEYCHAIN_ACCESS_GROUP"),
-            fiatCurrency: (try? string("TIPME_FIAT_CURRENCY")) ?? "GBP")
+            // The domestic currency, not a hardcoded one: a sender should
+            // never have to think in a currency that isn't theirs any more
+            // than they should have to think in sats. TIPME_FIAT_CURRENCY
+            // stays available to force one (a registry with no rate feed
+            // for the device's currency, testing), but the default is
+            // whatever the device itself is set to.
+            fiatCurrency: (try? string("TIPME_FIAT_CURRENCY")) ?? Locale.current.currency?.identifier ?? "USD")
     }
 }
