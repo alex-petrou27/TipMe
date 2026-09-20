@@ -21,7 +21,7 @@ final class SendCapTests: XCTestCase {
         let (ledger, _) = makeLedger(clock: clock)
         let decision = await ledger.evaluate(requested: .gbp(pence: 2_001))
         XCTAssertFalse(decision.isAllowed)
-        XCTAssertEqual(decision.userFacingReason, "Single tips are capped at £20.00.")
+        XCTAssertEqual(decision.userFacingReason, "Single tips are capped at £20.")
     }
 
     func testDailyCapAccumulates() async {
