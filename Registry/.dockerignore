@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+tipme_registry.egg-info/
+*.sqlite3
+photos/
+tests/

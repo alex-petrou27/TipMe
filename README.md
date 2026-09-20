@@ -125,6 +125,65 @@ mismatch does not fail the build; it fails at runtime, as an extension that
 cannot find an account the user can plainly see signed in in the app. This is
 the single most common setup mistake on this project.
 
+### Deploying the registry
+
+`uvicorn --reload` on your own machine is fine for editing the registry's own
+code, but the iOS app should **not** point `TIPME_REGISTRY_BASE_URL` at it:
+a physical device can't reach your Mac's `localhost` at all, and even a LAN
+IP is plain HTTP, which iOS's App Transport Security blocks outright with no
+exception configured in this project. Both fail the exact same way — every
+signup/login shows "Couldn't reach TipMe," indistinguishable from actually
+being offline. Point the app at a real deployment instead; it also means the
+registry survives your Mac sleeping, restarting, or being on a different
+network than your phone.
+
+The Registry ships a `Dockerfile` and a `fly.toml` for [Fly.io](https://fly.io),
+which gives a small app a real HTTPS URL and a persistent disk (needed so the
+account database and creator photos survive a redeploy) for a few dollars a
+month. One-time setup, from `Registry/`:
+
+```bash
+# 1. Install Fly's CLI and sign in (creates a Fly account if you don't have one)
+brew install flyctl
+fly auth login
+
+# 2. Create the app (matches the "app" name already in fly.toml)
+cd Registry
+fly launch --no-deploy --copy-config --name tipme-registry
+
+# 3. Create the persistent volume fly.toml expects, in the same region as the app
+fly volumes create tipme_registry_data --region lhr --size 1
+
+# 4. Generate the registry's signing keypair, if you haven't already
+python -m tipme_registry.keygen
+#   -> put REGISTRY_SIGNING_PRIVATE_KEY in the fly secrets command below
+#   -> put the printed public key in your .env's TIPME_REGISTRY_PUBLIC_KEY
+
+# 5. Set secrets (everything from .env.example's "Registry service" and fee
+#    sections — the app never sees these, only the registry needs them)
+fly secrets set \
+  REGISTRY_SIGNING_PRIVATE_KEY="..." \
+  REGISTRY_ADMIN_TOKEN="..." \
+  REGISTRY_REGISTRATIONS_PER_HOUR=10 \
+  REGISTRY_SIGNUPS_PER_HOUR=10 \
+  REGISTRY_LOGIN_ATTEMPTS_PER_HOUR=20
+
+# 6. Deploy
+fly deploy
+```
+
+Then update your `.env` on your Mac:
+
+```
+TIPME_REGISTRY_BASE_URL=https://tipme-registry.fly.dev
+TIPME_REGISTRY_PUBLIC_KEY=<the public key keygen printed in step 4>
+```
+
+Regenerate config and rebuild the app (`./Scripts/make-xcconfig.sh`, then
+clean-build in Xcode) so it picks up the new URL. Any future code change to
+the registry ships with `fly deploy` from `Registry/` — no more remembering
+to have a terminal open with `uvicorn --reload` running before testing.
+
 ---
 
 ## Where TipMe actually appears
