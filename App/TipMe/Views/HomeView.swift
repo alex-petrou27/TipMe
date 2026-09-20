@@ -65,6 +65,8 @@ struct HomeView: View {
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
                 .padding(.top, Theme.spacingSmall)
+                .contentTransition(.numericText())
+                .animation(Theme.motion, value: fiatTotal)
         }
         .padding(.horizontal, Theme.spacing)
     }
@@ -148,15 +150,20 @@ struct MoreMenuView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Tipping") {
-                    NavigationLink("How to tip") { HowToTipView() }
-                    NavigationLink("Get tipped") { CreatorSetupView(services: services) }
+            ScrollView {
+                VStack(spacing: Theme.spacingLarge) {
+                    menuGroup {
+                        menuRow(icon: "questionmark.circle.fill", title: "How to tip") { HowToTipView() }
+                        Divider().overlay(Theme.divider)
+                        menuRow(icon: "person.crop.circle.badge.checkmark", title: "Get tipped") { CreatorSetupView(services: services) }
+                    }
+                    menuGroup {
+                        menuRow(icon: "gearshape.fill", title: "Settings") { SettingsView(services: services, onLogout: onLogout) }
+                    }
                 }
-                Section {
-                    NavigationLink("Settings") { SettingsView(services: services, onLogout: onLogout) }
-                }
+                .padding(.vertical, Theme.spacing)
             }
+            .background(Theme.background)
             .navigationTitle("More")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -165,5 +172,31 @@ struct MoreMenuView: View {
                 }
             }
         }
+    }
+
+    private func menuGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        Card { content() }
+            .padding(.horizontal, Theme.spacing)
+    }
+
+    private func menuRow<Destination: View>(icon: String, title: String,
+                                            @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            HStack(spacing: 12) {
+                IconBadge(systemImage: icon)
+                Text(title)
+                    .font(Theme.body.weight(.medium))
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

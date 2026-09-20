@@ -67,6 +67,15 @@ enum Theme {
     static let caption = Font.system(size: 12.5, weight: .regular)
     static let label = Font.system(size: 11, weight: .semibold).smallCaps()
 
+    // MARK: - Motion
+
+    /// The one spring behind every state change in the app -- a screen
+    /// swapping content, a row appearing, a value updating. Every screen
+    /// using the same curve is what makes switching between them feel like
+    /// one product instead of a collection of separately-tuned ones; see
+    /// `PressableStyle` for the matching tap feedback.
+    static let motion: Animation = .spring(response: 0.38, dampingFraction: 0.86)
+
     // MARK: - Metrics
 
     static let cornerRadius: CGFloat = 22

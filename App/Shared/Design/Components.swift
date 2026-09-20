@@ -14,6 +14,7 @@ import TipMeCore
 struct QuickActionLabel: View {
     let title: String
     let systemImage: String
+    @State private var pressed = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -26,6 +27,56 @@ struct QuickActionLabel: View {
                 .font(Theme.caption.weight(.medium))
                 .foregroundStyle(Theme.textPrimary)
         }
+        // A gesture layered on top, not a `Button`/`ButtonStyle` -- this view
+        // is deliberately not a button (see below), and `NavigationLink`'s
+        // own tap-down styling can't be reliably overridden the same way.
+        // Same curve as `PressableStyle` so it still feels identical.
+        .scaleEffect(pressed ? 0.94 : 1)
+        .animation(Theme.motion, value: pressed)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in pressed = true }
+                .onEnded { _ in pressed = false }
+        )
+    }
+}
+
+/// The one press feedback for anything that *is* a real `Button` but isn't a
+/// `PrimaryButton` -- a settings row, a connect/disconnect action. Purely
+/// visual (no haptic baked in: `makeBody` re-runs for reasons other than a
+/// tap, so a haptic here would fire on the wrong moments) -- callers still
+/// fire `Haptics.tap()` from their own action closure.
+struct PressableStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(Theme.motion, value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == PressableStyle {
+    static var pressable: PressableStyle { PressableStyle() }
+}
+
+/// A small, neutral icon badge -- the same rounded-square-icon language
+/// Apple's own Settings app uses per row, kept to the app's existing
+/// monochrome palette (`Theme.surfaceRaised`/`textPrimary`) rather than a
+/// different system color per row, so a Settings screen built from these
+/// still reads as the same product as the rest of the app. `tint` exists
+/// for the one or two rows that genuinely warrant standing out -- most
+/// call sites should leave it at the default.
+struct IconBadge: View {
+    let systemImage: String
+    var tint: Color = Theme.surfaceRaised
+    var foreground: Color = Theme.textPrimary
+    var size: CGFloat = 32
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: size * 0.5, weight: .semibold))
+            .foregroundStyle(foreground)
+            .frame(width: size, height: size)
+            .background(tint, in: RoundedRectangle(cornerRadius: size * 0.32, style: .continuous))
     }
 }
 
@@ -60,6 +111,7 @@ struct PrimaryButton: View {
             .padding(.vertical, 17)
         }
         .background(isDisabled ? Theme.textTertiary : Theme.brand, in: Capsule())
+        .buttonStyle(.pressable)
         .disabled(isDisabled || isLoading)
     }
 }

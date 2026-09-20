@@ -305,13 +305,11 @@ struct TipSheetView: View {
     }
 }
 
-/// One preset amount tile. A plain tap target rather than `.buttonStyle`, so
-/// the press animation (a slight scale-down) can be tuned to feel snappy
-/// without fighting a system button style for the same property.
+/// One preset amount tile. `.pressable` -- the same tap feedback used
+/// everywhere else in the app now, not a one-off tuned just for this tile.
 private struct PresetAmountButton: View {
     let title: String
     let action: () -> Void
-    @State private var pressed = false
 
     var body: some View {
         Button(action: action) {
@@ -322,14 +320,7 @@ private struct PresetAmountButton: View {
                 .padding(.vertical, 15)
                 .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .scaleEffect(pressed ? 0.96 : 1)
-        .animation(.easeOut(duration: 0.12), value: pressed)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in pressed = true }
-                .onEnded { _ in pressed = false }
-        )
+        .buttonStyle(.pressable)
     }
 }
 
