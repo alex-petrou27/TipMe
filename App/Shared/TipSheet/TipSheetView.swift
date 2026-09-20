@@ -46,8 +46,8 @@ struct TipSheetView: View {
             loading(message)
         case .amount(let creator):
             amountPicker(creator)
-        case .manualEntry(let reason, _):
-            manualEntry(reason)
+        case .manualEntry(let reason, let handle):
+            manualEntry(reason, forKnownHandle: handle)
         case .confirm(let creator, let quote):
             confirmation(creator, quote)
         case .paying:
@@ -120,30 +120,60 @@ struct TipSheetView: View {
         }
     }
 
-    private func manualEntry(_ reason: String) -> some View {
-        VStack(spacing: 16) {
-            Image(systemName: "questionmark.circle.fill")
-                .font(.system(size: 32))
-                .foregroundStyle(Theme.textTertiary)
-            Text(reason)
-                .font(Theme.body)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(Theme.textSecondary)
-
-            TextField("name@wallet.com", text: $viewModel.manualAddress)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.emailAddress)
-                .font(Theme.body)
-                .padding(.vertical, 13)
-                .padding(.horizontal, 16)
-                .background(Theme.surfaceRaised, in: Capsule())
-
-            PrimaryButton(title: "Continue", isDisabled: viewModel.manualAddress.isEmpty) {
-                Task { await viewModel.submitManualAddress() }
+    /// Two genuinely different situations share this screen, and they should
+    /// not look the same:
+    ///
+    /// - `forKnownHandle` set: the share told us exactly who this is, and
+    ///   they simply haven't set up TipMe. There is nothing for the sender
+    ///   to type their way out of, and no reason for them to ever see the
+    ///   words "Lightning address" -- that dead end used to offer a manual
+    ///   payment-address field here, which is exactly the kind of payment
+    ///   plumbing this product exists to hide. A clean dead end instead.
+    /// - `forKnownHandle` nil: the share itself couldn't be identified at
+    ///   all (a news article, an unrecognised link) -- there genuinely is
+    ///   no handle to look up, so a manual address is the only way forward
+    ///   at all. This is the one place that capability still belongs.
+    @ViewBuilder
+    private func manualEntry(_ reason: String, forKnownHandle handle: CreatorHandle?) -> some View {
+        if let handle {
+            VStack(spacing: 16) {
+                Image(systemName: "person.crop.circle.badge.questionmark")
+                    .font(.system(size: 32))
+                    .foregroundStyle(Theme.textTertiary)
+                Text("\(handle.displayName) hasn't set up TipMe yet.")
+                    .font(Theme.headline)
+                    .foregroundStyle(Theme.textPrimary)
+                Text("Let them know, and come back once they have.")
+                    .font(Theme.body)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(Theme.textSecondary)
+                cancelButton
             }
+        } else {
+            VStack(spacing: 16) {
+                Image(systemName: "questionmark.circle.fill")
+                    .font(.system(size: 32))
+                    .foregroundStyle(Theme.textTertiary)
+                Text(reason)
+                    .font(Theme.body)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(Theme.textSecondary)
 
-            cancelButton
+                TextField("name@wallet.com", text: $viewModel.manualAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.emailAddress)
+                    .font(Theme.body)
+                    .padding(.vertical, 13)
+                    .padding(.horizontal, 16)
+                    .background(Theme.surfaceRaised, in: Capsule())
+
+                PrimaryButton(title: "Continue", isDisabled: viewModel.manualAddress.isEmpty) {
+                    Task { await viewModel.submitManualAddress() }
+                }
+
+                cancelButton
+            }
         }
     }
 

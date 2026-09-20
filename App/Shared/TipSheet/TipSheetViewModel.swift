@@ -224,9 +224,10 @@ final class TipSheetViewModel: ObservableObject {
         case .ready(let creator):
             screen = .amount(creator)
         case .creatorNotRegistered(let handle):
-            screen = .manualEntry(
-                reason: "\(handle.displayName) hasn't set up TipMe yet. You can still tip them if you know their Lightning address.",
-                handle: handle)
+            // The `reason` text here is never actually shown -- TipSheetView
+            // renders its own clean dead-end whenever `handle` is non-nil.
+            // Carried anyway so this case's shape matches `.needsManualEntry`.
+            screen = .manualEntry(reason: "\(handle.displayName) hasn't set up TipMe yet.", handle: handle)
         case .needsManualEntry(let reason):
             screen = .manualEntry(reason: reason, handle: nil)
         case .quoted(let creator, let quote):

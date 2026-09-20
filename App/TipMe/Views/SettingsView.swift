@@ -63,7 +63,7 @@ struct SettingsView: View {
             }
 
             Section {
-                Text("TipMe holds your balance for you, the same way a bank or Strike does — there's no recovery phrase to lose. Log in with this email and password on any device to get to your balance.")
+                Text("TipMe holds your balance for you, the same way a bank does — there's no recovery phrase to lose. Log in with this email and password on any device to get to your balance.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
