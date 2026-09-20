@@ -273,7 +273,17 @@ struct CreatorSetupView: View {
                       systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(.headline)
-                Text("Tips will go to \(registration.lightningAddress.description).")
+                // Signed in, `lightningAddress` is an internal placeholder
+                // never actually paid (see `effectiveAddress`) -- showing it
+                // here read as a broken destination ("tips go to
+                // x@tipme.internal"), which is exactly backwards: this is
+                // the success state. Someone can already tip this handle
+                // right now, in full, with nothing further required --
+                // that's true the instant this screen appears, regardless
+                // of whether the "optional" verification below is ever done.
+                Text(services.isSignedIn
+                     ? "Tips to \(registration.handle.displayName) go straight to your TipMe balance -- this already works, right now."
+                     : "Tips will go to \(registration.lightningAddress.description).")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -307,13 +317,14 @@ struct CreatorSetupView: View {
                 }
             }
         } else if services.isSignedIn {
-            Section("One more step") {
-                // Registration is open — anyone can claim any handle — so the badge
-                // only means something once this is confirmed. Instagram and TikTok
-                // give us no automated way to check a personal account's bio (see
-                // CreatorRegistrar.selfVerify), so this is a self-check the account
-                // owner completes themselves rather than a platform-confirmed one.
-                Text("Anyone can claim a handle, so yours shows as unverified until you confirm it. Add this to your \(registration.handle.platform.displayName) bio, then tap Verify:")
+            // "One more step" -- since removed -- read as a blocking gate:
+            // as if tipping this handle would not actually work until this
+            // was done. It already works, right now, with or without this;
+            // this only earns a badge next to it. Getting that across
+            // explicitly matters, because the alternative is someone
+            // assuming pairing is still broken when it already succeeded.
+            Section("Optional: get verified") {
+                Text("Tipping \(registration.handle.displayName) already works — right now, without this. This just adds a badge: add this code to your \(registration.handle.platform.displayName) bio, then tap Verify.")
                     .font(.callout)
 
                 HStack {
