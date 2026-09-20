@@ -1,74 +1,142 @@
 import SwiftUI
 import TipMeCore
 
-/// The host app's main screen: balance, the four wallet actions, and recent
-/// activity — the same shape as any mainstream Lightning wallet. Tipping-
-/// specific features (paste-to-tip, creator setup, how-to) live one level
-/// down, reachable from the toolbar, so the primary screen reads as a wallet
-/// first and a tipping app second — which is what turning TipMe into a
-/// general-purpose send/receive/withdraw app actually means.
-struct HomeView: View {
+/// The four top-level destinations. Get Tipped and Settings used to live one
+/// level down behind an ellipsis-menu sheet — but they are the other half of
+/// this product, not secondary settings, so they get a permanent tab each,
+/// the way Cash App gives Banking and Investing their own tab rather than
+/// burying them in a "More" screen.
+struct MainTabView: View {
     let services: TipMeServices
     let onLogout: () -> Void
+
+    var body: some View {
+        TabView {
+            NavigationStack {
+                HomeView(services: services)
+            }
+            .tabItem { Label("Home", systemImage: "house.fill") }
+
+            NavigationStack {
+                ActivityView(services: services)
+            }
+            .tabItem { Label("Activity", systemImage: "list.bullet") }
+
+            NavigationStack {
+                CreatorSetupView(services: services)
+            }
+            .tabItem { Label("Get Tipped", systemImage: "person.crop.circle.badge.checkmark") }
+
+            NavigationStack {
+                SettingsView(services: services, onLogout: onLogout)
+            }
+            .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+        }
+        .tint(Theme.brand)
+    }
+}
+
+/// What the big number on Home actually shows -- see `HomeView.balancePanel`.
+private enum BalanceDisplay: String, CaseIterable {
+    case total, bitcoin, usdt
+
+    var label: String {
+        switch self {
+        case .total: return "Total"
+        case .bitcoin: return "BTC"
+        case .usdt: return "USDT"
+        }
+    }
+}
+
+/// The main screen: balance, the four wallet actions, and a preview of
+/// recent activity. Tipping-specific setup (Get Tipped) and Settings are
+/// their own tabs now — see `MainTabView` — so this screen is purely the
+/// wallet.
+struct HomeView: View {
+    let services: TipMeServices
 
     @State private var bitcoinBalance: Amount = .sats(0)
     @State private var usdtBalance: Amount = .usdtCents(0)
     @State private var fiatTotal: FiatAmount?
     @State private var recentActivity: [WalletTransaction] = []
     @State private var isRefreshing = false
-    @State private var showingMore = false
+    @State private var displayMode: BalanceDisplay = .total
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: Theme.spacingLarge) {
-                    balancePanel
-                    quickActions
-                    PasteTipCard(services: services)
-                        .padding(.horizontal, Theme.spacing)
-                    activitySection
-                }
-                .padding(.top, Theme.spacing)
-                .padding(.bottom, Theme.spacingLarge)
+        ScrollView {
+            VStack(spacing: Theme.spacingLarge) {
+                balancePanel
+                quickActions
+                PasteTipCard(services: services)
+                    .padding(.horizontal, Theme.spacing)
+                activitySection
             }
-            .background(Theme.background)
-            .navigationTitle("TipMe")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showingMore = true } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                }
-            }
-            .sheet(isPresented: $showingMore) {
-                MoreMenuView(services: services, onLogout: onLogout)
-            }
-            .refreshable { await refresh() }
-            .task { await refresh() }
+            .padding(.top, Theme.spacing)
+            .padding(.bottom, Theme.spacingLarge)
         }
-        .tint(Theme.accent)
+        .background(Theme.background)
+        .navigationTitle("TipMe")
+        .refreshable { await refresh() }
+        .task { await refresh() }
     }
 
-    /// One number: what the balance is worth, in the currency the person
-    /// actually thinks in. Nothing here says "bitcoin" or "USDT" -- which
-    /// asset is actually backing it is exactly the kind of payment
-    /// infrastructure this product exists to hide.
+    /// One number by default -- what the balance is worth in the currency the
+    /// person actually thinks in, hiding which asset backs it, same as
+    /// before. The BTC/USDT toggle underneath is additive, not a reversal of
+    /// that: it exists for the person who *wants* to see the asset a moment,
+    /// the way Cash App's own Bitcoin tab lets you flip from a dollar figure
+    /// to a BTC one -- it never changes what anything is held in.
     private var balancePanel: some View {
         VStack(spacing: Theme.spacingSmall) {
             Text("Your balance")
                 .font(Theme.caption)
                 .foregroundStyle(Theme.textSecondary)
 
-            Text(fiatTotal?.formatted ?? "—")
+            Text(displayedBalance)
                 .font(Theme.balance())
                 .foregroundStyle(Theme.textPrimary)
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
                 .padding(.top, Theme.spacingSmall)
                 .contentTransition(.numericText())
-                .animation(Theme.motion, value: fiatTotal)
+                .animation(Theme.motion, value: displayedBalance)
+
+            balanceDisplayPicker
+                .padding(.top, Theme.spacingSmall)
         }
         .padding(.horizontal, Theme.spacing)
+    }
+
+    private var displayedBalance: String {
+        switch displayMode {
+        case .total: return fiatTotal?.formatted ?? "—"
+        case .bitcoin: return bitcoinBalance.formatted
+        case .usdt: return usdtBalance.formatted
+        }
+    }
+
+    private var balanceDisplayPicker: some View {
+        HStack(spacing: 4) {
+            ForEach(BalanceDisplay.allCases, id: \.self) { mode in
+                let isSelected = displayMode == mode
+                Button {
+                    Haptics.tap()
+                    displayMode = mode
+                } label: {
+                    Text(mode.label)
+                        .font(Theme.caption.weight(.semibold))
+                        .foregroundStyle(isSelected ? Theme.onBrand : Theme.textSecondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(isSelected ? Theme.brand : Color.clear, in: Capsule())
+                }
+                .buttonStyle(.pressable)
+            }
+        }
+        .padding(4)
+        .background(Theme.surfaceRaised, in: Capsule())
+        .animation(Theme.motion, value: displayMode)
     }
 
     private var quickActions: some View {
@@ -76,14 +144,14 @@ struct HomeView: View {
             NavigationLink { SendView(services: services) } label: {
                 QuickActionLabel(title: "Send", systemImage: "arrow.up")
             }
+            NavigationLink { TipByHandleView(services: services) } label: {
+                QuickActionLabel(title: "Tip", systemImage: "bolt.fill")
+            }
             NavigationLink { DepositView(services: services) } label: {
                 QuickActionLabel(title: "Deposit", systemImage: "arrow.down")
             }
             NavigationLink { WithdrawView(services: services) } label: {
                 QuickActionLabel(title: "Withdraw", systemImage: "building.columns")
-            }
-            NavigationLink { ActivityView(services: services) } label: {
-                QuickActionLabel(title: "Activity", systemImage: "list.bullet")
             }
         }
         .frame(maxWidth: .infinity)
@@ -96,6 +164,7 @@ struct HomeView: View {
                 Spacer()
                 NavigationLink("See all") { ActivityView(services: services) }
                     .font(Theme.caption)
+                    .foregroundStyle(Theme.brand)
             }
             .padding(.horizontal, Theme.spacing)
 
@@ -107,7 +176,7 @@ struct HomeView: View {
             } else {
                 Card {
                     ForEach(Array(recentActivity.prefix(5).enumerated()), id: \.element.id) { index, tx in
-                        if index > 0 { Divider() }
+                        if index > 0 { Divider().overlay(Theme.divider) }
                         ActivityRow(transaction: tx)
                     }
                 }
@@ -138,67 +207,5 @@ struct HomeView: View {
             total = total.map { $0 + usdtFiat } ?? usdtFiat
         }
         fiatTotal = total
-    }
-}
-
-/// Everything that isn't core wallet activity: the tipping-specific setup
-/// screens, spending limits, and account settings.
-struct MoreMenuView: View {
-    let services: TipMeServices
-    let onLogout: () -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: Theme.spacingLarge) {
-                    menuGroup {
-                        menuRow(icon: "questionmark.circle.fill", title: "How to tip") { HowToTipView() }
-                        Divider().overlay(Theme.divider)
-                        menuRow(icon: "person.crop.circle.badge.checkmark", title: "Get tipped") { CreatorSetupView(services: services) }
-                        Divider().overlay(Theme.divider)
-                        menuRow(icon: "at", title: "Tip by handle") { TipByHandleView(services: services) }
-                    }
-                    menuGroup {
-                        menuRow(icon: "gearshape.fill", title: "Settings") { SettingsView(services: services, onLogout: onLogout) }
-                    }
-                }
-                .padding(.vertical, Theme.spacing)
-            }
-            .background(Theme.background)
-            .navigationTitle("More")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-    }
-
-    private func menuGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        Card { content() }
-            .padding(.horizontal, Theme.spacing)
-    }
-
-    private func menuRow<Destination: View>(icon: String, title: String,
-                                            @ViewBuilder destination: () -> Destination) -> some View {
-        NavigationLink {
-            destination()
-        } label: {
-            HStack(spacing: 12) {
-                IconBadge(systemImage: icon)
-                Text(title)
-                    .font(Theme.body.weight(.medium))
-                    .foregroundStyle(Theme.textPrimary)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Theme.textTertiary)
-            }
-            .padding(.vertical, 2)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }

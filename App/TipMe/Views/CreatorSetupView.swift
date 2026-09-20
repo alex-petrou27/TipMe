@@ -107,6 +107,13 @@ struct CreatorSetupView: View {
         .background(Theme.background)
         .navigationTitle("Get tipped")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink { HowToTipView() } label: {
+                    Image(systemName: "questionmark.circle")
+                }
+            }
+        }
         .animation(Theme.motion, value: platform)
         .animation(Theme.motion, value: phase)
     }

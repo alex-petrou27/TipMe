@@ -18,7 +18,7 @@ struct TipMeApp: App {
                 case .locked(let services):
                     AppLockView { appModel.unlock(services: services) }
                 case .ready(let services):
-                    HomeView(services: services) {
+                    MainTabView(services: services) {
                         appModel.returnToOnboarding(services: services)
                     }
                 }
