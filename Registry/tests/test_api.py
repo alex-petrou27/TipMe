@@ -17,7 +17,7 @@ def test_register_then_lookup(client, registered):
     assert record["username"] == "creator"
     assert record["platform"] == "tiktok"
     assert record["lightning_address"] == "creator@getalby.com"
-    assert record["preferred_asset"] == "bitcoin"
+    assert record["preferred_asset"] == "usdt"
 
 
 def test_lookup_is_signed_by_the_registry_key(client, registered):

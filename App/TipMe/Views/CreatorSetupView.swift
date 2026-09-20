@@ -17,7 +17,7 @@ struct CreatorSetupView: View {
     @State private var platform: Platform = .tiktok
     @State private var username = ""
     @State private var lightningAddress = ""
-    @State private var preferredAsset: Asset = .bitcoin
+    @State private var preferredAsset: Asset = .usdt
     @State private var minimumTipText = ""
 
     @State private var phase: Phase = .editing
@@ -148,7 +148,9 @@ struct CreatorSetupView: View {
                     .foregroundStyle(.red)
             }
 
-            Text("Any Lightning address works — Alby, Strike, Wallet of Satoshi, Coinos, or your own node. Tips go straight there; TipMe never holds them.")
+            Text(services.isSignedIn
+                 ? "You're signed in, so tips to this handle go straight to your TipMe balance — this address is just a fallback for senders who aren't on TipMe yet. Any placeholder in this shape works (e.g. \(username.isEmpty ? "you" : username)@example.com)."
+                 : "Any Lightning address works — Alby, Strike, Wallet of Satoshi, Coinos, or your own node. Tips go straight there; TipMe never holds them.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -218,7 +220,9 @@ struct CreatorSetupView: View {
             }
             .disabled(!canSubmit)
 
-            Text("We check your wallet can actually receive a payment before saving it. A typo here would mean every tip silently fails.")
+            Text(services.isSignedIn
+                 ? "Tips will go straight to your TipMe balance."
+                 : "We check your wallet can actually receive a payment before saving it. A typo here would mean every tip silently fails.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -324,6 +328,7 @@ struct CreatorSetupView: View {
             .map { Amount(asset: preferredAsset, minorUnits: $0) }
 
         let registrar = CreatorRegistrar(baseURL: services.configuration.registryBaseURL)
+        let session = try? services.accountKeychain.loadSession()
 
         // Verification happens inside `register`, but the phase is split so the
         // button can say which step is running — "Checking your wallet" is a
@@ -338,7 +343,13 @@ struct CreatorSetupView: View {
                 displayName: nil,
                 // Present only when this device made the original claim; the
                 // registry refuses anonymous changes to an existing record.
-                managementToken: services.creatorTokens.token(for: handle))
+                managementToken: services.creatorTokens.token(for: handle),
+                // Signed in -> link this handle to the account, and skip the
+                // live Lightning check: once linked, tips route ledger-to-
+                // ledger and never touch this address at all. See
+                // CreatorRegistrar.register's own doc for why that's safe.
+                sessionToken: session?.sessionToken,
+                skipAddressVerification: session != nil)
 
             // Issued once, on first claim. If it is not stored now, the creator
             // permanently loses the ability to move their tips elsewhere.

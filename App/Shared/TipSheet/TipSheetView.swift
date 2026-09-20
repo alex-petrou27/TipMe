@@ -165,18 +165,27 @@ struct TipSheetView: View {
             }
 
             Card {
-                row("They receive", quote.creatorReceives.formatted, emphasised: true)
+                row("They receive", quote.fiatTip.formatted, emphasised: true)
                 if quote.hasFee {
                     row("TipMe fee (\(quote.feePolicy.percentageDescription))", quote.fiatFee.formatted)
                 }
-                if let conversion = quote.conversionDisclosure {
-                    row("Conversion", conversion)
-                }
             }
 
-            PrimaryButton(title: "Confirm with Face ID", systemImage: "faceid") {
-                Haptics.confirm()
-                Task { await viewModel.confirm() }
+            if viewModel.needsApplePayTopUp, let shortfall = viewModel.applePayShortfall {
+                VStack(spacing: 12) {
+                    Text("Add \(shortfall.formatted) to send this")
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                    PrimaryButton(title: "Pay with Apple Pay", systemImage: "apple.logo",
+                                 isLoading: viewModel.isFundingWithApplePay) {
+                        Task { await viewModel.payShortfallWithApplePayThenConfirm() }
+                    }
+                }
+            } else {
+                PrimaryButton(title: "Confirm with Face ID", systemImage: "faceid") {
+                    Haptics.confirm()
+                    Task { await viewModel.confirm() }
+                }
             }
 
             Button("Change amount") { viewModel.backToAmount() }

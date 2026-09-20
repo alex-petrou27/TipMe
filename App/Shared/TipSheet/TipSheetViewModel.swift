@@ -58,6 +58,15 @@ final class TipSheetViewModel: ObservableObject {
     @Published private(set) var presets: [FiatAmount]
     @Published var customAmountText: String = ""
 
+    /// Set once a quote is up, when the sender's balance can't cover it and
+    /// the shortfall can be closed with Apple Pay (see `evaluateFunding`).
+    /// `nil` shortfall with `needsApplePayTopUp` true would be a stale rate
+    /// lookup, not "free" -- the confirm screen treats it as not-yet-known
+    /// and keeps the ordinary Face ID button, never a $0 top-up.
+    @Published private(set) var needsApplePayTopUp = false
+    @Published private(set) var applePayShortfall: FiatAmount?
+    @Published private(set) var isFundingWithApplePay = false
+
     private let services: TipMeServices
     private let flow: TipFlow
     private let onFinish: () -> Void
@@ -66,6 +75,8 @@ final class TipSheetViewModel: ObservableObject {
     /// to the device's locale, not a hardcoded one, so this reads as "how
     /// much" in whatever currency the sender actually uses day to day.
     private let fiatCurrency: String
+    private let applePayFlow: ApplePayDepositFlow
+    private let applePayAuthorizer = ApplePayAuthorizer()
 
     init(services: TipMeServices,
          origin: PaymentIntent.Origin,
@@ -76,6 +87,7 @@ final class TipSheetViewModel: ObservableObject {
         let currency = services.configuration.fiatCurrency
         self.fiatCurrency = currency
         self.presets = Self.defaultPresets(currencyCode: currency)
+        self.applePayFlow = services.makeApplePayDepositFlow()
     }
 
     private static func defaultPresets(currencyCode: String) -> [FiatAmount] {
@@ -128,6 +140,65 @@ final class TipSheetViewModel: ObservableObject {
 
     // MARK: - Step 3: confirm
 
+    /// Whether this device can show a real Apple Pay sheet at all -- see
+    /// `ApplePayAuthorizer`. When false, funding still works (the no-card
+    /// test path), it just skips the sheet.
+    var canUseRealApplePay: Bool { ApplePayAuthorizer.canPay() }
+
+    /// Checked the moment a quote is up, before Face ID is ever an option:
+    /// can the sender's balance actually cover this tip? Apple Pay only
+    /// ever tops up USDT (see `ApplePayDepositFlow`), so this only offers
+    /// the inline top-up when the tip itself settles in USDT -- which is
+    /// the common case now that a signed-in creator registration defaults
+    /// to USDT precisely so this lines up. A bitcoin-denominated shortfall
+    /// falls back to the plain "insufficient funds" PaymentEngine already
+    /// produces; that gap is real and not one this screen pretends to close.
+    private func evaluateFunding(for quote: TipQuote) async {
+        guard quote.senderPays.asset == .usdt,
+              let available = try? await services.backend.availableBalance(for: .usdt),
+              available < quote.senderPays
+        else {
+            needsApplePayTopUp = false
+            applePayShortfall = nil
+            return
+        }
+        let shortfall = quote.senderPays - available
+        guard let rate = try? await services.backend.rate(for: .usdt, in: fiatCurrency) else {
+            needsApplePayTopUp = false
+            applePayShortfall = nil
+            return
+        }
+        applePayShortfall = rate.fiatValue(of: shortfall)
+        needsApplePayTopUp = true
+    }
+
+    /// Tops up exactly the shortfall via Apple Pay, then proceeds straight
+    /// into `confirm()` -- Apple Pay, then Face ID, then done, as one
+    /// motion rather than two separate confirmations.
+    func payShortfallWithApplePayThenConfirm() async {
+        guard let shortfall = applePayShortfall else { return }
+        isFundingWithApplePay = true
+        defer { isFundingWithApplePay = false }
+
+        let reference: String
+        if canUseRealApplePay {
+            let dollars = Decimal(shortfall.minorUnits) / 100
+            guard let payment = await applePayAuthorizer.requestPayment(
+                amount: dollars, currencyCode: fiatCurrency, label: "TipMe balance top-up")
+            else { return } // cancelled or the sheet didn't present
+            reference = payment.token.transactionIdentifier
+        } else {
+            reference = "test-\(UUID().uuidString)"
+        }
+
+        guard case .completed = await applePayFlow.pay(amountMinor: shortfall.minorUnits, reference: reference) else {
+            screen = .error("Couldn't add funds. Try again.")
+            return
+        }
+        needsApplePayTopUp = false
+        await confirm()
+    }
+
     func confirm() async {
         guard case .confirm(let creator, let quote) = screen else { return }
         screen = .paying
@@ -160,6 +231,9 @@ final class TipSheetViewModel: ObservableObject {
             screen = .manualEntry(reason: reason, handle: nil)
         case .quoted(let creator, let quote):
             screen = .confirm(creator, quote)
+            needsApplePayTopUp = false
+            applePayShortfall = nil
+            Task { await evaluateFunding(for: quote) }
         case .paying:
             screen = .paying
         case .succeeded(let result, let creator):

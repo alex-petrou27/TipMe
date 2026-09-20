@@ -88,20 +88,36 @@ public struct CreatorRegistrar: Sendable {
     /// resolve produces a creator whose every tip fails silently, discovered
     /// weeks later — see `LightningAddressVerifier`. One HTTP request turns
     /// that into an immediate, legible error.
+    ///
     /// - Parameter managementToken: required when the handle is already
     ///   registered. Claiming an unclaimed handle is open; changing an existing
     ///   record is not, otherwise anyone could point a registered creator's
     ///   handle at their own wallet and collect their tips.
+    /// - Parameter sessionToken: the caller's TipMe session, if signed in.
+    ///   Sent as `Authorization: Bearer` so the registry can link this handle
+    ///   to the caller's account (`tipme_linked`) -- see the registry's
+    ///   `register` docstring. Registering while signed out still works
+    ///   exactly as before; the handle just isn't linked to anything.
+    /// - Parameter skipAddressVerification: true when `lightningAddress` is
+    ///   never actually going to be paid -- a signed-in registration whose
+    ///   tips will route ledger-to-ledger once linked, not over Lightning.
+    ///   The live-resolves check exists to catch a typo that would make
+    ///   *every tip* silently vanish into an unreachable address; that risk
+    ///   doesn't exist for an address the payment path never touches.
     public func register(handle: CreatorHandle,
                          lightningAddress: LightningAddress,
                          preferredAsset: Asset,
                          minimumTip: Amount?,
                          displayName: String?,
-                         managementToken: String? = nil) async throws -> CreatorRegistration {
-        do {
-            _ = try await verifier.verify(lightningAddress)
-        } catch let error as LightningAddressVerificationError {
-            throw CreatorRegistrationError.addressUnverified(error)
+                         managementToken: String? = nil,
+                         sessionToken: String? = nil,
+                         skipAddressVerification: Bool = false) async throws -> CreatorRegistration {
+        if !skipAddressVerification {
+            do {
+                _ = try await verifier.verify(lightningAddress)
+            } catch let error as LightningAddressVerificationError {
+                throw CreatorRegistrationError.addressUnverified(error)
+            }
         }
 
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
@@ -116,6 +132,9 @@ public struct CreatorRegistrar: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let managementToken {
             request.setValue(managementToken, forHTTPHeaderField: "X-Management-Token")
+        }
+        if let sessionToken {
+            request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         }
 
         let body: [String: Any?] = [

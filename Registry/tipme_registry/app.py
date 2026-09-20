@@ -312,7 +312,13 @@ class RegisterRequest(BaseModel):
     platform: str
     username: str
     lightning_address: str
-    preferred_asset: str = "bitcoin"
+    # USDT, not bitcoin: a creator who registers without stating a
+    # preference is overwhelmingly likely to be thinking "dollars", and
+    # USDT is what Apple Pay funding (dummy today, a real processor later)
+    # actually credits -- see deposit_apple_pay. Defaulting to bitcoin here
+    # would make the common "fund with Apple Pay, tip a linked creator"
+    # loop need a currency conversion this codebase doesn't do yet.
+    preferred_asset: str = "usdt"
     minimum_tip_minor_units: int | None = Field(default=None, ge=0)
     display_name: str | None = None
 
@@ -333,7 +339,7 @@ class OAuthStartRequest(BaseModel):
     platform: str
     username: str
     lightning_address: str
-    preferred_asset: str = "bitcoin"
+    preferred_asset: str = "usdt"
     minimum_tip_minor_units: int | None = Field(default=None, ge=0)
     display_name: str | None = None
 
