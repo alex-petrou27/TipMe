@@ -41,6 +41,19 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>TipMe uses Face ID to confirm every payment before it is sent.</string>
 
+	<!-- Allows plain HTTP to RFC 1918 / loopback / .local addresses only,
+	     not a blanket NSAllowsArbitraryLoads. This is what lets the app reach
+	     a registry running on a Mac's own LAN IP during local development
+	     (see README's "Local dev setup" and "Deploying the registry"); a
+	     real deployment is always HTTPS and never touches this exception.
+	     Without it, iOS refuses the connection outright with no exception
+	     configured, which reads identically to the server being offline. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+
 	<!-- ASWebAuthenticationSession's callbackURLScheme for "Connect Instagram /
 	     TikTok" (CreatorSetupView -> SocialAccountConnector). The registry's
 	     own /v1/oauth/{platform}/callback redirects here once a sign-in

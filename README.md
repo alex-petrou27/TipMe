@@ -117,6 +117,43 @@ The project file is generated rather than committed, so target membership,
 entitlements and extension embedding cannot drift through merge conflicts in a
 10,000-line `pbxproj`.
 
+### Testing on a physical device against your Mac's registry
+
+`uvicorn --reload` above binds to `127.0.0.1` by default, which only accepts
+connections from the Mac itself — a phone on the same Wi-Fi cannot reach it,
+and gets exactly the same "can't reach TipMe" error as the server being
+offline. Two changes make it reachable, and both are needed together:
+
+```bash
+# Binds every interface, not just localhost, so another device on the
+# network can connect to it.
+uvicorn tipme_registry.app:app --reload --host 0.0.0.0 --port 8000
+
+# Find your Mac's LAN IP (run in a second terminal)
+ipconfig getifaddr en0
+```
+
+Put that IP in `.env` as `TIPME_REGISTRY_BASE_URL=http://<that-ip>:8000`,
+regenerate config, and rebuild:
+
+```bash
+./Scripts/make-xcconfig.sh
+```
+
+This only works while both the phone and the Mac are on the same Wi-Fi
+network, and stops working the moment either isn't (a different network, the
+Mac asleep, a laptop that changes IP on reconnect) — it is a same-room
+testing setup, not a deployment. See *Deploying the registry* above for a
+real one. macOS may prompt to allow incoming connections the first time
+`uvicorn` binds to `0.0.0.0`; allow it, or the phone's connection will hang
+rather than fail cleanly.
+
+The app itself already permits this: `NSAppTransportSecurity` /
+`NSAllowsLocalNetworking` in both `Info.plist`s allows plain HTTP to a
+private/LAN address specifically (RFC 1918, loopback, `.local`) without
+opening up arbitrary internet loads. A real deployment is HTTPS and never
+touches this exception.
+
 ### App Group and keychain group
 
 `TIPME_APP_GROUP` and `TIPME_KEYCHAIN_ACCESS_GROUP` must match the entitlements

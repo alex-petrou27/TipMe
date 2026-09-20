@@ -33,6 +33,16 @@
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
 
+	<!-- See the matching comment in App/TipMe/Info.plist. This target makes
+	     its own registry calls (resolving a shared link, quoting a tip), so
+	     it needs the same local-network exception independently: ATS is
+	     per-target, not shared with the host app. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>
