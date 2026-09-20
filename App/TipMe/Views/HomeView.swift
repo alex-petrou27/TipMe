@@ -105,6 +105,17 @@ struct HomeView: View {
             balanceDisplayPicker
                 .padding(.top, Theme.spacingSmall)
         }
+        .padding(.vertical, Theme.spacingLarge)
+        .frame(maxWidth: .infinity)
+        .background(
+            LinearGradient(colors: [Theme.brand.opacity(0.16), Theme.brand.opacity(0.0)],
+                          startPoint: .top, endPoint: .bottom),
+            in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                .strokeBorder(Theme.brand.opacity(0.12), lineWidth: 1)
+        )
         .padding(.horizontal, Theme.spacing)
     }
 

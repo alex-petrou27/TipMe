@@ -35,6 +35,7 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.spacingLarge) {
+                profileHeader
                 accountsSection
                 feeSection
                 limitsSection
@@ -53,6 +54,36 @@ struct SettingsView: View {
     }
 
     // MARK: - Sections
+
+    /// Identity, not a settings row -- Cash App's own Profile tab leads with
+    /// who you are before any preference. An initial in a brand-colored
+    /// circle plus your email, one card, no different from the live-preview
+    /// treatment Get Tipped uses for the same idea.
+    private var profileHeader: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(Theme.brand.opacity(0.14))
+                    .frame(width: 56, height: 56)
+                Text(String((signedInEmail ?? "?").prefix(1)).uppercased())
+                    .font(.system(size: 22, weight: .heavy, design: .rounded))
+                    .foregroundStyle(Theme.brand)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(signedInEmail ?? "Not signed in")
+                    .font(.system(size: 18, weight: .heavy, design: .rounded))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                Text("TipMe account")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            Spacer()
+        }
+        .padding(Theme.spacing)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
+        .padding(.horizontal, Theme.spacing)
+    }
 
     private var accountsSection: some View {
         sectionCard(title: "Your accounts") {
@@ -108,10 +139,6 @@ struct SettingsView: View {
 
     private var profileSection: some View {
         sectionCard(title: "Account") {
-            if let signedInEmail {
-                settingsRow(icon: "envelope.fill", label: "Signed in as", value: signedInEmail)
-                Divider().overlay(Theme.divider)
-            }
             Button {
                 Haptics.tap()
                 logout()

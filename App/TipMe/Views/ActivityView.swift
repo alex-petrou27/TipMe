@@ -31,36 +31,52 @@ struct ActivityView: View {
     }
 
     var body: some View {
-        List {
-            if isLoading && transactions.isEmpty && refused.isEmpty {
-                ProgressView()
-            } else if transactions.isEmpty && refused.isEmpty {
-                ContentUnavailableView("No activity yet",
-                                       systemImage: "bolt.slash",
-                                       description: Text("Send, receive, or tip a creator to see it here."))
-            }
+        ScrollView {
+            VStack(spacing: Theme.spacingLarge) {
+                if isLoading && transactions.isEmpty && refused.isEmpty {
+                    ProgressView().padding(.top, 60)
+                } else if transactions.isEmpty && refused.isEmpty {
+                    emptyState
+                } else {
+                    if !transactions.isEmpty {
+                        section("Wallet") {
+                            ForEach(Array(transactions.enumerated()), id: \.element.id) { index, tx in
+                                if index > 0 { Divider().overlay(Theme.divider) }
+                                ActivityRow(transaction: tx)
+                            }
+                        }
+                    }
 
-            if !transactions.isEmpty {
-                Section("Wallet") {
-                    ForEach(transactions) { ActivityRow(transaction: $0) }
-                }
-            }
-
-            if !refused.isEmpty {
-                Section("Blocked or cancelled") {
-                    ForEach(Array(refused.enumerated()), id: \.offset) { _, event in
-                        refusedRow(event)
+                    if !refused.isEmpty {
+                        section("Blocked or cancelled") {
+                            ForEach(Array(refused.enumerated()), id: \.offset) { index, event in
+                                if index > 0 { Divider().overlay(Theme.divider) }
+                                refusedRow(event)
+                            }
+                        }
                     }
                 }
-            }
 
-            Section {
-                Button("Export audit log") { beginExport() }
-                Text("A JSON-lines record of every payment attempt and its outcome, including the ones that were refused.")
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.textSecondary)
+                Button {
+                    Haptics.tap()
+                    beginExport()
+                } label: {
+                    HStack(spacing: 12) {
+                        IconBadge(systemImage: "square.and.arrow.up")
+                        Text("Export audit log")
+                            .font(Theme.body.weight(.semibold))
+                            .foregroundStyle(Theme.textPrimary)
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.pressable)
+                .padding(Theme.spacing)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
+                .padding(.horizontal, Theme.spacing)
             }
+            .padding(.vertical, Theme.spacing)
         }
+        .background(Theme.background)
         .navigationTitle("Activity")
         .task { await reload() }
         .refreshable { await reload() }
@@ -69,14 +85,46 @@ struct ActivityView: View {
         }
     }
 
-    private func refusedRow(_ event: AuditEvent) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(event.handle.map { "@\($0)" } ?? event.destination ?? "Unknown destination")
-                .font(Theme.body)
-            Text(event.detail ?? event.stage.rawValue)
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            IconBadge(systemImage: "bolt.slash", size: 56)
+            Text("No activity yet")
+                .font(Theme.headline)
+                .foregroundStyle(Theme.textPrimary)
+            Text("Send, receive, or tip a creator to see it here.")
                 .font(Theme.caption)
                 .foregroundStyle(Theme.textSecondary)
+                .multilineTextAlignment(.center)
         }
+        .padding(.top, 60)
+        .padding(.horizontal, Theme.spacingLarge)
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Theme.spacingSmall) {
+            Text(title.uppercased())
+                .font(Theme.label)
+                .foregroundStyle(Theme.textTertiary)
+                .padding(.horizontal, Theme.spacing)
+            Card { content() }
+                .padding(.horizontal, Theme.spacing)
+        }
+    }
+
+    private func refusedRow(_ event: AuditEvent) -> some View {
+        HStack(spacing: 12) {
+            IconBadge(systemImage: "xmark.circle", tint: Theme.negative.opacity(0.14), foreground: Theme.negative)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(event.handle.map { "@\($0)" } ?? event.destination ?? "Unknown destination")
+                    .font(Theme.body.weight(.medium))
+                    .foregroundStyle(Theme.textPrimary)
+                Text(event.detail ?? event.stage.rawValue)
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 2)
     }
 
     private func reload() async {
