@@ -31,6 +31,9 @@ struct QuickActionLabel: View {
 
 /// The one accented, full-width button per screen — Send it, Confirm,
 /// Withdraw. There is exactly one of these visible at a time by convention.
+/// `Theme.brand`, not `Theme.accent`: this is the one place the app's single
+/// signature color shows up, so every primary action reads as the same
+/// action wherever it appears.
 struct PrimaryButton: View {
     let title: String
     var systemImage: String? = nil
@@ -39,21 +42,24 @@ struct PrimaryButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            if !isDisabled && !isLoading { Haptics.tap() }
+            action()
+        } label: {
             HStack(spacing: 8) {
                 if isLoading {
-                    ProgressView().tint(Theme.onAccent)
+                    ProgressView().tint(Theme.onBrand)
                 } else {
                     if let systemImage { Image(systemName: systemImage) }
                     Text(title)
                 }
             }
             .font(Theme.headline)
-            .foregroundStyle(Theme.onAccent)
+            .foregroundStyle(Theme.onBrand)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 17)
         }
-        .background(isDisabled ? Theme.textTertiary : Theme.accent, in: Capsule())
+        .background(isDisabled ? Theme.textTertiary : Theme.brand, in: Capsule())
         .disabled(isDisabled || isLoading)
     }
 }

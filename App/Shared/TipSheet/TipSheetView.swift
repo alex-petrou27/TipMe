@@ -6,6 +6,11 @@ import TipMeCore
 /// Designed for the two-second interaction the product promises: a recognisable
 /// creator, four preset amounts, one confirm. Everything else — asset switching,
 /// custom amounts, manual addresses — is present but out of the primary path.
+///
+/// Drawn entirely from `Theme`/the shared components, not raw SwiftUI defaults
+/// — this is the one screen a new user judges the whole product by, so it
+/// reads as the same product as the rest of the app, not a system sheet with
+/// TipMe's words in it.
 struct TipSheetView: View {
     @ObservedObject var viewModel: TipSheetViewModel
 
@@ -14,22 +19,22 @@ struct TipSheetView: View {
             Spacer(minLength: 0)
             card
         }
-        .background(Color.black.opacity(0.25).ignoresSafeArea())
-        .animation(.snappy, value: String(describing: viewModel.screen))
+        .background(Color.black.opacity(0.32).ignoresSafeArea())
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: String(describing: viewModel.screen))
     }
 
     private var card: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 22) {
             Capsule()
-                .fill(.tertiary)
+                .fill(Theme.textTertiary)
                 .frame(width: 36, height: 5)
-                .padding(.top, 8)
+                .padding(.top, 10)
 
             content
                 .frame(maxWidth: .infinity)
         }
-        .padding(20)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .padding(22)
+        .background(Theme.background, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
     }
@@ -57,15 +62,18 @@ struct TipSheetView: View {
     // MARK: - Screens
 
     private func loading(_ message: String) -> some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             ProgressView()
-            Text(message).font(.callout).foregroundStyle(.secondary)
+                .tint(Theme.brand)
+            Text(message)
+                .font(Theme.body)
+                .foregroundStyle(Theme.textSecondary)
         }
-        .padding(.vertical, 28)
+        .padding(.vertical, 36)
     }
 
     private func amountPicker(_ creator: CreatorRecord) -> some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
             creatorHeader(creator)
 
             if !creator.verified {
@@ -73,65 +81,71 @@ struct TipSheetView: View {
                 // has not proved they own it. Saying so is the difference
                 // between a tip and a redirect.
                 Label("This handle hasn't been verified yet.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.warning)
             }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 ForEach(viewModel.presets, id: \.self) { amount in
-                    Button {
+                    PresetAmountButton(title: amount.formatted) {
+                        Haptics.tap()
                         Task { await viewModel.selectAmount(amount) }
-                    } label: {
-                        Text(amount.formatted)
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
                     }
-                    .buttonStyle(.bordered)
                 }
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 TextField("Other amount", text: $viewModel.customAmountText)
                     .keyboardType(.numberPad)
-                    .textFieldStyle(.roundedBorder)
-                Button("Tip") { Task { await viewModel.selectCustomAmount() } }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(viewModel.customAmountText.isEmpty)
+                    .font(Theme.headline)
+                    .padding(.vertical, 13)
+                    .padding(.horizontal, 16)
+                    .background(Theme.surfaceRaised, in: Capsule())
+
+                Button {
+                    Haptics.tap()
+                    Task { await viewModel.selectCustomAmount() }
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Theme.onBrand)
+                        .frame(width: 46, height: 46)
+                        .background(
+                            viewModel.customAmountText.isEmpty ? Theme.textTertiary : Theme.brand, in: Circle())
+                }
+                .disabled(viewModel.customAmountText.isEmpty)
             }
 
-            Picker("Pay with", selection: Binding(
+            AssetSwitcher(selection: Binding(
                 get: { viewModel.selectedAsset },
-                set: { viewModel.changeAsset($0) })) {
-                    Text("Bitcoin").tag(Asset.bitcoin)
-                    Text("USDT").tag(Asset.usdt)
-                }
-                .pickerStyle(.segmented)
+                set: { viewModel.changeAsset($0) }))
 
             cancelButton
         }
     }
 
     private func manualEntry(_ reason: String) -> some View {
-        VStack(spacing: 14) {
-            Image(systemName: "questionmark.circle")
-                .font(.title)
-                .foregroundStyle(.secondary)
+        VStack(spacing: 16) {
+            Image(systemName: "questionmark.circle.fill")
+                .font(.system(size: 32))
+                .foregroundStyle(Theme.textTertiary)
             Text(reason)
-                .font(.callout)
+                .font(Theme.body)
                 .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textSecondary)
 
             TextField("name@wallet.com", text: $viewModel.manualAddress)
-                .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.emailAddress)
+                .font(Theme.body)
+                .padding(.vertical, 13)
+                .padding(.horizontal, 16)
+                .background(Theme.surfaceRaised, in: Capsule())
 
-            Button("Continue") { Task { await viewModel.submitManualAddress() } }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
-                .disabled(viewModel.manualAddress.isEmpty)
+            PrimaryButton(title: "Continue", isDisabled: viewModel.manualAddress.isEmpty) {
+                Task { await viewModel.submitManualAddress() }
+            }
 
             cancelButton
         }
@@ -139,113 +153,192 @@ struct TipSheetView: View {
 
     /// The disclosure screen. Every number here comes from the same `TipQuote`
     /// the engine spends from, so what is shown and what is charged cannot
-    /// drift apart.
+    /// drift apart. "You pay" is the hero number — everything else is
+    /// context underneath it, not a list of equals.
     private func confirmation(_ creator: CreatorRecord, _ quote: TipQuote) -> some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
             creatorHeader(creator)
 
-            VStack(spacing: 8) {
+            VStack(spacing: 4) {
+                Text("You pay")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                Text(quote.fiatTotal.formatted)
+                    .font(Theme.amountLarge)
+                    .foregroundStyle(Theme.textPrimary)
+            }
+
+            Card {
                 row("They receive", quote.creatorReceives.formatted, emphasised: true)
-                row("Tip", quote.fiatTip.formatted)
                 if quote.hasFee {
                     row("TipMe fee (\(quote.feePolicy.percentageDescription))", quote.fiatFee.formatted)
                 }
                 if let conversion = quote.conversionDisclosure {
                     row("Conversion", conversion)
                 }
-                Divider()
-                row("You pay", quote.fiatTotal.formatted, emphasised: true)
             }
-            .padding(14)
-            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 14))
 
-            Button {
+            PrimaryButton(title: "Confirm with Face ID", systemImage: "faceid") {
+                Haptics.confirm()
                 Task { await viewModel.confirm() }
-            } label: {
-                Label("Confirm with Face ID", systemImage: "faceid")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
             }
-            .buttonStyle(.borderedProminent)
 
             Button("Change amount") { viewModel.backToAmount() }
-                .font(.footnote)
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
         }
     }
 
     private func receipt(_ result: TipResult, _ creator: CreatorRecord) -> some View {
-        VStack(spacing: 14) {
-            Image(systemName: result.tipReceipt.status == .succeeded ? "checkmark.circle.fill" : "clock.fill")
-                .font(.system(size: 44))
-                .foregroundStyle(result.tipReceipt.status == .succeeded ? .green : .orange)
+        let succeeded = result.tipReceipt.status == .succeeded
+        return VStack(spacing: 16) {
+            if succeeded {
+                SuccessBadge(size: 72)
+            } else {
+                Image(systemName: "clock.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(Theme.warning)
+            }
 
-            Text(result.tipReceipt.status == .succeeded
-                 ? "Sent to \(creator.handle.displayName)"
-                 : "On its way to \(creator.handle.displayName)")
-                .font(.headline)
+            Text(succeeded ? "Sent to \(creator.handle.displayName)" : "On its way to \(creator.handle.displayName)")
+                .font(Theme.headline)
+                .foregroundStyle(Theme.textPrimary)
 
             Text(result.tipReceipt.sentAmount.formatted)
-                .font(.title3.weight(.semibold))
+                .font(Theme.amountMedium)
+                .foregroundStyle(succeeded ? Theme.brand : Theme.textPrimary)
 
             // Our failure to collect a fee is not the user's problem and is not
             // presented as an error. It is recorded in the audit log.
             if result.feeCollectionFailed != nil {
                 Text("Your tip went through in full.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
             }
 
-            Button("Done") { viewModel.dismiss() }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
+            PrimaryButton(title: "Done") { viewModel.dismiss() }
         }
+        .padding(.vertical, 4)
     }
 
     private func errorState(_ message: String) -> some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.title)
-                .foregroundStyle(.orange)
+                .font(.system(size: 32))
+                .foregroundStyle(Theme.negative)
             Text(message)
-                .font(.callout)
+                .font(Theme.body)
                 .multilineTextAlignment(.center)
-            Button("Close") { viewModel.dismiss() }
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity)
+                .foregroundStyle(Theme.textPrimary)
+            PrimaryButton(title: "Close") { viewModel.dismiss() }
         }
+        .onAppear { Haptics.error() }
     }
 
     // MARK: - Pieces
 
     private func creatorHeader(_ creator: CreatorRecord) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             CreatorAvatarView(url: creator.photoURL, initials: creator.handle.username)
-                .frame(width: 64, height: 64)
+                .frame(width: 72, height: 72)
 
             Text(creator.displayName ?? creator.handle.displayName)
-                .font(.title3.weight(.semibold))
+                .font(Theme.title)
+                .foregroundStyle(Theme.textPrimary)
             Text("\(creator.handle.displayName) on \(creator.handle.platform.displayName)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
         }
     }
 
     private func row(_ label: String, _ value: String, emphasised: Bool = false) -> some View {
         HStack {
             Text(label)
-                .font(emphasised ? .callout.weight(.semibold) : .callout)
-                .foregroundStyle(emphasised ? .primary : .secondary)
+                .font(emphasised ? Theme.body.weight(.semibold) : Theme.caption)
+                .foregroundStyle(emphasised ? Theme.textPrimary : Theme.textSecondary)
             Spacer()
             Text(value)
-                .font(emphasised ? .callout.weight(.semibold) : .callout)
-                .monospacedDigit()
+                .font((emphasised ? Theme.body.weight(.semibold) : Theme.caption).monospacedDigit())
+                .foregroundStyle(emphasised ? Theme.textPrimary : Theme.textSecondary)
         }
     }
 
     private var cancelButton: some View {
         Button("Cancel") { viewModel.dismiss() }
-            .font(.footnote)
-            .foregroundStyle(.secondary)
+            .font(Theme.caption)
+            .foregroundStyle(Theme.textSecondary)
+    }
+}
+
+/// One preset amount tile. A plain tap target rather than `.buttonStyle`, so
+/// the press animation (a slight scale-down) can be tuned to feel snappy
+/// without fighting a system button style for the same property.
+private struct PresetAmountButton: View {
+    let title: String
+    let action: () -> Void
+    @State private var pressed = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(Theme.headline.monospacedDigit())
+                .foregroundStyle(Theme.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(pressed ? 0.96 : 1)
+        .animation(.easeOut(duration: 0.12), value: pressed)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in pressed = true }
+                .onEnded { _ in pressed = false }
+        )
+    }
+}
+
+/// The one animated moment in the product: a landed tip. Springs in, then
+/// draws its checkmark a beat later, paired with a single success haptic —
+/// the entire "delight" budget for this screen spent on the one instant
+/// that has actually earned it.
+private struct SuccessBadge: View {
+    let size: CGFloat
+    @State private var scale: CGFloat = 0.55
+    @State private var opacity: Double = 0
+    @State private var checkTrim: CGFloat = 0
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Theme.brand)
+            CheckmarkShape()
+                .trim(from: 0, to: checkTrim)
+                .stroke(Theme.onBrand, style: StrokeStyle(lineWidth: size * 0.09, lineCap: .round, lineJoin: .round))
+                .padding(size * 0.28)
+        }
+        .frame(width: size, height: size)
+        .scaleEffect(scale)
+        .opacity(opacity)
+        .onAppear {
+            Haptics.success()
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.62)) {
+                scale = 1
+                opacity = 1
+            }
+            withAnimation(.easeOut(duration: 0.35).delay(0.18)) {
+                checkTrim = 1
+            }
+        }
+    }
+}
+
+private struct CheckmarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY + rect.height * 0.55))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.38, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.12))
+        return path
     }
 }
 
@@ -276,11 +369,11 @@ private struct CreatorAvatarView: View {
 
     private var placeholder: some View {
         Circle()
-            .fill(.quaternary)
+            .fill(Theme.surfaceRaised)
             .overlay {
                 Text(initials.prefix(1).uppercased())
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .font(Theme.title)
+                    .foregroundStyle(Theme.textSecondary)
             }
     }
 }

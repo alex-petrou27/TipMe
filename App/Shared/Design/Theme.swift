@@ -2,11 +2,10 @@ import SwiftUI
 
 /// TipMe's visual language in one place.
 ///
-/// Pure black and white, Strike-style: there is no hue anywhere in this file.
-/// The "accent" used for every primary action is simply the inverse of the
-/// surface it sits on — `Theme.accent` renders as near-black on a white
-/// background and near-white on a black one, with `Theme.onAccent` as its
-/// exact complement for whatever sits on top of it (button text, an icon).
+/// Black, white, and gray everywhere except one place: `Theme.brand`, the
+/// single signature color, reserved for a primary action and for money
+/// actually landing. Everything else — `Theme.accent` included — stays the
+/// inverting near-black/near-white this palette started as (Strike-style).
 /// Every screen in `App/TipMe` and `App/Shared` draws from here rather than
 /// ad hoc `.foregroundColor` calls, so the app reads as one product.
 enum Theme {
@@ -14,11 +13,25 @@ enum Theme {
     // MARK: - Color
 
     /// The single "accent": black in light mode, white in dark mode. Used for
-    /// the primary action on each screen and nothing else — a screen with
-    /// three accented elements has no accent at all.
+    /// secondary emphasis — a `.tint`, a step marker — that should feel like
+    /// part of the monochrome surface rather than a call to action.
     static let accent = Color(light: (0.04, 0.04, 0.05), dark: (1.00, 1.00, 1.00))
     /// The exact complement of `accent`, for whatever renders on top of it.
     static let onAccent = Color(light: (1.00, 1.00, 1.00), dark: (0.04, 0.04, 0.05))
+
+    /// The one signature color in an otherwise colorless palette: every
+    /// primary action (`PrimaryButton`) and the moment money actually moves
+    /// -- a successful send, a landed tip -- and nothing else. A screen with
+    /// three things in `brand` has no brand color at all, same rule
+    /// `accent` was always held to. Warm rather than the money-green or
+    /// payment-blue every other wallet already owns; a little brighter in
+    /// dark mode so it still reads as vivid against true black rather than
+    /// receding into it.
+    static let brand = Color(light: (1.00, 0.28, 0.36), dark: (1.00, 0.34, 0.42))
+    /// White in both modes -- `brand` is saturated/dark enough at both
+    /// values above for white text to sit on it either way, so this never
+    /// needs to flip the way `onAccent` does.
+    static let onBrand = Color(red: 1.00, green: 1.00, blue: 1.00)
 
     /// True white / true black — the flat, high-contrast ground this whole
     /// palette is built from.
