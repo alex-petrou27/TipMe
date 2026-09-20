@@ -14,7 +14,6 @@ import TipMeCore
 struct QuickActionLabel: View {
     let title: String
     let systemImage: String
-    @State private var pressed = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -27,17 +26,17 @@ struct QuickActionLabel: View {
                 .font(Theme.caption.weight(.medium))
                 .foregroundStyle(Theme.textPrimary)
         }
-        // A gesture layered on top, not a `Button`/`ButtonStyle` -- this view
-        // is deliberately not a button (see below), and `NavigationLink`'s
-        // own tap-down styling can't be reliably overridden the same way.
-        // Same curve as `PressableStyle` so it still feels identical.
-        .scaleEffect(pressed ? 0.94 : 1)
-        .animation(Theme.motion, value: pressed)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in pressed = true }
-                .onEnded { _ in pressed = false }
-        )
+        // No gesture here, on purpose -- a `DragGesture(minimumDistance: 0)`
+        // used to sit on this view via `.simultaneousGesture` to drive a
+        // press-scale animation, since this is deliberately not a `Button`
+        // (see below) and can't use `ButtonStyle`. On a real device that
+        // gesture recognizer can win the touch ahead of the wrapping
+        // `NavigationLink`'s own tap recognizer, which made the tap silently
+        // do nothing some of the time rather than navigate -- confirmed live
+        // as "I tap Deposit and nothing happens." Reliability matters far
+        // more here than a press-scale flourish, so this is back to a plain,
+        // gesture-free view; only the wrapping `NavigationLink` should ever
+        // own this touch.
     }
 }
 
