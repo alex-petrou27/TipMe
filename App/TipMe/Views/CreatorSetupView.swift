@@ -14,7 +14,7 @@ import TipMeCore
 struct CreatorSetupView: View {
     let services: TipMeServices
 
-    @State private var platform: Platform = .tiktok
+    @State private var platform: Platform = .instagram
     @State private var username = ""
     @State private var lightningAddress = ""
     @State private var preferredAsset: Asset = .usdt
@@ -94,91 +94,96 @@ struct CreatorSetupView: View {
     }
 
     var body: some View {
-        Form {
-            if case .done(let registration) = phase {
-                completed(registration)
-            } else {
-                editor
+        ScrollView {
+            VStack(spacing: Theme.spacingLarge) {
+                if case .done(let registration) = phase {
+                    completed(registration)
+                } else {
+                    editor
+                }
             }
+            .padding(.vertical, Theme.spacing)
         }
+        .background(Theme.background)
         .navigationTitle("Get tipped")
         .navigationBarTitleDisplayMode(.inline)
+        .animation(Theme.motion, value: platform)
+        .animation(Theme.motion, value: phase)
     }
 
     // MARK: - Editing
 
     @ViewBuilder
     private var editor: some View {
+        previewCard(handle: previewHandleText, platform: platform, confirmed: false)
+
         if !claimedHandles.isEmpty {
-            Section("Linked on this device") {
-                ForEach(claimedHandles, id: \.registryKey) { handle in
+            Card {
+                ForEach(Array(claimedHandles.enumerated()), id: \.element.registryKey) { index, handle in
+                    if index > 0 { Divider().overlay(Theme.divider) }
                     Button {
+                        Haptics.tap()
                         platform = handle.platform
                         username = handle.username
                     } label: {
                         HStack {
-                            Text(handle.displayName)
+                            Text(handle.displayName).font(Theme.body.weight(.semibold))
+                                .foregroundStyle(Theme.textPrimary)
                             Spacer()
                             Text(handle.platform.displayName)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(Theme.caption)
+                                .foregroundStyle(Theme.textSecondary)
                         }
                     }
+                    .buttonStyle(.pressable)
                 }
-                Text("Tap one to change where its tips go.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, Theme.spacing)
         }
 
-        Section("Your account") {
+        Card {
             Picker("Platform", selection: $platform) {
                 ForEach(Platform.allCases, id: \.self) { option in
                     Text(option.displayName).tag(option)
                 }
             }
             .pickerStyle(.segmented)
+            .padding(.bottom, 6)
 
-            HStack(spacing: 2) {
-                Text("@").foregroundStyle(.secondary)
-                TextField("username", text: $username)
+            HStack(spacing: 3) {
+                Text("@")
+                    .font(.system(size: 24, weight: .heavy, design: .rounded))
+                    .foregroundStyle(Theme.textTertiary)
+                TextField("yourhandle", text: $username)
+                    .font(.system(size: 24, weight: .heavy, design: .rounded))
+                    .foregroundStyle(Theme.textPrimary)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             }
 
-            // Validation as they type, rather than only on submit: a handle
-            // that could never exist on that platform is worth saying so about
-            // immediately.
             if !username.isEmpty && parsedHandle == nil {
-                Text("That isn't a valid \(platform.displayName) username.")
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                Text("Not a valid \(platform.displayName) username.")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.negative)
             }
-        }
 
-        // Only shown signed out: signed in, tips route straight to the
-        // account and this address is never paid, so it's never asked for
-        // — see `effectiveAddress`.
-        if !services.isSignedIn {
-            Section("Where tips go") {
+            if !lightningAddressFieldHidden {
+                Divider().overlay(Theme.divider).padding(.vertical, 4)
                 TextField("name@wallet.com", text: $lightningAddress)
+                    .font(Theme.body)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.emailAddress)
-
                 if !lightningAddress.isEmpty && parsedAddress == nil {
-                    Text("That doesn't look like a Lightning address.")
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                    Text("Not a Lightning address.")
+                        .font(Theme.caption)
+                        .foregroundStyle(Theme.negative)
                 }
-
-                Text("Any Lightning address works — Alby, Strike, Wallet of Satoshi, Coinos, or your own node. Tips go straight there; TipMe never holds them.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
+        .padding(.horizontal, Theme.spacing)
 
-        Section("Preferences") {
+        Card {
             Picker("Receive in", selection: $preferredAsset) {
                 Text("Bitcoin").tag(Asset.bitcoin)
                 Text("USDT").tag(Asset.usdt)
@@ -186,154 +191,212 @@ struct CreatorSetupView: View {
             .pickerStyle(.segmented)
 
             TextField("Minimum tip (optional)", text: $minimumTipText)
+                .font(Theme.body)
                 .keyboardType(.numberPad)
-
-            Text("Senders can pay in either asset — we convert to whichever you pick.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .padding(.top, 8)
         }
+        .padding(.horizontal, Theme.spacing)
 
         if let errorMessage {
-            Section {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-            }
+            Text(errorMessage)
+                .font(Theme.caption)
+                .foregroundStyle(Theme.negative)
+                .padding(.horizontal, Theme.spacingLarge)
+                .multilineTextAlignment(.center)
         }
 
-        // One button. It used to sit alongside an equally-weighted "Connect
-        // Instagram" OAuth button above it -- two competing top-level ways to
-        // do the same thing, one of which (OAuth) cannot work at all for a
-        // personal account, which is what everyone testing this has. That
-        // read as "none of these work" rather than "one of these works."
-        // The next screen (bio code, then Verify) is the one real path;
-        // OAuth is now the disclosed alternative below, for whoever actually
-        // has a Business/Creator account.
-        Section {
+        PrimaryButton(title: primaryButtonTitle,
+                     isLoading: phase == .verifying || phase == .registering,
+                     isDisabled: !canSubmit) {
+            Task { await submit() }
+        }
+        .padding(.horizontal, Theme.spacing)
+
+        DisclosureGroup("Have a Business or Creator account?", isExpanded: $showingBusinessSignIn) {
             Button {
-                Task { await submit() }
+                Task { await connect() }
             } label: {
                 HStack {
-                    switch phase {
-                    case .verifying: Text("Checking…")
-                    case .registering: Text(isUpdatingOwnHandle ? "Updating…" : "Getting you set up…")
-                    default: Text(isUpdatingOwnHandle ? "Update where tips go" : "Get tipped")
-                    }
-                    if phase == .verifying || phase == .registering {
+                    Text(phase == .connecting ? "Connecting…" : "Sign in with \(platform.displayName)")
+                    if phase == .connecting {
                         Spacer()
                         ProgressView()
                     }
                 }
             }
             .disabled(!canSubmit)
+            .font(Theme.body.weight(.semibold))
+            .foregroundStyle(Theme.brand)
+            .padding(.top, 6)
 
-            Text(services.isSignedIn
-                 ? "Tips will go straight to your TipMe balance. You'll confirm it's really your account on the next screen."
-                 : "We check your wallet can actually receive a payment before saving it. A typo here would mean every tip silently fails.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Text(platform == .instagram
+                 ? "Personal accounts can't sign in at all — \"Get tipped\" above works for any account."
+                 : "Verifies instantly, no code needed.")
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
         }
+        .font(Theme.body.weight(.semibold))
+        .foregroundStyle(Theme.textSecondary)
+        .padding(.horizontal, Theme.spacingLarge)
+    }
 
-        Section {
-            DisclosureGroup("Have a Business or Creator account?", isExpanded: $showingBusinessSignIn) {
-                Button {
-                    Task { await connect() }
-                } label: {
-                    HStack {
-                        switch phase {
-                        case .connecting: Text("Connecting to \(platform.displayName)…")
-                        default: Label("Sign in with \(platform.displayName) instead", systemImage: "checkmark.seal")
-                        }
-                        if phase == .connecting {
-                            Spacer()
-                            ProgressView()
-                        }
-                    }
+    private var lightningAddressFieldHidden: Bool { services.isSignedIn }
+
+    private var previewHandleText: String { username.isEmpty ? "yourhandle" : username }
+
+    private var primaryButtonTitle: String {
+        switch phase {
+        case .verifying: return "Checking…"
+        case .registering: return isUpdatingOwnHandle ? "Updating…" : "Setting up…"
+        default: return isUpdatingOwnHandle ? "Update" : "Get tipped"
+        }
+    }
+
+    // MARK: - Live preview
+
+    /// What a sender actually sees. The centerpiece of this screen on
+    /// purpose: filling in a form has no payoff of its own, but watching
+    /// your own tip card come together as you type does.
+    private func previewCard(handle: String, platform: Platform, confirmed: Bool) -> some View {
+        VStack(spacing: 10) {
+            Text(confirmed ? "YOU'RE LIVE" : "WHAT SENDERS SEE")
+                .font(Theme.label)
+                .foregroundStyle(confirmed ? Theme.positive : Theme.textTertiary)
+
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(Theme.brand.opacity(0.14))
+                        .frame(width: 50, height: 50)
+                    Text(String(handle.prefix(1)).uppercased())
+                        .font(.system(size: 19, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Theme.brand)
                 }
-                .disabled(!canSubmit)
 
-                Text(platform == .instagram
-                     ? "Only works for a Business or Creator account — Instagram allows no sign-in at all for a personal one. Skip this unless you know you have one; \"Get tipped\" above works for any account."
-                     : "Signs you into TikTok to prove this handle is yours instantly, no bio code needed.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("@\(handle)")
+                        .font(.system(size: 21, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                        .contentTransition(.numericText())
+                    HStack(spacing: 4) {
+                        Image(systemName: platform == .instagram ? "camera.fill" : "music.note")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(platform.displayName)
+                            .font(Theme.caption)
+                    }
+                    .foregroundStyle(Theme.textSecondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Text("£5")
+                    .font(Theme.headline)
+                    .foregroundStyle(Theme.onBrand)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Theme.brand, in: Capsule())
             }
-            .font(.footnote)
-            .foregroundStyle(.secondary)
         }
+        .padding(18)
+        .frame(maxWidth: .infinity)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                .strokeBorder((confirmed ? Theme.positive : Theme.brand).opacity(0.28), lineWidth: 1.5)
+        )
+        .padding(.horizontal, Theme.spacing)
+        .animation(Theme.motion, value: handle)
     }
 
     // MARK: - Done
 
     @ViewBuilder
     private func completed(_ registration: CreatorRegistration) -> some View {
-        Section {
-            VStack(alignment: .leading, spacing: 8) {
-                Label("\(registration.handle.displayName) is linked",
-                      systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.headline)
-                // Signed in, `lightningAddress` is an internal placeholder
-                // never actually paid (see `effectiveAddress`) -- showing it
-                // here read as a broken destination ("tips go to
-                // x@tipme.internal"), which is exactly backwards: this is
-                // the success state. Someone can already tip this handle
-                // right now, in full, with nothing further required --
-                // that's true the instant this screen appears, regardless
-                // of whether the "optional" verification below is ever done.
-                Text(services.isSignedIn
-                     ? "Tips to \(registration.handle.displayName) go straight to your TipMe balance -- this already works, right now."
-                     : "Tips will go to \(registration.lightningAddress.description).")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+        ZStack {
+            VStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 48, weight: .bold))
+                    .foregroundStyle(Theme.positive)
+                Text("You're set up")
+                    .font(Theme.balance(30))
+                    .foregroundStyle(Theme.textPrimary)
+                Text(services.isSignedIn ? "Tips work right now." : "Tips go to \(registration.lightningAddress.description).")
+                    .font(Theme.body)
+                    .foregroundStyle(Theme.textSecondary)
             }
-            .padding(.vertical, 4)
+            .padding(.top, Theme.spacing)
+            ConfettiBurstView()
         }
 
-        if registration.managementToken != nil {
-            Section {
-                Label("Saved to this device's keychain", systemImage: "key.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Text("Changing where your tips go later needs a secret we've just stored for you. Keep this device, or contact support if you lose it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
+        previewCard(handle: registration.handle.username, platform: registration.handle.platform, confirmed: true)
 
         if registration.verified {
-            Section {
-                if registration.verifiedVia == "self" {
-                    Label("Self-verified", systemImage: "checkmark.seal")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Text("You confirmed this yourself, since \(registration.handle.platform.displayName) offers no automated way to check a personal account's bio.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Label("Verified with \(registration.handle.platform.displayName)", systemImage: "checkmark.seal.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+            Card {
+                HStack(spacing: 12) {
+                    IconBadge(systemImage: "checkmark.seal.fill", tint: Theme.positive.opacity(0.16), foreground: Theme.positive)
+                    Text(registration.verifiedVia == "self" ? "Self-verified" : "Verified with \(registration.handle.platform.displayName)")
+                        .font(Theme.body.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
                 }
             }
+            .padding(.horizontal, Theme.spacing)
         } else if services.isSignedIn {
-            // "One more step" -- since removed -- read as a blocking gate:
-            // as if tipping this handle would not actually work until this
-            // was done. It already works, right now, with or without this;
-            // this only earns a badge next to it. Getting that across
-            // explicitly matters, because the alternative is someone
-            // assuming pairing is still broken when it already succeeded.
-            Section("Optional: get verified") {
-                Text("Tipping \(registration.handle.displayName) already works — right now, without this. This just adds a badge: add this code to your \(registration.handle.platform.displayName) bio, then tap Verify.")
-                    .font(.callout)
+            verifyDisclosure(registration)
+        }
+
+        Card {
+            let photoButtonTitle = isUploadingPhoto ? "Uploading…" : "Add a photo"
+            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                HStack(spacing: 12) {
+                    IconBadge(systemImage: "photo")
+                    Text(photoButtonTitle)
+                        .font(Theme.body.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Spacer()
+                }
+            }
+            .disabled(isUploadingPhoto)
+
+            if let photoUploadError {
+                Text(photoUploadError).font(Theme.caption).foregroundStyle(Theme.negative)
+            }
+        }
+        .padding(.horizontal, Theme.spacing)
+        .onChange(of: selectedPhotoItem) { _, newItem in
+            Task { await uploadPhoto(newItem, for: registration.handle) }
+        }
+
+        Button("Link another account") {
+            Haptics.tap()
+            username = ""
+            lightningAddress = ""
+            errorMessage = nil
+            phase = .editing
+        }
+        .font(Theme.body.weight(.semibold))
+        .foregroundStyle(Theme.brand)
+        .buttonStyle(.pressable)
+    }
+
+    private func verifyDisclosure(_ registration: CreatorRegistration) -> some View {
+        DisclosureGroup("Add a verified badge") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Add this to your \(registration.handle.platform.displayName) bio:")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
 
                 HStack {
                     Text(registration.claimToken)
                         .font(.footnote.monospaced())
                         .textSelection(.enabled)
                     Spacer()
-                    Button("Copy") { UIPasteboard.general.string = registration.claimToken }
-                        .font(.footnote)
+                    Button("Copy") {
+                        Haptics.tap()
+                        UIPasteboard.general.string = registration.claimToken
+                    }
+                    .font(Theme.caption.weight(.semibold))
+                    .foregroundStyle(Theme.brand)
                 }
 
                 Button {
@@ -348,62 +411,20 @@ struct CreatorSetupView: View {
                     }
                 }
                 .disabled(isSelfVerifying)
+                .font(Theme.body.weight(.semibold))
+                .foregroundStyle(Theme.brand)
 
                 if let selfVerifyError {
-                    Text(selfVerifyError).font(.caption).foregroundStyle(.red)
-                }
-
-                Text("This confirms it's you without waiting on Instagram or TikTok, which offer no way to check a personal account's bio automatically. Shown as \"Self-verified\" rather than platform-verified — a real distinction, not the same badge Business/Creator sign-in earns.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } else {
-            Section("One more step") {
-                Text("Anyone can claim a handle, so yours shows as unverified until it's checked. Add this to your \(registration.handle.platform.displayName) bio, then sign in to a TipMe account and re-link this handle to verify it yourself.")
-                    .font(.callout)
-
-                HStack {
-                    Text(registration.claimToken)
-                        .font(.footnote.monospaced())
-                        .textSelection(.enabled)
-                    Spacer()
-                    Button("Copy") { UIPasteboard.general.string = registration.claimToken }
-                        .font(.footnote)
+                    Text(selfVerifyError).font(Theme.caption).foregroundStyle(Theme.negative)
                 }
             }
+            .padding(.top, 6)
         }
-
-        Section("Photo") {
-            // Read into a plain, Sendable local before the closure, rather
-            // than the @State bool directly inside it — PhotosPicker's label
-            // closure is now @Sendable on newer SDKs, and a MainActor-isolated
-            // stored property can't be read from inside one directly.
-            let photoButtonTitle = isUploadingPhoto ? "Uploading…" : "Add a photo"
-            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                Label(photoButtonTitle, systemImage: "photo")
-            }
-            .disabled(isUploadingPhoto)
-
-            if let photoUploadError {
-                Text(photoUploadError).font(.caption).foregroundStyle(.red)
-            }
-
-            Text("Shown on the confirm screen when someone tips you. Optional, and never affects where tips go.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .onChange(of: selectedPhotoItem) { _, newItem in
-            Task { await uploadPhoto(newItem, for: registration.handle) }
-        }
-
-        Section {
-            Button("Link another account") {
-                username = ""
-                lightningAddress = ""
-                errorMessage = nil
-                phase = .editing
-            }
-        }
+        .font(Theme.body.weight(.semibold))
+        .foregroundStyle(Theme.textSecondary)
+        .padding(Theme.spacing)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
+        .padding(.horizontal, Theme.spacing)
     }
 
     // MARK: - Submitting
@@ -445,6 +466,7 @@ struct CreatorSetupView: View {
             if let token = registration.managementToken {
                 try? services.creatorTokens.store(token: token, for: handle)
             }
+            Haptics.success()
             phase = .done(registration)
         } catch let error as CreatorRegistrationError {
             errorMessage = error.userFacingReason
@@ -471,6 +493,7 @@ struct CreatorSetupView: View {
             try await registrar.selfVerify(handle: registration.handle,
                                            claimToken: registration.claimToken,
                                            sessionToken: session.sessionToken)
+            Haptics.success()
             phase = .done(CreatorRegistration(
                 handle: registration.handle,
                 lightningAddress: registration.lightningAddress,
@@ -516,6 +539,7 @@ struct CreatorSetupView: View {
             if let token = session.managementToken {
                 try? services.creatorTokens.store(token: token, for: handle)
             }
+            Haptics.success()
             phase = .done(CreatorRegistration(
                 handle: session.handle,
                 lightningAddress: session.lightningAddress,

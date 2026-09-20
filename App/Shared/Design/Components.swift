@@ -232,3 +232,51 @@ struct ActivityRow: View {
         transaction.note ?? transaction.timestamp.formatted(date: .abbreviated, time: .shortened)
     }
 }
+
+/// A one-shot particle burst for a real success moment -- a handle getting
+/// linked, a tip landing. Plays once on appear and settles; re-showing it
+/// means creating a new instance (see call sites), not toggling a `@State`.
+///
+/// Home-grown rather than a dependency: this is ~20 circles animating
+/// outward once, which needs nothing a particle-effects library would add
+/// beyond the binary size and the audit of a new dependency.
+struct ConfettiBurstView: View {
+    private struct Particle {
+        let angle: Double
+        let distance: CGFloat
+        let size: CGFloat
+        let color: Color
+        let delay: Double
+    }
+
+    private let particles: [Particle]
+    @State private var animate = false
+
+    init() {
+        let colors: [Color] = [Theme.brand, Theme.positive, Color.yellow, Color.blue, Theme.onBrand]
+        particles = (0..<22).map { i in
+            Particle(angle: Double.random(in: 0..<(2 * .pi)),
+                     distance: CGFloat.random(in: 70...150),
+                     size: CGFloat.random(in: 5...10),
+                     color: colors[i % colors.count],
+                     delay: Double.random(in: 0...0.08))
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            ForEach(Array(particles.enumerated()), id: \.offset) { _, particle in
+                Circle()
+                    .fill(particle.color)
+                    .frame(width: particle.size, height: particle.size)
+                    .offset(x: animate ? cos(particle.angle) * particle.distance : 0,
+                            y: animate ? sin(particle.angle) * particle.distance : 0)
+                    .opacity(animate ? 0 : 1)
+                    .scaleEffect(animate ? 0.4 : 1)
+                    .animation(.easeOut(duration: 0.85).delay(particle.delay), value: animate)
+            }
+        }
+        .allowsHitTesting(false)
+        .onAppear { animate = true }
+    }
+}

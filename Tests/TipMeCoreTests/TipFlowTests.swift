@@ -536,7 +536,7 @@ final class TipFlowTests: XCTestCase {
         guard case .quoted(_, let quote) = quoted else {
             return XCTFail("quoting failed: \(quoted)")
         }
-        XCTAssertEqual(quote.disclosure, "£1.00 tip + £0.03 fee = £1.03")
+        XCTAssertEqual(quote.disclosure, "£1 tip + £0.03 fee = £1.03")
 
         let paid = await harness.flow.confirmAndPay(quote: quote, creator: record, sourceLink: nil)
         guard case .succeeded(let result, _) = paid else {

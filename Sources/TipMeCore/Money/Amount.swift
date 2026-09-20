@@ -99,6 +99,11 @@ public struct FiatAmount: Equatable, Hashable, Codable, Sendable {
         return FiatAmount(currencyCode: lhs.currencyCode, minorUnits: lhs.minorUnits + rhs.minorUnits)
     }
 
+    /// Drops ".00" on a whole amount -- "£10", not "£10.00". A tip sheet
+    /// preset or a balance is read constantly and almost always round, so
+    /// two meaningless trailing zeros were the most common thing on screen.
+    /// A genuinely fractional amount ("£10.50") keeps its cents; only an
+    /// exact whole number loses them.
     public var formatted: String {
         let symbol: String
         switch currencyCode {
@@ -109,6 +114,7 @@ public struct FiatAmount: Equatable, Hashable, Codable, Sendable {
         }
         let whole = minorUnits / 100
         let frac = abs(minorUnits % 100)
+        guard frac != 0 else { return "\(symbol)\(whole)" }
         return "\(symbol)\(whole).\(String(format: "%02d", frac))"
     }
 }

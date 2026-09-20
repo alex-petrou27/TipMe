@@ -15,7 +15,7 @@ final class FeePolicyTests: XCTestCase {
 
         let rate = AssetRate(asset: .bitcoin, currencyCode: "GBP",
                              scaledPricePerMinorUnit: 5_000_000, asOf: Date())
-        XCTAssertEqual(rate.fiatValue(of: tip).formatted, "£1.00")
+        XCTAssertEqual(rate.fiatValue(of: tip).formatted, "£1")
         XCTAssertEqual(rate.fiatValue(of: fee).formatted, "£0.03")
         XCTAssertEqual(rate.fiatValue(of: policy.total(on: tip)).formatted, "£1.03")
     }
@@ -76,7 +76,8 @@ final class AmountTests: XCTestCase {
     func testFiatFormatting() {
         XCTAssertEqual(FiatAmount.gbp(pence: 103).formatted, "£1.03")
         XCTAssertEqual(FiatAmount.gbp(pence: 5).formatted, "£0.05")
-        XCTAssertEqual(FiatAmount.gbp(pence: 2_000).formatted, "£20.00")
+        XCTAssertEqual(FiatAmount.gbp(pence: 2_000).formatted, "£20")
+        XCTAssertEqual(FiatAmount.gbp(pence: 0).formatted, "£0")
     }
 
     func testArithmeticWithinAnAsset() {
