@@ -156,6 +156,8 @@ struct MoreMenuView: View {
                         menuRow(icon: "questionmark.circle.fill", title: "How to tip") { HowToTipView() }
                         Divider().overlay(Theme.divider)
                         menuRow(icon: "person.crop.circle.badge.checkmark", title: "Get tipped") { CreatorSetupView(services: services) }
+                        Divider().overlay(Theme.divider)
+                        menuRow(icon: "at", title: "Tip by handle") { TipByHandleView(services: services) }
                     }
                     menuGroup {
                         menuRow(icon: "gearshape.fill", title: "Settings") { SettingsView(services: services, onLogout: onLogout) }

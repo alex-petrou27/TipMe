@@ -105,6 +105,13 @@ final class TipSheetViewModel: ObservableObject {
         apply(state)
     }
 
+    /// Skips share-payload parsing entirely -- see `TipFlow.identify(handle:)`.
+    func start(withHandle handle: CreatorHandle) async {
+        sourceLink = nil
+        screen = .loading("Looking up \(handle.displayName)…")
+        apply(await flow.identify(handle: handle))
+    }
+
     // MARK: - Step 2: amount
 
     /// Converts a fiat figure into whatever the creator actually gets paid

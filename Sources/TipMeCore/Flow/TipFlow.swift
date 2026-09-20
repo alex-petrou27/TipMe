@@ -232,6 +232,34 @@ public actor TipFlow {
         ].joined(separator: "\n[debug] ")
     }
 
+    /// Identifies a creator directly from a typed handle, skipping every bit
+    /// of share-payload/title/page-fetch recovery `identify(attachedURLs:...)`
+    /// does -- there is no ambiguity to resolve when the handle was typed on
+    /// purpose. Same resolution and same three outcomes as the end of that
+    /// method (`.ready`/`.creatorNotRegistered`/`.failed`), so a tip started
+    /// this way is indistinguishable from one started by sharing a post, all
+    /// the way through pricing, Face ID, and settlement.
+    ///
+    /// This exists as a reliable, share-format-independent way to pay a
+    /// handle that has actually registered -- proving (or using) the "get
+    /// tipped" link does not depend on Instagram/TikTok's share metadata
+    /// ever being shaped the way `identify(attachedURLs:...)` expects.
+    public func identify(handle: CreatorHandle) async -> TipFlowState {
+        do {
+            let record = try await creatorResolver.resolve(handle)
+            await note(.creatorResolved, .ok, platform: handle.platform.rawValue, handle: handle.username)
+            return .ready(record)
+        } catch CreatorLookupError.notRegistered {
+            await note(.creatorResolved, .rejected, platform: handle.platform.rawValue,
+                       handle: handle.username, detail: "not registered")
+            return .creatorNotRegistered(handle)
+        } catch {
+            await note(.creatorResolved, .failed, platform: handle.platform.rawValue,
+                       handle: handle.username, detail: String(describing: error))
+            return .failed("Couldn't look up \(handle.displayName) right now.")
+        }
+    }
+
     /// Manual fallback: the user pastes a Lightning address directly.
     public func manualRecipient(address rawAddress: String,
                                 handle: CreatorHandle?,

@@ -433,6 +433,42 @@ final class TipFlowTests: XCTestCase {
         XCTAssertEqual(handle.username, "nobody")
     }
 
+    // MARK: - Identification by typed handle
+
+    /// The reliable, share-format-independent path: no URL, no title, no
+    /// page fetch, just the exact handle the sender typed.
+    func testTypedHandleIdentifiesARegisteredCreator() async {
+        let harness = makeHarness(records: [.stub(username: "creator", platform: .instagram)])
+        let handle = CreatorHandle(platform: .instagram, rawUsername: "creator")!
+        let state = await harness.flow.identify(handle: handle)
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "creator")
+    }
+
+    func testTypedHandleForAnUnregisteredCreatorIsItsOwnState() async {
+        let harness = makeHarness(records: [])
+        let handle = CreatorHandle(platform: .tiktok, rawUsername: "nobody")!
+        let state = await harness.flow.identify(handle: handle)
+
+        guard case .creatorNotRegistered(let resolvedHandle) = state else {
+            return XCTFail("expected creatorNotRegistered, got \(state)")
+        }
+        XCTAssertEqual(resolvedHandle.username, "nobody")
+    }
+
+    func testTypedHandleLookupFailureIsReported() async {
+        let harness = makeHarness(lookupError: .transport("boom"))
+        let handle = CreatorHandle(platform: .tiktok, rawUsername: "creator")!
+        let state = await harness.flow.identify(handle: handle)
+
+        guard case .failed = state else {
+            return XCTFail("expected failed, got \(state)")
+        }
+    }
+
     func testUnrelatedLinkOffersManualEntry() async {
         let harness = makeHarness()
         let state = await harness.flow.identify(
