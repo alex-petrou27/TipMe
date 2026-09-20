@@ -19,6 +19,8 @@ struct SettingsView: View {
     @State private var connectingPlatform: Platform?
     @State private var accountError: String?
     @State private var isLoggingOut = false
+    @State private var editingPlatform: Platform?
+    @State private var editingUsername = ""
 
     private var signedInEmail: String? {
         try? services.accountKeychain.loadSession().email
@@ -63,11 +65,22 @@ struct SettingsView: View {
                     .foregroundStyle(Theme.negative)
                     .padding(.top, 4)
             }
-            Text("A \u{201C}Sending as\u{201D} badge only — sending a tip never needs this. TipMe never sees your password; connecting just proves the handle is yours.")
+            Text("A \u{201C}Sending as\u{201D} badge only — sending a tip never needs this, and typing your handle is enough. \u{201C}Verify via sign-in\u{201D} additionally proves it's really you, but only works for a Business or Creator account — Instagram allows no sign-in at all for a personal one.")
                 .font(Theme.caption)
                 .foregroundStyle(Theme.textTertiary)
                 .padding(.top, 4)
         }
+        .alert("Sending as", isPresented: editingAlertBinding) {
+            TextField("Your \(editingPlatform?.displayName ?? "") handle", text: $editingUsername)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { saveTypedHandle() }
+        }
+    }
+
+    private var editingAlertBinding: Binding<Bool> {
+        Binding(get: { editingPlatform != nil }, set: { if !$0 { editingPlatform = nil } })
     }
 
     private var feeSection: some View {
@@ -168,7 +181,7 @@ struct SettingsView: View {
                 Text("@\(username)")
                     .font(Theme.caption)
                     .foregroundStyle(Theme.textSecondary)
-                Button("Disconnect") {
+                Button("Remove") {
                     Haptics.tap()
                     disconnect(platform)
                 }
@@ -176,13 +189,24 @@ struct SettingsView: View {
                 .foregroundStyle(Theme.negative)
                 .buttonStyle(.pressable)
             } else {
-                Button("Connect") {
-                    Haptics.tap()
-                    Task { await connect(platform) }
+                VStack(alignment: .trailing, spacing: 4) {
+                    Button("Set") {
+                        Haptics.tap()
+                        editingUsername = ""
+                        editingPlatform = platform
+                    }
+                    .font(Theme.caption.weight(.semibold))
+                    .foregroundStyle(Theme.brand)
+                    .buttonStyle(.pressable)
+
+                    Button("Verify via sign-in") {
+                        Haptics.tap()
+                        Task { await connect(platform) }
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .buttonStyle(.pressable)
                 }
-                .font(Theme.caption.weight(.semibold))
-                .foregroundStyle(Theme.brand)
-                .buttonStyle(.pressable)
             }
         }
         .padding(.vertical, 2)
@@ -223,6 +247,23 @@ struct SettingsView: View {
     private func disconnect(_ platform: Platform) {
         identityStore?.clear(platform)
         connectedHandles[platform] = nil
+    }
+
+    /// Self-declared, unverified -- no network call, nothing to fail. This is
+    /// deliberately the primary path, not a fallback: the badge it sets never
+    /// gates a payment (see `SenderIdentityStore`'s own doc), so requiring
+    /// platform sign-in to type your own handle here was solving a problem
+    /// this feature never had, while being permanently unusable on a
+    /// personal Instagram account. "Verify via sign-in" stays available
+    /// above for whoever does have a Business/Creator account and wants it.
+    private func saveTypedHandle() {
+        guard let platform = editingPlatform else { return }
+        let username = editingUsername.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        guard !username.isEmpty else { return }
+        identityStore?.set(username: username, for: platform)
+        connectedHandles[platform] = username
+        editingPlatform = nil
     }
 
     private func logout() {

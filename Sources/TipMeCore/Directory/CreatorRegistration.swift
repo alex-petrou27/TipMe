@@ -5,8 +5,15 @@ public struct CreatorRegistration: Equatable, Sendable {
     public let handle: CreatorHandle
     public let lightningAddress: LightningAddress
     /// Always false for a fresh registration — anyone can claim any handle, so
-    /// the claim has to be checked by a human before it means anything.
+    /// the claim has to be checked before it means anything.
     public let verified: Bool
+    /// "oauth" (signed into the platform itself), "self" (confirmed a bio
+    /// code themselves -- see `CreatorRegistrar.selfVerify`), "admin", or
+    /// `nil` when `verified` is false. Kept distinct rather than collapsed
+    /// into `verified` because "self" is a real, lesser tier: the client
+    /// badges it differently rather than implying Instagram/TikTok
+    /// themselves confirmed it.
+    public let verifiedVia: String?
     /// Token the creator puts in their bio to prove the handle is theirs.
     public let claimToken: String
     public let verificationInstructions: String
@@ -20,11 +27,12 @@ public struct CreatorRegistration: Equatable, Sendable {
     public let managementToken: String?
 
     public init(handle: CreatorHandle, lightningAddress: LightningAddress,
-                verified: Bool, claimToken: String, verificationInstructions: String,
-                managementToken: String?) {
+                verified: Bool, verifiedVia: String? = nil, claimToken: String,
+                verificationInstructions: String, managementToken: String?) {
         self.handle = handle
         self.lightningAddress = lightningAddress
         self.verified = verified
+        self.verifiedVia = verifiedVia
         self.claimToken = claimToken
         self.verificationInstructions = verificationInstructions
         self.managementToken = managementToken
@@ -179,9 +187,49 @@ public struct CreatorRegistrar: Sendable {
             handle: handle,
             lightningAddress: registeredAddress,
             verified: (object["verified"] as? Bool) ?? false,
+            verifiedVia: object["verified_via"] as? String,
             claimToken: token,
             verificationInstructions: instructions,
             managementToken: object["management_token"] as? String)
+    }
+
+    /// Confirms a handle registered while signed in, without an admin or a
+    /// platform OAuth in the loop -- see the registry's `self_verify`
+    /// docstring for why marking it verified this way is safe even though
+    /// nothing here ever reads Instagram or TikTok. Requires the caller to
+    /// still hold a live session and the claim token their own registration
+    /// returned; anyone else gets a 403/400, not a quieter no-op.
+    public func selfVerify(handle: CreatorHandle, claimToken: String,
+                           sessionToken: String) async throws {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        components?.path = "/v1/creators/\(handle.platform.rawValue)/\(handle.username)/self-verify"
+        guard let url = components?.url else {
+            throw CreatorRegistrationError.responseMalformed("could not build registry URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["claim_token": claimToken])
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw CreatorRegistrationError.transport(String(describing: error))
+        }
+
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200...299).contains(status) else {
+            let detail = Self.detail(in: data) ?? "registry returned HTTP \(status)"
+            switch status {
+            case 403: throw CreatorRegistrationError.notYours(detail)
+            default: throw CreatorRegistrationError.rejected(detail)
+            }
+        }
     }
 
     /// FastAPI puts the human-readable reason in `detail`.

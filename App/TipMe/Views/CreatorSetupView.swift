@@ -27,6 +27,9 @@ struct CreatorSetupView: View {
     @State private var isUploadingPhoto = false
     @State private var photoUploadError: String?
 
+    @State private var isSelfVerifying = false
+    @State private var selfVerifyError: String?
+
     private enum Phase: Equatable {
         case editing
         case verifying
@@ -188,8 +191,8 @@ struct CreatorSetupView: View {
             .disabled(!canSubmit)
 
             Text(platform == .instagram
-                 ? "Signs you into Instagram to prove this handle is yours — no bio code, no waiting on a human. Needs a Business or Creator account — free and reversible: Instagram app → Settings → Account type and tools → Switch to professional account → Creator."
-                 : "Signs you into TikTok to prove this handle is yours — no bio code, no waiting on a human.")
+                 ? "Signs you into Instagram to prove this handle is yours. Needs a Business or Creator account — Instagram allows no sign-in at all for a personal one. On a personal account, use \"Link my account (bio code)\" below instead; you can self-verify it on the next screen."
+                 : "Signs you into TikTok to prove this handle is yours — no bio code needed.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -258,15 +261,27 @@ struct CreatorSetupView: View {
 
         if registration.verified {
             Section {
-                Label("Verified with \(registration.handle.platform.displayName)", systemImage: "checkmark.seal.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                if registration.verifiedVia == "self" {
+                    Label("Self-verified", systemImage: "checkmark.seal")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("You confirmed this yourself, since \(registration.handle.platform.displayName) offers no automated way to check a personal account's bio.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("Verified with \(registration.handle.platform.displayName)", systemImage: "checkmark.seal.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
-        } else {
+        } else if services.isSignedIn {
             Section("One more step") {
                 // Registration is open — anyone can claim any handle — so the badge
-                // only means something once a human has checked the claim.
-                Text("Anyone can claim a handle, so yours shows as unverified until we've checked it. Add this to your \(registration.handle.platform.displayName) bio:")
+                // only means something once this is confirmed. Instagram and TikTok
+                // give us no automated way to check a personal account's bio (see
+                // CreatorRegistrar.selfVerify), so this is a self-check the account
+                // owner completes themselves rather than a platform-confirmed one.
+                Text("Anyone can claim a handle, so yours shows as unverified until you confirm it. Add this to your \(registration.handle.platform.displayName) bio, then tap Verify:")
                     .font(.callout)
 
                 HStack {
@@ -278,9 +293,40 @@ struct CreatorSetupView: View {
                         .font(.footnote)
                 }
 
-                Text(registration.verificationInstructions)
+                Button {
+                    Task { await selfVerify(registration) }
+                } label: {
+                    HStack {
+                        Text(isSelfVerifying ? "Checking…" : "I've added it — Verify")
+                        if isSelfVerifying {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(isSelfVerifying)
+
+                if let selfVerifyError {
+                    Text(selfVerifyError).font(.caption).foregroundStyle(.red)
+                }
+
+                Text("This confirms it's you without waiting on Instagram or TikTok, which offer no way to check a personal account's bio automatically. Shown as \"Self-verified\" rather than platform-verified — a real distinction, not the same badge Business/Creator sign-in earns.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        } else {
+            Section("One more step") {
+                Text("Anyone can claim a handle, so yours shows as unverified until it's checked. Add this to your \(registration.handle.platform.displayName) bio, then sign in to a TipMe account and re-link this handle to verify it yourself.")
+                    .font(.callout)
+
+                HStack {
+                    Text(registration.claimToken)
+                        .font(.footnote.monospaced())
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button("Copy") { UIPasteboard.general.string = registration.claimToken }
+                        .font(.footnote)
+                }
             }
         }
 
@@ -366,6 +412,37 @@ struct CreatorSetupView: View {
         }
     }
 
+    // MARK: - Self-verifying
+
+    private func selfVerify(_ registration: CreatorRegistration) async {
+        guard let session = try? services.accountKeychain.loadSession() else {
+            selfVerifyError = "Sign in to verify this handle."
+            return
+        }
+        selfVerifyError = nil
+        isSelfVerifying = true
+        defer { isSelfVerifying = false }
+
+        let registrar = CreatorRegistrar(baseURL: services.configuration.registryBaseURL)
+        do {
+            try await registrar.selfVerify(handle: registration.handle,
+                                           claimToken: registration.claimToken,
+                                           sessionToken: session.sessionToken)
+            phase = .done(CreatorRegistration(
+                handle: registration.handle,
+                lightningAddress: registration.lightningAddress,
+                verified: true,
+                verifiedVia: "self",
+                claimToken: registration.claimToken,
+                verificationInstructions: registration.verificationInstructions,
+                managementToken: registration.managementToken))
+        } catch let error as CreatorRegistrationError {
+            selfVerifyError = error.userFacingReason
+        } catch {
+            selfVerifyError = String(describing: error)
+        }
+    }
+
     // MARK: - Connecting
 
     /// Registers (or re-verifies) this handle by signing into the platform
@@ -400,6 +477,7 @@ struct CreatorSetupView: View {
                 handle: session.handle,
                 lightningAddress: session.lightningAddress,
                 verified: session.verified,
+                verifiedVia: session.verified ? "oauth" : nil,
                 claimToken: session.claimToken ?? "",
                 verificationInstructions: "",
                 managementToken: session.managementToken))

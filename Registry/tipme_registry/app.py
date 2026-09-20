@@ -335,6 +335,10 @@ class RegisterResponse(BaseModel):
     management_token: str | None = None
 
 
+class SelfVerifyRequest(BaseModel):
+    claim_token: str
+
+
 class OAuthStartRequest(BaseModel):
     platform: str
     username: str
@@ -1172,6 +1176,10 @@ def _signed_payload(record: CreatorRecord, settings: Settings) -> dict:
         "minimum_tip_minor_units": record.minimum_tip_minor,
         "display_name": record.display_name,
         "verified": record.verified,
+        # "oauth"/"admin"/"self"/None -- see the self-verify endpoint's own
+        # docstring for why "self" is a real, distinct, lesser tier rather
+        # than something the client should treat the same as the other two.
+        "verified_via": record.verified_via,
         # Whether this handle is linked to a signed-in TipMe account -- lets
         # the client route the actual payment ledger-to-ledger (see
         # `POST /v1/tip/{platform}/{username}`) instead of over Lightning.
@@ -1280,10 +1288,13 @@ def register(
         # let anyone who can read one response take the record over.
         management_token=management_token,
         verification_instructions=(
-            f"Add '{token}' to your {handle.platform} bio, then contact support to "
-            "complete verification. Automated bio checks are not available: neither "
-            "platform offers a third-party API for reading a profile, and scraping "
-            "would breach their terms. See docs/PHASE2.md."
+            f"Add '{token}' to your {handle.platform} bio, then tap Verify. "
+            "Neither platform offers a way for us to check that automatically for "
+            "a personal account -- as of Meta's April 2025 changes, none of "
+            "Instagram's APIs work for a personal account, full stop, not just the "
+            "OAuth sign-in above -- so this is a self-check rather than a "
+            "platform-confirmed badge. See the self-verify endpoint's own "
+            "docstring and docs/PHASE2.md."
         ),
     )
 
@@ -1663,6 +1674,61 @@ def verify(
     if record is None:
         raise HTTPException(status_code=404, detail="creator not registered")
     return {"platform": record.platform, "username": record.username, "verified": True}
+
+
+@app.post("/v1/creators/{platform}/{username}/self-verify")
+def self_verify(
+    platform: str,
+    username: str,
+    request: SelfVerifyRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> dict:
+    """Lets whoever just registered a handle confirm it themselves -- no
+    admin, no platform OAuth.
+
+    This is deliberate, not a shortcut taken because the real thing is hard.
+    `verified` has never been what stands between a tip and the wrong
+    wallet: `register`'s own docstring already says clearing it "would warn
+    users but would not stop the payment" -- first-claim-wins plus the
+    management token are what actually decide where money goes, and both
+    are enforced before this endpoint is ever reached. What `verified` gates
+    is a trust *badge* next to a handle, and gating that specifically behind
+    Meta App Review is a mismatch of stakes: as of Meta's April 2025
+    changes, there is no API path -- OAuth, oEmbed, anything -- for a
+    personal Instagram account, and there will not be one later; it is not
+    "not configured yet", it is a permanent platform-wide exclusion of most
+    real users. A badge only a Business/Creator account can ever earn is not
+    a temporary limitation to work around, it is a badge most people will
+    never see.
+
+    So this marks the handle verified via `"self"` -- a real, distinct,
+    lesser tier from `"oauth"`/`"admin"` that the client badges differently
+    -- the instant two things hold: the caller has a live TipMe session
+    (they are *a* real account, not a script hitting this in a loop) and
+    they can produce the claim token this handle's own registration
+    returned (they are *the* registration that just happened, not a
+    stranger racing to confirm someone else's pending claim). Neither of
+    those reads Instagram or TikTok at all.
+    """
+    try:
+        handle = normalise_handle(platform, username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    record = storage.get(handle)
+    if record is None:
+        raise HTTPException(status_code=404, detail="creator not registered")
+    if record.tipme_user_id != user_id:
+        raise HTTPException(status_code=403, detail="this handle isn't linked to your account")
+
+    stored_token = storage.claim_token(handle)
+    if not stored_token or not secrets.compare_digest(request.claim_token, stored_token):
+        raise HTTPException(status_code=400, detail="that code doesn't match -- check your bio and try again")
+
+    record = storage.set_verified(handle, True, via="self")
+    return {"platform": record.platform, "username": record.username,
+            "verified": True, "verified_via": "self"}
 
 
 def _require_admin(token: str | None, settings: Settings) -> None:

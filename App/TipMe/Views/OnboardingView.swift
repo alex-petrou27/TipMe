@@ -22,6 +22,8 @@ struct OnboardingView: View {
     @State private var connectedHandles: [Platform: String] = [:]
     @State private var connectingPlatform: Platform?
     @State private var socialError: String?
+    @State private var editingPlatform: Platform?
+    @State private var editingUsername = ""
 
     private enum Mode: Equatable { case welcome, signup, login, shareSetup, connectSocials }
 
@@ -334,6 +336,11 @@ struct OnboardingView: View {
                 Text(socialError).font(Theme.caption).foregroundStyle(Theme.negative)
             }
 
+            Text("This is a \u{201C}Sending as\u{201D} badge, not a security check \u{2014} typing your handle is enough. \u{201C}Verify via sign-in\u{201D} proves it too, but only works for a Business or Creator account.")
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textTertiary)
+                .multilineTextAlignment(.center)
+
             Spacer(minLength: 20)
 
             PrimaryButton(title: "Continue to TipMe") { Task { await onComplete() } }
@@ -343,6 +350,17 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.textSecondary)
                 .buttonStyle(.pressable)
         }
+        .alert("Sending as", isPresented: editingAlertBinding) {
+            TextField("Your \(editingPlatform?.displayName ?? "") handle", text: $editingUsername)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { saveTypedHandle() }
+        }
+    }
+
+    private var editingAlertBinding: Binding<Bool> {
+        Binding(get: { editingPlatform != nil }, set: { if !$0 { editingPlatform = nil } })
     }
 
     private func connectRow(_ platform: Platform) -> some View {
@@ -359,13 +377,34 @@ struct OnboardingView: View {
                     .font(Theme.caption)
                     .foregroundStyle(Theme.textSecondary)
             } else {
-                Button("Connect") { Task { await connectSocial(platform) } }
+                VStack(alignment: .trailing, spacing: 4) {
+                    Button("Set") {
+                        editingUsername = ""
+                        editingPlatform = platform
+                    }
                     .font(Theme.caption.weight(.semibold))
                     .foregroundStyle(Theme.brand)
                     .buttonStyle(.pressable)
+
+                    Button("Verify via sign-in") { Task { await connectSocial(platform) } }
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .buttonStyle(.pressable)
+                }
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private func saveTypedHandle() {
+        guard let platform = editingPlatform else { return }
+        let username = editingUsername.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        guard !username.isEmpty else { return }
+        SenderIdentityStore(appGroup: services.configuration.appGroup)?
+            .set(username: username, for: platform)
+        connectedHandles[platform] = username
+        editingPlatform = nil
     }
 
     private func connectSocial(_ platform: Platform) async {
