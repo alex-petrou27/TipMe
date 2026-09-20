@@ -60,8 +60,8 @@ enum Theme {
         .system(size: size, weight: .heavy, design: .rounded).monospacedDigit()
     }
 
-    static let amountLarge = Font.system(size: 32, weight: .bold, design: .rounded).monospacedDigit()
-    static let amountMedium = Font.system(size: 19, weight: .bold, design: .rounded).monospacedDigit()
+    static let amountLarge = Font.system(size: 44, weight: .heavy, design: .rounded).monospacedDigit()
+    static let amountMedium = Font.system(size: 20, weight: .heavy, design: .rounded).monospacedDigit()
     static let title = Font.system(size: 22, weight: .bold)
     static let headline = Font.system(size: 16, weight: .semibold)
     static let body = Font.system(size: 15.5, weight: .regular)

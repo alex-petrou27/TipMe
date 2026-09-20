@@ -159,6 +159,7 @@ struct DepositView: View {
         .background(Theme.background)
         .navigationTitle("Deposit")
         .navigationBarTitleDisplayMode(.inline)
+        .animation(Theme.motion, value: viewModel.method)
     }
 
     @ViewBuilder

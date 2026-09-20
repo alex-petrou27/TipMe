@@ -53,6 +53,7 @@ struct WithdrawView: View {
         .navigationTitle("Withdraw")
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.start() }
+        .animation(Theme.motion, value: String(describing: viewModel.state))
     }
 
     @ViewBuilder
@@ -127,8 +128,12 @@ struct WithdrawView: View {
     private func amountEntry(_ account: BankAccount) -> some View {
         VStack(spacing: Theme.spacing) {
             Card {
-                Label(account.displayName, systemImage: "building.columns.fill")
-                    .font(Theme.body.weight(.medium))
+                HStack(spacing: 12) {
+                    IconBadge(systemImage: "building.columns.fill")
+                    Text(account.displayName)
+                        .font(Theme.body.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                }
             }
             AssetSwitcher(selection: $viewModel.selectedAsset)
             TextField("Amount", text: $viewModel.amountText)

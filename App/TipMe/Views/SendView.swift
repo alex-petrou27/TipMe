@@ -66,6 +66,7 @@ struct SendView: View {
         .background(Theme.background)
         .navigationTitle("Send")
         .navigationBarTitleDisplayMode(.inline)
+        .animation(Theme.motion, value: String(describing: viewModel.state))
     }
 
     @ViewBuilder
@@ -123,9 +124,13 @@ struct SendView: View {
     private func amountEntry(_ destination: WalletDestination) -> some View {
         VStack(spacing: Theme.spacing) {
             Card {
-                Label(destination.displaySummary, systemImage: "arrow.up.right")
-                    .font(Theme.body.weight(.medium))
-                    .lineLimit(2)
+                HStack(spacing: 12) {
+                    IconBadge(systemImage: "arrow.up.right")
+                    Text(destination.displaySummary)
+                        .font(Theme.body.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(2)
+                }
             }
 
             if !destination.requiresManualAmount {
