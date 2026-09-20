@@ -13,11 +13,19 @@ actor FakePaymentBackend: PaymentBackend {
         let idempotencyKey: String
     }
 
+    struct LinkedAccountSendCall: Equatable {
+        let handle: CreatorHandle
+        let amount: Amount
+        let idempotencyKey: String
+    }
+
     var balances: [Asset: Int64]
     var rates: [Asset: AssetRate]
     var sendCalls: [SendCall] = []
+    var linkedAccountSendCalls: [LinkedAccountSendCall] = []
     /// Destinations that should fail, keyed by lightning address string.
     var failingDestinations: [String: PaymentBackendError] = [:]
+    var linkedAccountSendError: PaymentBackendError?
     var conversionRate: Double = 1.0
     var conversionCostMinorUnits: Int64 = 0
     var prepareRouteError: PaymentBackendError?
@@ -87,6 +95,19 @@ actor FakePaymentBackend: PaymentBackend {
     }
 
     func recordedSends() -> [SendCall] { sendCalls }
+
+    func setLinkedAccountSendError(_ error: PaymentBackendError?) { linkedAccountSendError = error }
+
+    func sendToCreatorAccount(handle: CreatorHandle, amount: Amount,
+                              idempotencyKey: String) async throws -> PaymentReceipt {
+        linkedAccountSendCalls.append(LinkedAccountSendCall(handle: handle, amount: amount, idempotencyKey: idempotencyKey))
+        if let error = linkedAccountSendError { throw error }
+        return PaymentReceipt(status: .succeeded,
+                              paymentHash: "ledger-\(linkedAccountSendCalls.count)",
+                              networkFee: .zero(amount.asset),
+                              sentAmount: amount,
+                              completedAt: clock.now)
+    }
 }
 
 // MARK: - Biometrics
@@ -136,6 +157,7 @@ extension CreatorRecord {
                      preferredAsset: Asset = .bitcoin,
                      minimum: Int64? = nil,
                      verified: Bool = true,
+                     tipmeLinked: Bool = false,
                      at date: Date = Date(timeIntervalSince1970: 1_700_000_000)) -> CreatorRecord {
         CreatorRecord(handle: CreatorHandle(platform: platform, rawUsername: username)!,
                       lightningAddress: LightningAddress(address)!,
@@ -143,7 +165,8 @@ extension CreatorRecord {
                       minimumTipMinorUnits: minimum,
                       updatedAt: date,
                       displayName: username,
-                      verified: verified)
+                      verified: verified,
+                      tipmeLinked: tipmeLinked)
     }
 }
 

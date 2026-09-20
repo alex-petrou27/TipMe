@@ -36,6 +36,13 @@ CREATE TABLE IF NOT EXISTS creators (
     -- Secret issued on first registration. Required to change an existing
     -- record, so a handle cannot be taken over by whoever asks last.
     management_token    TEXT,
+    -- Set when this handle was registered (or re-registered) by a signed-in
+    -- TipMe user -- see app.py's `register`. NULL means "external wallet
+    -- only": the record is just a directory entry pointing at someone else's
+    -- Lightning wallet, with no TipMe account behind it. When set, a tip to
+    -- this handle can move ledger-to-ledger instead of over Lightning -- see
+    -- `POST /v1/tip/{platform}/{username}`.
+    tipme_user_id       TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
     PRIMARY KEY (platform, username)
@@ -236,6 +243,7 @@ class CreatorRecord:
     verified: bool
     verified_via: str | None
     oauth_platform_user_id: str | None
+    tipme_user_id: str | None
     updated_at: datetime
 
 
@@ -259,6 +267,8 @@ class Storage:
             conn.execute("ALTER TABLE creators ADD COLUMN verified_via TEXT")
         if "oauth_platform_user_id" not in existing:
             conn.execute("ALTER TABLE creators ADD COLUMN oauth_platform_user_id TEXT")
+        if "tipme_user_id" not in existing:
+            conn.execute("ALTER TABLE creators ADD COLUMN tipme_user_id TEXT")
 
     @contextmanager
     def connect(self):
@@ -279,12 +289,20 @@ class Storage:
         display_name: str | None,
         claim_token: str | None,
         management_token: str | None = None,
+        tipme_user_id: str | None = None,
     ) -> CreatorRecord:
         """Create or update a record.
 
         Callers must have already authorised the write — see
         ``authorise_write`` in app.py. This method does not check tokens; it
         only stores them.
+
+        ``tipme_user_id`` links the handle to a signed-in TipMe account (see
+        the `creators` table's own comment on the column). Passing `None`
+        never *clears* an existing link -- there's no signed-out "unlink"
+        action in this flow, only "this caller wasn't signed in when they
+        (re)registered", which must not silently detach a handle that a
+        previous, signed-in registration already linked.
         """
         now = datetime.now(timezone.utc)
         with self.connect() as conn:
@@ -303,8 +321,9 @@ class Storage:
                                       preferred_asset, minimum_tip_minor,
                                       display_name, verified, verified_via,
                                       oauth_platform_user_id, claim_token,
-                                      management_token, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?)
+                                      management_token, tipme_user_id,
+                                      created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?, ?)
                 ON CONFLICT(platform, username) DO UPDATE SET
                     lightning_address = excluded.lightning_address,
                     preferred_asset   = excluded.preferred_asset,
@@ -316,12 +335,15 @@ class Storage:
                     claim_token       = excluded.claim_token,
                     management_token  = COALESCE(creators.management_token,
                                                  excluded.management_token),
+                    tipme_user_id     = COALESCE(excluded.tipme_user_id,
+                                                 creators.tipme_user_id),
                     updated_at        = excluded.updated_at
                 """,
                 (
                     handle.platform, handle.username, lightning_address,
                     preferred_asset, minimum_tip_minor, display_name,
-                    claim_token, management_token, now.isoformat(), now.isoformat(),
+                    claim_token, management_token, tipme_user_id,
+                    now.isoformat(), now.isoformat(),
                 ),
             )
         return self.get(handle)
@@ -385,6 +407,7 @@ class Storage:
             verified=bool(row["verified"]),
             verified_via=row["verified_via"],
             oauth_platform_user_id=row["oauth_platform_user_id"],
+            tipme_user_id=row["tipme_user_id"],
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 

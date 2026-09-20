@@ -68,4 +68,24 @@ public protocol PaymentBackend: Sendable, ExchangeRateProvider {
     func send(route: SettlementRoute,
               to destination: LightningAddress,
               idempotencyKey: String) async throws -> PaymentReceipt
+
+    /// Executes a payment straight into a creator's TipMe ledger balance --
+    /// no Lightning, no routing, no network beyond one call. Used instead of
+    /// `send` when the creator's handle is linked to a TipMe account
+    /// (`CreatorRecord.tipmeLinked`); see `PaymentEngine.execute`, which is
+    /// what decides which of the two to call.
+    ///
+    /// The default implementation throws -- a backend only needs to
+    /// implement this if it actually has a ledger to move money within, the
+    /// same way most of this protocol's implementers never touch
+    /// `WalletBackend`'s methods either.
+    func sendToCreatorAccount(handle: CreatorHandle, amount: Amount,
+                             idempotencyKey: String) async throws -> PaymentReceipt
+}
+
+public extension PaymentBackend {
+    func sendToCreatorAccount(handle: CreatorHandle, amount: Amount,
+                             idempotencyKey: String) async throws -> PaymentReceipt {
+        throw PaymentBackendError.network("This backend has no linked-account ledger to tip into.")
+    }
 }

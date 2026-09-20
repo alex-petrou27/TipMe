@@ -24,6 +24,7 @@ final class RegistryClientTests: XCTestCase {
                               lightningAddress: String = "creator@getalby.com",
                               preferredAsset: Asset = .bitcoin,
                               hasPhoto: Bool = false,
+                              tipmeLinked: Bool = false,
                               signedAt: Date? = nil,
                               signWith key: Curve25519.Signing.PrivateKey? = nil)
     throws -> RegistryClient.SignedEnvelope {
@@ -36,6 +37,7 @@ final class RegistryClientTests: XCTestCase {
             displayName: username,
             verified: true,
             hasPhoto: hasPhoto,
+            tipmeLinked: tipmeLinked,
             updatedAt: clock.now,
             signedAt: signedAt ?? clock.now)
 
@@ -65,6 +67,14 @@ final class RegistryClientTests: XCTestCase {
     func testHasPhotoBuildsAPhotoURLUnderTheSameRegistry() throws {
         let record = try makeClient().verify(try makeEnvelope(hasPhoto: true), expecting: handle())
         XCTAssertEqual(record.photoURL, URL(string: "https://registry.tipme.example/v1/creators/tiktok/creator/photo"))
+    }
+
+    func testTipmeLinkedCarriesThroughFromTheSignedRecord() throws {
+        let unlinked = try makeClient().verify(try makeEnvelope(tipmeLinked: false), expecting: handle())
+        XCTAssertFalse(unlinked.tipmeLinked)
+
+        let linked = try makeClient().verify(try makeEnvelope(tipmeLinked: true), expecting: handle())
+        XCTAssertTrue(linked.tipmeLinked)
     }
 
     /// The attack this stops: a hostile network, a compromised CDN, or a DNS

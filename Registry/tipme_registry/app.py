@@ -247,6 +247,25 @@ def get_current_user(
     return user_id
 
 
+def _optional_current_user(
+    authorization: str | None = Header(default=None),
+    storage: Storage = Depends(get_storage),
+) -> str | None:
+    """Same as `get_current_user`, but returns `None` instead of raising when
+    there is no (or an invalid) bearer token.
+
+    Creator registration must stay usable by someone who has never signed
+    up for a TipMe account at all -- that's the whole "point at your
+    existing Lightning wallet" path this registry has always supported. This
+    exists only to *additionally* capture the caller's `user_id` when they
+    happen to be signed in, so their handle can be linked to their account --
+    see `register`.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    return storage.session_user_id(authorization.removeprefix("Bearer ").strip())
+
+
 def get_lightning_rail() -> lightning_node.LightningRail:
     """Resolves fresh on every request, same convention as
     `oauth.config_for` -- so a test can monkeypatch
@@ -418,6 +437,11 @@ class TransferResponse(BaseModel):
 
 class SimulateTestPaymentRequest(BaseModel):
     payment_request: str
+
+
+class TipToCreatorRequest(BaseModel):
+    asset: str
+    amount_minor: int = Field(gt=0)
 
 
 class DepositApplePayRequest(BaseModel):
@@ -1046,6 +1070,51 @@ def transfer(
     return TransferResponse(balances=_balance_entries(user_id, storage))
 
 
+@app.post("/v1/tip/{platform}/{username}", response_model=TransferResponse)
+def tip_creator(
+    platform: str,
+    username: str,
+    request: TipToCreatorRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> TransferResponse:
+    """Tips a creator directly out of the signed-in user's ledger balance --
+    the core "person on my screen -> pay them" loop, for the one case that
+    doesn't need Lightning, Grid, or any external rail at all: the creator
+    already has a TipMe account linked to their handle (see `register`'s
+    `tipme_user_id`).
+
+    This is deliberately the *only* thing this endpoint does. A handle with
+    no linked account returns 404 -- the client already has a fallback for
+    that (the manual-Lightning-address path `TipFlow` offers when a creator
+    "hasn't set up TipMe yet"), and this endpoint is not the place to grow a
+    second one. No conversion either: same-asset only, same as `/v1/transfer`.
+    """
+    try:
+        handle = normalise_handle(platform, username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    if request.asset not in ASSETS:
+        raise HTTPException(status_code=400, detail=f"asset must be one of {ASSETS}")
+
+    record = storage.get(handle)
+    if record is None or record.tipme_user_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"@{username} on {platform} has no linked TipMe account",
+        )
+    if record.tipme_user_id == user_id:
+        raise HTTPException(status_code=400, detail="cannot tip yourself")
+
+    try:
+        storage.transfer_balance(user_id, record.tipme_user_id, request.asset, request.amount_minor)
+    except InsufficientBalance as error:
+        raise HTTPException(status_code=402, detail=str(error)) from error
+
+    return TransferResponse(balances=_balance_entries(user_id, storage))
+
+
 @app.get("/v1/rates", response_model=RatesResponse)
 async def get_rates(currency: str = "GBP") -> RatesResponse:
     try:
@@ -1097,6 +1166,13 @@ def _signed_payload(record: CreatorRecord, settings: Settings) -> dict:
         "minimum_tip_minor_units": record.minimum_tip_minor,
         "display_name": record.display_name,
         "verified": record.verified,
+        # Whether this handle is linked to a signed-in TipMe account -- lets
+        # the client route the actual payment ledger-to-ledger (see
+        # `POST /v1/tip/{platform}/{username}`) instead of over Lightning.
+        # The `tipme_user_id` itself is never exposed: nothing the client
+        # does needs it, and a public creator lookup is not the place to
+        # leak an internal account id.
+        "tipme_linked": record.tipme_user_id is not None,
         # Not itself signed-for-integrity the way the payment fields are — the
         # image bytes ride a separate, ordinary HTTPS GET. This just tells the
         # client whether that GET is worth making. Cosmetic only; nothing on
@@ -1131,6 +1207,7 @@ def register(
     x_admin_token: str | None = Header(default=None),
     settings: Settings = Depends(get_settings),
     storage: Storage = Depends(get_storage),
+    tipme_user_id: str | None = Depends(_optional_current_user),
 ) -> RegisterResponse:
     """Creator onboarding: link a handle to a wallet.
 
@@ -1143,6 +1220,11 @@ def register(
     wallet, and collect that creator's tips; clearing the verified flag would
     warn users but would not stop the payment. So updates require the
     management token issued at first registration (or the admin token).
+
+    Registering while signed in to a TipMe account additionally links the
+    handle to that account (`tipme_user_id`) -- this is what lets a tip to
+    this handle move ledger-to-ledger instead of over Lightning. See
+    `POST /v1/tip/{platform}/{username}`.
     """
     try:
         handle = normalise_handle(request.platform, request.username)
@@ -1179,6 +1261,7 @@ def register(
         display_name=request.display_name,
         claim_token=token,
         management_token=management_token,
+        tipme_user_id=tipme_user_id,
     )
 
     return RegisterResponse(

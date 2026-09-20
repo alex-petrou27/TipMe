@@ -38,12 +38,42 @@ public actor CustodialPaymentBackend: PaymentBackend, WalletBackend {
 
     public func prepareRoute(tip: Amount, to destination: LightningAddress,
                              receiveAsset: Asset) async throws -> SettlementRoute {
-        throw PaymentBackendError.network(Self.notYetAvailable)
+        // Same-asset needs no conversion at all -- a direct route, same as
+        // `WalletBackend.prepareSend` already returns for a known-amount
+        // destination. Cross-asset conversion (sender pays USDT, creator
+        // wants bitcoin) genuinely isn't built yet; that's the one real gap
+        // left in `notYetAvailable`, not "sending" in general.
+        guard tip.asset == receiveAsset else {
+            throw PaymentBackendError.conversionUnavailable(from: tip.asset, to: receiveAsset)
+        }
+        return .direct(tip, at: clock.now)
     }
 
     public func send(route: SettlementRoute, to destination: LightningAddress,
                      idempotencyKey: String) async throws -> PaymentReceipt {
         throw PaymentBackendError.network(Self.notYetAvailable)
+    }
+
+    /// Tips a creator whose handle is linked to a TipMe account -- one call,
+    /// straight ledger-to-ledger, via the registry's `/v1/tip/{platform}/
+    /// {username}`. See `PaymentBackend.sendToCreatorAccount` and
+    /// `PaymentEngine.execute`, which is what decides to call this instead
+    /// of `send`.
+    public func sendToCreatorAccount(handle: CreatorHandle, amount: Amount,
+                                     idempotencyKey: String) async throws -> PaymentReceipt {
+        guard let token = sessionTokenProvider() else {
+            throw PaymentBackendError.notConnected
+        }
+        do {
+            try await client.tipCreator(
+                platform: handle.platform.rawValue, username: handle.username,
+                asset: amount.asset, amountMinor: amount.minorUnits, sessionToken: token)
+        } catch {
+            throw Self.paymentBackendError(for: error)
+        }
+        return PaymentReceipt(status: .succeeded, paymentHash: "ledger:\(idempotencyKey)",
+                              networkFee: .zero(amount.asset), sentAmount: amount,
+                              completedAt: clock.now)
     }
 
     // MARK: - WalletBackend

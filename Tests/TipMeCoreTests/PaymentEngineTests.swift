@@ -371,4 +371,42 @@ final class PaymentEngineTests: XCTestCase {
         XCTAssertTrue(events.contains { $0.outcome == .rejected },
                       "a refused payment must be as visible in the log as a successful one")
     }
+
+    // MARK: - Tipping a creator linked to a TipMe account
+
+    /// The core "person on my screen -> pay them" loop for two TipMe users:
+    /// no Lightning `send` at all, just the ledger-backed
+    /// `sendToCreatorAccount` -- see `PaymentEngine.execute`.
+    func testLinkedCreatorIsPaidLedgerToLedgerNotOverLightning() async throws {
+        let harness = makeHarness()
+        let creator = CreatorRecord.stub(tipmeLinked: true)
+        let quote = try await makeQuote(harness, tip: .sats(2_000), creator: creator)
+
+        _ = try await harness.engine.execute(try await authorize(harness, quote: quote, creator: creator))
+
+        let linkedSends = await harness.backend.linkedAccountSendCalls
+        XCTAssertEqual(linkedSends.count, 1)
+        XCTAssertEqual(linkedSends[0].handle, creator.handle)
+        XCTAssertEqual(linkedSends[0].amount, .sats(2_000))
+
+        // The fee still goes over Lightning to TipMe's own address -- only
+        // the tip itself moves ledger-to-ledger.
+        let lightningSends = await harness.backend.recordedSends()
+        XCTAssertEqual(lightningSends.count, 1)
+        XCTAssertEqual(lightningSends[0].destination, Fixtures.feeDestination)
+    }
+
+    func testLinkedCreatorSendFailureSurfacesAsATipFailure() async throws {
+        let harness = makeHarness()
+        let creator = CreatorRecord.stub(tipmeLinked: true)
+        await harness.backend.setLinkedAccountSendError(.rejectedByNetwork("no such deposit"))
+        let quote = try await makeQuote(harness, creator: creator)
+
+        do {
+            _ = try await harness.engine.execute(try await authorize(harness, quote: quote, creator: creator))
+            XCTFail("expected the tip to fail")
+        } catch PaymentEngineError.backend(.rejectedByNetwork) {
+            // expected
+        }
+    }
 }

@@ -143,7 +143,8 @@ public struct RegistryClient: CreatorResolver {
                              updatedAt: payload.updatedAt,
                              displayName: payload.displayName,
                              verified: payload.verified,
-                             photoURL: photoURL)
+                             photoURL: photoURL,
+                             tipmeLinked: payload.tipmeLinked)
     }
 
     struct SignedEnvelope: Codable, Sendable {
@@ -164,6 +165,7 @@ public struct RegistryClient: CreatorResolver {
         let displayName: String?
         let verified: Bool
         let hasPhoto: Bool
+        let tipmeLinked: Bool
         let updatedAt: Date
         let signedAt: Date
     }

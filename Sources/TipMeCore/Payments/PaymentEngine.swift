@@ -139,12 +139,24 @@ public actor PaymentEngine {
         // sender-side fee while guaranteeing the creator receives the full tip
         // requires two separate payments. Ordering matters: if only one of the
         // two can succeed, it must be the creator's.
+        //
+        // A creator whose handle is linked to a TipMe account (`tipmeLinked`)
+        // is paid ledger-to-ledger instead of over Lightning -- no invoice, no
+        // routing, just the creator's balance moving. This is the entire
+        // "person on my screen -> pay them" loop for the one case that needs
+        // no external rail at all: both people are on TipMe.
         await log(.tipPaymentAttempted, .ok, intent)
         let tipReceipt: PaymentReceipt
         do {
-            tipReceipt = try await backend.send(route: quote.route,
-                                                to: intent.creator.lightningAddress,
-                                                idempotencyKey: "\(intent.id.uuidString):tip")
+            if intent.creator.tipmeLinked {
+                tipReceipt = try await backend.sendToCreatorAccount(
+                    handle: intent.creator.handle, amount: quote.route.credited,
+                    idempotencyKey: "\(intent.id.uuidString):tip")
+            } else {
+                tipReceipt = try await backend.send(route: quote.route,
+                                                    to: intent.creator.lightningAddress,
+                                                    idempotencyKey: "\(intent.id.uuidString):tip")
+            }
         } catch let error as PaymentBackendError {
             await log(.tipPaymentFailed, .failed, intent, detail: String(describing: error))
             throw PaymentEngineError.backend(error)

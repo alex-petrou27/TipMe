@@ -389,6 +389,33 @@ public struct AccountClient: Sendable {
         }
     }
 
+    // MARK: - Tipping a linked creator
+
+    /// Moves `amountMinor` of `asset` straight from this account's ledger
+    /// into the creator's, when `platform`/`username` is linked to a TipMe
+    /// account -- see the registry's `POST /v1/tip/{platform}/{username}`.
+    /// No Lightning, no route, no conversion: same-asset only, same as
+    /// `transfer`. `.recipientNotFound` covers both "nobody has claimed this
+    /// handle" and "they have, but it isn't linked to an account" -- from
+    /// the sender's side these mean the identical thing: fall back to
+    /// however this creator actually wants to be paid.
+    public func tipCreator(platform: String, username: String, asset: Asset,
+                           amountMinor: Int64, sessionToken: String) async throws {
+        guard let url = url(path: "/v1/tip/\(platform)/\(username)") else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try? JSONEncoder().encode(
+            TipCreatorRequestBody(asset: asset.rawValue, amountMinor: amountMinor))
+
+        let (data, response) = try await perform(request)
+        try Self.checkTransferStatus(response, data: data)
+    }
+
     // MARK: - Shared plumbing
 
     private func authenticate(path: String, email: String, password: String) async throws -> Session {
@@ -657,6 +684,15 @@ public struct AccountClient: Sendable {
 
     private struct DepositBitcoinResponseBody: Decodable {
         let address: String
+    }
+
+    private struct TipCreatorRequestBody: Encodable {
+        let asset: String
+        let amountMinor: Int64
+        enum CodingKeys: String, CodingKey {
+            case asset
+            case amountMinor = "amount_minor"
+        }
     }
 
     private struct DepositApplePayRequestBody: Encodable {

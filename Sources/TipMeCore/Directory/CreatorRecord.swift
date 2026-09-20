@@ -27,6 +27,12 @@ public struct CreatorRecord: Equatable, Codable, Sendable {
     /// flag, not carried in the signature itself — cosmetic only, so it rides
     /// an ordinary HTTPS GET rather than the Ed25519-verified payment fields.
     public let photoURL: URL?
+    /// Whether this handle is linked to a signed-in TipMe account (the
+    /// registry's `tipme_linked`, set when the creator registered while
+    /// signed in). When true, `PaymentEngine` moves the tip ledger-to-ledger
+    /// through the creator's account instead of over Lightning to
+    /// `lightningAddress` -- see `PaymentBackend.sendToCreatorAccount`.
+    public let tipmeLinked: Bool
 
     public init(handle: CreatorHandle,
                 lightningAddress: LightningAddress,
@@ -35,7 +41,8 @@ public struct CreatorRecord: Equatable, Codable, Sendable {
                 updatedAt: Date,
                 displayName: String? = nil,
                 verified: Bool,
-                photoURL: URL? = nil) {
+                photoURL: URL? = nil,
+                tipmeLinked: Bool = false) {
         self.handle = handle
         self.lightningAddress = lightningAddress
         self.preferredAsset = preferredAsset
@@ -44,6 +51,7 @@ public struct CreatorRecord: Equatable, Codable, Sendable {
         self.displayName = displayName
         self.verified = verified
         self.photoURL = photoURL
+        self.tipmeLinked = tipmeLinked
     }
 }
 
