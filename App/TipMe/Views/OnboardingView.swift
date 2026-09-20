@@ -18,6 +18,7 @@ struct OnboardingView: View {
     @State private var password: String = ""
     @State private var errorMessage: String?
     @State private var isSubmitting = false
+    @State private var heroAppeared = false
 
     @State private var connectedHandles: [Platform: String] = [:]
     @State private var connectingPlatform: Platform?
@@ -58,6 +59,13 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.onBrand)
                 .frame(width: 76, height: 76)
                 .background(Theme.brand, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .scaleEffect(heroAppeared ? 1 : 0.6)
+                .opacity(heroAppeared ? 1 : 0)
+                .onAppear {
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.65)) {
+                        heroAppeared = true
+                    }
+                }
 
             Text("TipMe")
                 .font(Theme.balance(34))
