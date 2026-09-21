@@ -46,14 +46,20 @@ struct TipSheetView: View {
             loading(message)
         case .amount(let creator):
             amountPicker(creator)
-        case .manualEntry(let reason, let handle):
-            manualEntry(reason, forKnownHandle: handle)
+        case .manualEntry(let reason):
+            manualEntry(reason)
         case .confirm(let creator, let quote):
             confirmation(creator, quote)
         case .paying:
             loading("Sending…")
         case .receipt(let result, let creator):
             receipt(result, creator)
+        case .pendingAmount(let handle):
+            pendingAmountPicker(handle)
+        case .pendingConfirm(let handle, let amount, let fiat):
+            pendingConfirmation(handle, amount, fiat)
+        case .pendingReceipt(let handle, let amount):
+            pendingReceiptView(handle, amount)
         case .error(let message):
             errorState(message)
         }
@@ -120,61 +126,153 @@ struct TipSheetView: View {
         }
     }
 
-    /// Two genuinely different situations share this screen, and they should
-    /// not look the same:
-    ///
-    /// - `forKnownHandle` set: the share told us exactly who this is, and
-    ///   they simply haven't set up TipMe. There is nothing for the sender
-    ///   to type their way out of, and no reason for them to ever see the
-    ///   words "Lightning address" -- that dead end used to offer a manual
-    ///   payment-address field here, which is exactly the kind of payment
-    ///   plumbing this product exists to hide. A clean dead end instead.
-    /// - `forKnownHandle` nil: the share itself couldn't be identified at
-    ///   all (a news article, an unrecognised link) -- there genuinely is
-    ///   no handle to look up, so a manual address is the only way forward
-    ///   at all. This is the one place that capability still belongs.
-    @ViewBuilder
-    private func manualEntry(_ reason: String, forKnownHandle handle: CreatorHandle?) -> some View {
-        if let handle {
-            VStack(spacing: 16) {
-                Image(systemName: "person.crop.circle.badge.questionmark")
-                    .font(.system(size: 32))
-                    .foregroundStyle(Theme.textTertiary)
-                Text("\(handle.displayName) hasn't set up TipMe yet.")
-                    .font(Theme.headline)
-                    .foregroundStyle(Theme.textPrimary)
-                Text("Let them know, and come back once they have.")
-                    .font(Theme.body)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(Theme.textSecondary)
-                cancelButton
-            }
-        } else {
-            VStack(spacing: 16) {
-                Image(systemName: "questionmark.circle.fill")
-                    .font(.system(size: 32))
-                    .foregroundStyle(Theme.textTertiary)
-                Text(reason)
-                    .font(Theme.body)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(Theme.textSecondary)
+    /// Reached only when the share itself couldn't be identified at all (a
+    /// news article, an unrecognised link) -- there genuinely is no handle
+    /// to look up, so a manual address is the only way forward. A share
+    /// that *did* name a handle but found nobody registered goes to
+    /// `pendingAmountPicker` instead, never here -- see `TipFlowState
+    /// .creatorNotRegistered`.
+    private func manualEntry(_ reason: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "questionmark.circle.fill")
+                .font(.system(size: 32))
+                .foregroundStyle(Theme.textTertiary)
+            Text(reason)
+                .font(Theme.body)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(Theme.textSecondary)
 
-                TextField("name@wallet.com", text: $viewModel.manualAddress)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.emailAddress)
-                    .font(Theme.body)
+            TextField("name@wallet.com", text: $viewModel.manualAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.emailAddress)
+                .font(Theme.body)
+                .padding(.vertical, 13)
+                .padding(.horizontal, 16)
+                .background(Theme.surfaceRaised, in: Capsule())
+
+            PrimaryButton(title: "Continue", isDisabled: viewModel.manualAddress.isEmpty) {
+                Task { await viewModel.submitManualAddress() }
+            }
+
+            cancelButton
+        }
+    }
+
+    /// A handle nobody has claimed on TipMe yet. The tip still sends right
+    /// now -- it sits in escrow against this exact handle until whoever
+    /// owns it proves it and claims it (see `PendingTipFlow`) -- so this
+    /// looks like the ordinary amount picker, not a dead end.
+    private func pendingAmountPicker(_ handle: CreatorHandle) -> some View {
+        VStack(spacing: 20) {
+            VStack(spacing: 10) {
+                IconBadge(systemImage: "clock.fill", size: 72)
+                Text(handle.displayName)
+                    .font(Theme.title)
+                    .foregroundStyle(Theme.textPrimary)
+                Text("Hasn't set up TipMe yet — this will be waiting for them the moment they do.")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                ForEach(viewModel.presets, id: \.self) { fiat in
+                    PresetAmountButton(title: fiat.formatted) {
+                        Haptics.tap()
+                        Task { await viewModel.selectPendingAmount(fiat) }
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                TextField("Other amount", text: $viewModel.customAmountText)
+                    .keyboardType(.decimalPad)
+                    .font(Theme.headline)
                     .padding(.vertical, 13)
                     .padding(.horizontal, 16)
                     .background(Theme.surfaceRaised, in: Capsule())
 
-                PrimaryButton(title: "Continue", isDisabled: viewModel.manualAddress.isEmpty) {
-                    Task { await viewModel.submitManualAddress() }
+                Button {
+                    Haptics.tap()
+                    Task { await viewModel.selectPendingCustomAmount() }
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Theme.onBrand)
+                        .frame(width: 46, height: 46)
+                        .background(
+                            viewModel.customAmountText.isEmpty ? Theme.textTertiary : Theme.brand, in: Circle())
                 }
-
-                cancelButton
+                .disabled(viewModel.customAmountText.isEmpty)
             }
+
+            cancelButton
         }
+    }
+
+    private func pendingConfirmation(_ handle: CreatorHandle, _ amount: Amount, _ fiat: FiatAmount) -> some View {
+        VStack(spacing: 20) {
+            VStack(spacing: 10) {
+                IconBadge(systemImage: "clock.fill", size: 72)
+                Text(handle.displayName)
+                    .font(Theme.title)
+                    .foregroundStyle(Theme.textPrimary)
+            }
+
+            VStack(spacing: 4) {
+                Text("You send")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                Text(fiat.formatted)
+                    .font(Theme.amountLarge)
+                    .foregroundStyle(Theme.textPrimary)
+            }
+
+            Card {
+                Text("Held for \(handle.displayName) until they set up TipMe. You can take it back any time before then.")
+                    .font(Theme.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            TextField("Leave a message (optional)", text: $viewModel.pendingNoteText, axis: .vertical)
+                .font(Theme.body)
+                .padding(.vertical, 13)
+                .padding(.horizontal, 16)
+                .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall, style: .continuous))
+                .lineLimit(1...3)
+
+            PrimaryButton(title: "Confirm with Face ID", systemImage: "faceid") {
+                Haptics.confirm()
+                Task { await viewModel.confirmPendingTip() }
+            }
+
+            Button("Change amount") { viewModel.backToPendingAmount() }
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
+        }
+    }
+
+    private func pendingReceiptView(_ handle: CreatorHandle, _ amount: Amount) -> some View {
+        VStack(spacing: 16) {
+            SuccessBadge(size: 72)
+
+            Text("On its way to \(handle.displayName)")
+                .font(Theme.headline)
+                .foregroundStyle(Theme.textPrimary)
+
+            Text(amount.formatted)
+                .font(Theme.amountMedium)
+                .foregroundStyle(Theme.brand)
+
+            Text("They'll get it the moment they set up TipMe.")
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textSecondary)
+                .multilineTextAlignment(.center)
+
+            PrimaryButton(title: "Done") { viewModel.dismiss() }
+        }
+        .padding(.vertical, 4)
     }
 
     /// The disclosure screen. Every number here comes from the same `TipQuote`

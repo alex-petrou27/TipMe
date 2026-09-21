@@ -44,6 +44,13 @@ public struct AuditEvent: Codable, Equatable, Sendable {
         // ledger movement, no Lightning or on-chain rail involved.
         case internalTransferSucceeded
         case internalTransferFailed
+
+        // Pending tips -- a tip sent to a handle nobody has claimed on
+        // TipMe yet, held in escrow. See `PendingTipFlow`.
+        case pendingTipSent
+        case pendingTipFailed
+        case pendingTipReclaimed
+        case pendingTipReclaimFailed
     }
 
     public enum Outcome: String, Codable, Sendable {

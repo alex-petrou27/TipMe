@@ -225,7 +225,8 @@ struct OnboardingView: View {
             return "Couldn't reach TipMe. Try again."
         case .lightningUnavailable, .lightningRequestInvalid, .insufficientBalance,
              .invoiceAlreadyPaid, .depositNotFound, .lightningNodeError,
-             .onchainUnavailable, .onchainError, .recipientNotFound, .requestRejected:
+             .onchainUnavailable, .onchainError, .recipientNotFound, .requestRejected,
+             .handleAlreadyRegistered, .pendingTipNotFound:
             // Signup/login never produces these -- they're specific to the
             // deposit/withdraw/transfer endpoints -- but the switch must
             // stay exhaustive over the whole shared error enum.

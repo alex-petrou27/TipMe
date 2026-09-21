@@ -276,6 +276,56 @@ public actor CustodialPaymentBackend: PaymentBackend, WalletBackend {
         }
     }
 
+    // MARK: - Pending tips (escrow for an unclaimed handle)
+    //
+    // Not part of `WalletBackend` or `PaymentBackend` -- same reasoning as
+    // internal transfer above: there is no `CreatorRecord` for a handle
+    // nobody has claimed, so nothing to route through `PaymentEngine`'s
+    // intent machinery. `PendingTipFlow` drives these directly.
+
+    /// Debits this account and escrows `amount` against `handle` -- see the
+    /// registry's `POST /v1/tip/{platform}/{username}/pending`.
+    public func sendPendingTip(handle: CreatorHandle, amount: Amount,
+                               note: String?) async throws -> AccountClient.PendingTipSendResult {
+        guard let token = sessionTokenProvider() else {
+            throw PaymentBackendError.notConnected
+        }
+        do {
+            return try await client.sendPendingTip(
+                platform: handle.platform.rawValue, username: handle.username,
+                asset: amount.asset, amountMinor: amount.minorUnits, note: note,
+                sessionToken: token)
+        } catch {
+            throw Self.paymentBackendError(for: error)
+        }
+    }
+
+    /// Every pending tip this account has ever sent -- see the registry's
+    /// `GET /v1/tip/pending`.
+    public func listPendingTips() async throws -> [AccountClient.PendingTipSummary] {
+        guard let token = sessionTokenProvider() else {
+            throw PaymentBackendError.notConnected
+        }
+        do {
+            return try await client.listPendingTips(sessionToken: token)
+        } catch {
+            throw Self.paymentBackendError(for: error)
+        }
+    }
+
+    /// Takes back a pending tip nobody has claimed yet -- see the
+    /// registry's `POST /v1/tip/pending/{id}/reclaim`.
+    public func reclaimPendingTip(id: String) async throws -> AccountClient.TransferResult {
+        guard let token = sessionTokenProvider() else {
+            throw PaymentBackendError.notConnected
+        }
+        do {
+            return try await client.reclaimPendingTip(id: id, sessionToken: token)
+        } catch {
+            throw Self.paymentBackendError(for: error)
+        }
+    }
+
     public func transactionHistory(limit: Int) async throws -> [WalletTransaction] {
         // No ledger-entries endpoint yet either. An empty history is the
         // honest answer -- "we don't know of any transactions" -- rather
@@ -337,6 +387,10 @@ public actor CustodialPaymentBackend: PaymentBackend, WalletBackend {
             return .rejectedByNetwork("No TipMe account exists with that email.")
         case .requestRejected(let detail):
             return .rejectedByNetwork(detail)
+        case .handleAlreadyRegistered:
+            return .rejectedByNetwork("That handle is already registered -- pay them directly instead.")
+        case .pendingTipNotFound:
+            return .rejectedByNetwork("That pending tip can't be found -- it may already be claimed or reclaimed.")
         case .invalidRequest, .emailTaken, .invalidCredentials, .tooManyAttempts,
              .transport, .responseMalformed:
             return .network(String(describing: accountError))

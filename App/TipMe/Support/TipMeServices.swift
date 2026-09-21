@@ -149,5 +149,10 @@ public struct TipMeServices: Sendable {
         InternalTransferFlow(backend: backend, gate: gate, auditLog: auditLog, clock: clock)
     }
 
+    public func makePendingTipFlow(origin: PaymentIntent.Origin,
+                                   clock: Clock = SystemClock()) -> PendingTipFlow {
+        PendingTipFlow(backend: backend, gate: gate, auditLog: auditLog, clock: clock, origin: origin)
+    }
+
     public var isSignedIn: Bool { accountKeychain.hasSession() }
 }

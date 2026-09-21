@@ -61,6 +61,26 @@ public struct AccountClient: Sendable {
         public let balances: [Asset: Int64]
     }
 
+    public struct PendingTipSendResult: Equatable, Sendable {
+        public let balances: [Asset: Int64]
+        public let pendingTipID: String
+    }
+
+    /// One tip this account has sent to a handle that wasn't registered yet
+    /// -- see the registry's `GET /v1/tip/pending`. `status` is `"pending"`
+    /// (still in escrow), `"claimed"` (the handle got linked and verified,
+    /// and the money moved), or `"reclaimed"` (the sender took it back).
+    public struct PendingTipSummary: Equatable, Sendable {
+        public let id: String
+        public let platform: String
+        public let username: String
+        public let asset: Asset
+        public let amountMinor: Int64
+        public let note: String?
+        public let status: String
+        public let createdAt: Date
+    }
+
     public struct ApplePayDepositResult: Equatable, Sendable {
         public let balances: [Asset: Int64]
     }
@@ -122,6 +142,16 @@ public struct AccountClient: Sendable {
         // Internal transfer specific -- see Registry's /v1/transfer.
         /// No TipMe account exists with that email (404).
         case recipientNotFound
+
+        // Pending tips (escrow for an unclaimed handle) specific -- see
+        // Registry's /v1/tip/{platform}/{username}/pending and
+        // /v1/tip/pending/{id}/reclaim.
+        /// This handle is already registered -- pay them directly instead
+        /// of through escrow (409).
+        case handleAlreadyRegistered
+        /// No reclaimable pending tip exists with that id for this account
+        /// (404) -- already claimed, already reclaimed, or someone else's.
+        case pendingTipNotFound
     }
 
     private let configuration: Configuration
@@ -425,6 +455,96 @@ public struct AccountClient: Sendable {
         try Self.checkTransferStatus(response, data: data)
     }
 
+    // MARK: - Pending tips (escrow for an unclaimed handle)
+
+    /// Tips a handle nobody has claimed on TipMe yet -- see the registry's
+    /// `POST /v1/tip/{platform}/{username}/pending`. Debits this account
+    /// immediately, in full; the amount sits in escrow against that exact
+    /// handle until it's linked and verified (or this account reclaims it --
+    /// see `reclaimPendingTip`). `.handleAlreadyRegistered` means the client
+    /// should have routed this through `tipCreator` or a manual address
+    /// instead -- the registry refuses to shadow a real payment method with
+    /// escrow.
+    public func sendPendingTip(platform: String, username: String, asset: Asset,
+                               amountMinor: Int64, note: String?,
+                               sessionToken: String) async throws -> PendingTipSendResult {
+        guard let url = url(path: "/v1/tip/\(platform)/\(username)/pending") else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try? JSONEncoder().encode(
+            PendingTipRequestBody(asset: asset.rawValue, amountMinor: amountMinor, note: note))
+
+        let (data, response) = try await perform(request)
+        try Self.checkPendingTipSendStatus(response, data: data)
+
+        do {
+            let decoded = try JSONDecoder().decode(PendingTipSendResponseBody.self, from: data)
+            return PendingTipSendResult(balances: Self.balancesDict(decoded.balances),
+                                        pendingTipID: decoded.pendingTipID)
+        } catch {
+            throw AccountError.responseMalformed(String(describing: error))
+        }
+    }
+
+    /// Every pending tip this account has ever sent -- claimed, reclaimed,
+    /// or still waiting -- see the registry's `GET /v1/tip/pending`.
+    public func listPendingTips(sessionToken: String) async throws -> [PendingTipSummary] {
+        guard let url = url(path: "/v1/tip/pending") else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await perform(request)
+        try Self.checkStatus(response, unauthorizedMeans: .sessionExpired)
+
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let decoded = try decoder.decode(PendingTipsListResponseBody.self, from: data)
+            return decoded.tips.compactMap { entry in
+                guard let asset = Asset(rawValue: entry.asset) else { return nil }
+                return PendingTipSummary(id: entry.id, platform: entry.platform, username: entry.username,
+                                         asset: asset, amountMinor: entry.amountMinor, note: entry.note,
+                                         status: entry.status, createdAt: entry.createdAt)
+            }
+        } catch {
+            throw AccountError.responseMalformed(String(describing: error))
+        }
+    }
+
+    /// Takes back a pending tip nobody has claimed yet -- Venmo's "take
+    /// back" for the identical situation. `.pendingTipNotFound` covers
+    /// "already claimed", "already reclaimed", and "not yours" alike; from
+    /// the sender's side these all mean the same thing: there is nothing
+    /// left here to take back.
+    public func reclaimPendingTip(id: String, sessionToken: String) async throws -> TransferResult {
+        guard let url = url(path: "/v1/tip/pending/\(id)/reclaim") else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await perform(request)
+        try Self.checkReclaimStatus(response)
+
+        do {
+            let decoded = try JSONDecoder().decode(TransferResponseBody.self, from: data)
+            return TransferResult(balances: Self.balancesDict(decoded.balances))
+        } catch {
+            throw AccountError.responseMalformed(String(describing: error))
+        }
+    }
+
     // MARK: - Shared plumbing
 
     private func authenticate(path: String, email: String, password: String) async throws -> Session {
@@ -586,6 +706,44 @@ public struct AccountClient: Sendable {
             throw AccountError.insufficientBalance
         case 404:
             throw AccountError.recipientNotFound
+        default:
+            throw AccountError.transport("registry returned HTTP \(http.statusCode)")
+        }
+    }
+
+    /// Status-code mapping for `POST /v1/tip/{platform}/{username}/pending`.
+    private static func checkPendingTipSendStatus(_ response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw AccountError.responseMalformed("non-HTTP response")
+        }
+        switch http.statusCode {
+        case 200, 201:
+            return
+        case 400:
+            throw AccountError.requestRejected(Self.detail(from: data) ?? "That request was invalid.")
+        case 401:
+            throw AccountError.sessionExpired
+        case 402:
+            throw AccountError.insufficientBalance
+        case 409:
+            throw AccountError.handleAlreadyRegistered
+        default:
+            throw AccountError.transport("registry returned HTTP \(http.statusCode)")
+        }
+    }
+
+    /// Status-code mapping for `POST /v1/tip/pending/{id}/reclaim`.
+    private static func checkReclaimStatus(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw AccountError.responseMalformed("non-HTTP response")
+        }
+        switch http.statusCode {
+        case 200, 201:
+            return
+        case 401:
+            throw AccountError.sessionExpired
+        case 404:
+            throw AccountError.pendingTipNotFound
         default:
             throw AccountError.transport("registry returned HTTP \(http.statusCode)")
         }
@@ -755,5 +913,48 @@ public struct AccountClient: Sendable {
 
     private struct TransferResponseBody: Decodable {
         let balances: [BalanceEntry]
+    }
+
+    private struct PendingTipRequestBody: Encodable {
+        let asset: String
+        let amountMinor: Int64
+        let note: String?
+
+        enum CodingKeys: String, CodingKey {
+            case asset
+            case amountMinor = "amount_minor"
+            case note
+        }
+    }
+
+    private struct PendingTipSendResponseBody: Decodable {
+        let balances: [BalanceEntry]
+        let pendingTipID: String
+
+        enum CodingKeys: String, CodingKey {
+            case balances
+            case pendingTipID = "pending_tip_id"
+        }
+    }
+
+    private struct PendingTipEntryBody: Decodable {
+        let id: String
+        let platform: String
+        let username: String
+        let asset: String
+        let amountMinor: Int64
+        let note: String?
+        let status: String
+        let createdAt: Date
+
+        enum CodingKeys: String, CodingKey {
+            case id, platform, username, asset, note, status
+            case amountMinor = "amount_minor"
+            case createdAt = "created_at"
+        }
+    }
+
+    private struct PendingTipsListResponseBody: Decodable {
+        let tips: [PendingTipEntryBody]
     }
 }

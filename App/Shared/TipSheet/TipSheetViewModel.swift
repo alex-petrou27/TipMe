@@ -39,15 +39,25 @@ final class TipSheetViewModel: ObservableObject {
     enum Screen {
         case loading(String)
         case amount(CreatorRecord)
-        case manualEntry(reason: String, handle: CreatorHandle?)
+        case manualEntry(reason: String)
         case confirm(CreatorRecord, TipQuote)
         case paying
         case receipt(TipResult, CreatorRecord)
+        /// A handle nobody has claimed on TipMe yet -- amount picker for an
+        /// escrowed tip, in place of the old manual-entry dead end. See
+        /// `PendingTipFlow`.
+        case pendingAmount(CreatorHandle)
+        case pendingConfirm(CreatorHandle, Amount, FiatAmount)
+        case pendingReceipt(CreatorHandle, Amount)
         case error(String)
     }
 
     @Published private(set) var screen: Screen = .loading("Reading link…")
     @Published var manualAddress: String = ""
+    /// The optional "leave a message" text for an escrowed tip -- shown only
+    /// on `.pendingConfirm`. Cleared on every fresh identify so a leftover
+    /// note from a previous tip in the same sheet session can't ride along.
+    @Published var pendingNoteText: String = ""
 
     /// Preset tips, in the currency the sender actually thinks in -- never an
     /// asset. There is no "which crypto do you want to send" choice anywhere
@@ -69,6 +79,7 @@ final class TipSheetViewModel: ObservableObject {
 
     private let services: TipMeServices
     private let flow: TipFlow
+    private let pendingFlow: PendingTipFlow
     private let onFinish: () -> Void
     private var sourceLink: URL?
     /// The sender's own currency -- `AppConfiguration.fiatCurrency` defaults
@@ -83,6 +94,7 @@ final class TipSheetViewModel: ObservableObject {
          onFinish: @escaping () -> Void) {
         self.services = services
         self.flow = services.makeFlow(origin: origin)
+        self.pendingFlow = services.makePendingTipFlow(origin: origin)
         self.onFinish = onFinish
         let currency = services.configuration.fiatCurrency
         self.fiatCurrency = currency
@@ -141,8 +153,59 @@ final class TipSheetViewModel: ObservableObject {
     // MARK: - Manual fallback
 
     func submitManualAddress() async {
-        guard case .manualEntry(_, let handle) = screen else { return }
-        apply(await flow.manualRecipient(address: manualAddress, handle: handle))
+        guard case .manualEntry = screen else { return }
+        apply(await flow.manualRecipient(address: manualAddress, handle: nil))
+    }
+
+    // MARK: - Pending tip (a handle nobody has claimed yet)
+
+    /// No creator preference exists to read for a handle nobody has
+    /// registered -- this defaults to USDT for the same reason `register()`
+    /// itself defaults new creators to it: someone thinking in £/$ almost
+    /// always means "dollars", not "however many sats that happens to be
+    /// worth today."
+    private static let pendingTipAsset: Asset = .usdt
+
+    func selectPendingAmount(_ fiat: FiatAmount) async {
+        guard case .pendingAmount(let handle) = screen else { return }
+        screen = .loading("Checking amount…")
+        do {
+            let rate = try await services.backend.rate(for: Self.pendingTipAsset, in: fiatCurrency)
+            screen = .pendingConfirm(handle, rate.assetAmount(for: fiat), fiat)
+        } catch {
+            screen = .error("Couldn't price that tip. Try again in a moment.")
+        }
+    }
+
+    func selectPendingCustomAmount() async {
+        let normalised = customAmountText.replacingOccurrences(of: ",", with: ".")
+        guard let value = Decimal(string: normalised), value > 0 else {
+            screen = .error("Enter an amount.")
+            return
+        }
+        let minorUnits = NSDecimalNumber(decimal: value * 100).int64Value
+        await selectPendingAmount(FiatAmount(currencyCode: fiatCurrency, minorUnits: minorUnits))
+    }
+
+    func confirmPendingTip() async {
+        guard case .pendingConfirm(let handle, let amount, let fiat) = screen else { return }
+        screen = .paying
+        switch await pendingFlow.send(handle: handle, amount: amount, fiatAmount: fiat, note: pendingNoteText) {
+        case .succeeded(let handle, let amount, _, _):
+            screen = .pendingReceipt(handle, amount)
+        case .confirming:
+            screen = .pendingConfirm(handle, amount, fiat) // Face ID was cancelled
+        case .failed(let message):
+            screen = .error(message)
+        case .idle, .sending:
+            screen = .error("Something went wrong. Try again.")
+        }
+    }
+
+    func backToPendingAmount() {
+        if case .pendingConfirm(let handle, _, _) = screen {
+            screen = .pendingAmount(handle)
+        }
     }
 
     // MARK: - Step 3: confirm
@@ -231,12 +294,10 @@ final class TipSheetViewModel: ObservableObject {
         case .ready(let creator):
             screen = .amount(creator)
         case .creatorNotRegistered(let handle):
-            // The `reason` text here is never actually shown -- TipSheetView
-            // renders its own clean dead-end whenever `handle` is non-nil.
-            // Carried anyway so this case's shape matches `.needsManualEntry`.
-            screen = .manualEntry(reason: "\(handle.displayName) hasn't set up TipMe yet.", handle: handle)
+            pendingNoteText = ""
+            screen = .pendingAmount(handle)
         case .needsManualEntry(let reason):
-            screen = .manualEntry(reason: reason, handle: nil)
+            screen = .manualEntry(reason: reason)
         case .quoted(let creator, let quote):
             screen = .confirm(creator, quote)
             needsApplePayTopUp = false
