@@ -212,6 +212,64 @@ public struct AccountClient: Sendable {
                                balances: Self.balancesDict(decoded.balances))
     }
 
+    /// One balance change on the account, as the registry recorded it.
+    public struct LedgerEntry: Equatable, Sendable {
+        public let id: String
+        public let asset: Asset
+        public let deltaMinor: Int64
+        public let reason: String
+        public let counterparty: String?
+        public let createdAt: Date
+    }
+
+    /// The account's own history, newest first (`GET /v1/me/history`).
+    public func history(sessionToken: String, limit: Int) async throws -> [LedgerEntry] {
+        guard var components = URLComponents(url: configuration.baseURL, resolvingAgainstBaseURL: false) else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        components.path = "/v1/me/history"
+        components.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        guard let url = components.url else {
+            throw AccountError.responseMalformed("could not build registry URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await perform(request)
+        try Self.checkStatus(response, unauthorizedMeans: .sessionExpired)
+
+        struct Body: Decodable {
+            struct Entry: Decodable {
+                let id: String
+                let asset: String
+                let deltaMinor: Int64
+                let reason: String
+                let counterparty: String?
+                let createdAt: Date
+                enum CodingKeys: String, CodingKey {
+                    case id, asset, reason, counterparty
+                    case deltaMinor = "delta_minor"
+                    case createdAt = "created_at"
+                }
+            }
+            let entries: [Entry]
+        }
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(Body.self, from: data).entries.compactMap { entry in
+                guard let asset = Asset(rawValue: entry.asset) else { return nil }
+                return LedgerEntry(id: entry.id, asset: asset, deltaMinor: entry.deltaMinor,
+                                   reason: entry.reason, counterparty: entry.counterparty,
+                                   createdAt: entry.createdAt)
+            }
+        } catch {
+            throw AccountError.responseMalformed(String(describing: error))
+        }
+    }
+
     // MARK: - Lightning deposit/withdraw
 
     /// Asks the registry for a real Lightning invoice to add `amountSats` to

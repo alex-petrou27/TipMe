@@ -653,6 +653,30 @@ def me(
     )
 
 
+class HistoryEntry(BaseModel):
+    id: str
+    asset: str
+    delta_minor: int
+    reason: str
+    counterparty: str | None
+    created_at: datetime
+
+
+class HistoryResponse(BaseModel):
+    entries: list[HistoryEntry]
+
+
+@app.get("/v1/me/history", response_model=HistoryResponse)
+def history(
+    limit: int = 50,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> HistoryResponse:
+    """Every balance change on the caller's account, newest first."""
+    entries = storage.list_ledger_entries(user_id, limit=max(1, min(limit, 200)))
+    return HistoryResponse(entries=[HistoryEntry(**entry) for entry in entries])
+
+
 def _balance_entries(user_id: str, storage: Storage) -> list[BalanceEntry]:
     balances = storage.get_balances(user_id)
     return [BalanceEntry(asset=asset, balance_minor=balances.get(asset, 0)) for asset in ASSETS]

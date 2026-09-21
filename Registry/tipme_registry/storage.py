@@ -658,6 +658,34 @@ class Storage:
             completed_at=now,
         )
 
+    def list_ledger_entries(self, user_id: str, limit: int = 50) -> list[dict]:
+        """Newest-first history for one account, with each counterparty turned
+        into something a person can read ("@handle") rather than an internal
+        user id."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, asset, delta_minor, reason, counterparty, created_at "
+                "FROM ledger_entries WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+            entries = []
+            for row in rows:
+                counterparty = row["counterparty"]
+                if counterparty and ":" in counterparty:
+                    counterparty = "@" + counterparty.split(":", 1)[1]
+                elif counterparty:
+                    creator = conn.execute(
+                        "SELECT username FROM creators WHERE tipme_user_id = ? LIMIT 1",
+                        (counterparty,),
+                    ).fetchone()
+                    counterparty = "@" + creator["username"] if creator else "a TipMe user"
+                entries.append({
+                    "id": row["id"], "asset": row["asset"], "delta_minor": row["delta_minor"],
+                    "reason": row["reason"], "counterparty": counterparty,
+                    "created_at": datetime.fromisoformat(row["created_at"]).replace(microsecond=0),
+                })
+        return entries
+
     def transfer_balance(
         self, from_user_id: str, to_user_id: str, asset: str, amount_minor: int,
     ) -> None:
