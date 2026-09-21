@@ -4,12 +4,15 @@ import TipMeCore
 @MainActor
 final class WithdrawViewModel: ObservableObject {
     @Published var amountText = ""
-    @Published var selectedAsset: Asset = .bitcoin
     @Published private(set) var state: WithdrawalState = .checkingAvailability
 
+    let currencyCode: String
+    private let services: TipMeServices
     private let flow: WithdrawalFlow
 
     init(services: TipMeServices) {
+        self.services = services
+        self.currencyCode = services.currencyCode
         self.flow = services.makeWithdrawalFlow()
     }
 
@@ -17,8 +20,19 @@ final class WithdrawViewModel: ObservableObject {
     func linkAccount() async { state = await flow.linkAccount() }
 
     func requestQuote(account: BankAccount) async {
-        guard let minorUnits = Int64(amountText.filter(\.isNumber)), minorUnits > 0 else { return }
-        state = await flow.quote(amount: Amount(asset: selectedAsset, minorUnits: minorUnits), account: account)
+        guard let fiat = FiatAmount(parsing: amountText, currencyCode: currencyCode) else { return }
+        // Paid from whichever balance is larger, so a withdrawal never fails
+        // just because the money sits in the other asset.
+        let bitcoin = (try? await services.backend.availableBalance(for: .bitcoin)) ?? .sats(0)
+        let usdt = (try? await services.backend.availableBalance(for: .usdt)) ?? .usdtCents(0)
+        var asset = Asset.usdt
+        if let btcRate = try? await services.backend.rate(for: .bitcoin, in: currencyCode),
+           let usdtRate = try? await services.backend.rate(for: .usdt, in: currencyCode),
+           btcRate.fiatValue(of: bitcoin).minorUnits > usdtRate.fiatValue(of: usdt).minorUnits {
+            asset = .bitcoin
+        }
+        guard let amount = try? await services.assetAmount(for: fiat, in: asset), amount.minorUnits > 0 else { return }
+        state = await flow.quote(amount: amount, account: account)
     }
 
     func confirm(quote: WithdrawalQuote, account: BankAccount) async {
@@ -104,7 +118,7 @@ struct WithdrawView: View {
                 .font(Theme.body)
                 .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
-            Text("Your Bitcoin and USDT are still yours — send them to any wallet or exchange that supports off-ramping in the meantime.")
+            Text("Your money is still yours — you can send it to any wallet or exchange that supports off-ramping in the meantime.")
                 .font(Theme.caption)
                 .foregroundStyle(Theme.textTertiary)
                 .multilineTextAlignment(.center)
@@ -135,9 +149,8 @@ struct WithdrawView: View {
                         .foregroundStyle(Theme.textPrimary)
                 }
             }
-            AssetSwitcher(selection: $viewModel.selectedAsset)
-            TextField("Amount", text: $viewModel.amountText)
-                .keyboardType(.numberPad)
+            TextField("Amount (\(viewModel.currencyCode))", text: $viewModel.amountText)
+                .keyboardType(.decimalPad)
                 .font(Theme.amountLarge)
                 .multilineTextAlignment(.center)
             PrimaryButton(title: "Review") {
@@ -150,8 +163,7 @@ struct WithdrawView: View {
         VStack(spacing: Theme.spacing) {
             Card {
                 VStack(alignment: .leading, spacing: Theme.spacingSmall) {
-                    row("You send", quote.debited.formatted)
-                    row("Fee", quote.feeFiat.formatted)
+                                        row("Fee", quote.feeFiat.formatted)
                     Divider()
                     row("Arrives as", quote.fiatCredited.formatted, emphasised: true)
                     row("To", account.displayName)

@@ -47,6 +47,94 @@ final class ShareViewController: UIViewController {
         }
     }
 
+    // MARK: - Matching the system's dimming above the sheet
+
+    /// The system darkens everything except the strip above our sheet, which is
+    /// what makes the top of the screen look lighter than the rest. Its own
+    /// dimming can't be removed from here, so this darkens that strip by the
+    /// same amount (measured from a real Instagram share: ~40%) to even it out.
+    private let topDimStrip: UIView = {
+        let strip = UIView()
+        strip.backgroundColor = UIColor.black.withAlphaComponent(0.4)
+        strip.isUserInteractionEnabled = false
+        strip.alpha = 0
+        return strip
+    }()
+
+    /// Estimated from a real screenshot of the system's dimming: the curve is
+    /// continuous, reaches ~38pt down the edge, which fits a ~26pt radius.
+    private static let systemSheetCornerRadius: CGFloat = 26
+    private let stripMask = CAShapeLayer()
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard let window = view.window else { return }
+        if topDimStrip.superview !== window { window.addSubview(topDimStrip) }
+        let sheetTop = view.convert(view.bounds, to: window).minY
+        // The system's dimming has rounded top corners, so the strip also
+        // fills the small wedges outside them -- everything above the sheet
+        // plus the corner areas, but not the sheet's own (already dimmed) body.
+        let radius = Self.systemSheetCornerRadius
+        let width = window.bounds.width
+        // A continuous ("squircle") corner runs about 1.6x its radius along each
+        // edge, so the strip reaches that far below the sheet's top.
+        topDimStrip.frame = CGRect(x: 0, y: 0, width: width, height: max(0, sheetTop) + radius * 1.7)
+        let path = UIBezierPath(rect: topDimStrip.bounds)
+        let sheetShape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .path(in: CGRect(x: 0, y: sheetTop, width: width, height: radius * 6))
+        path.append(UIBezierPath(cgPath: sheetShape.cgPath))
+        stripMask.frame = topDimStrip.bounds
+        stripMask.path = path.cgPath
+        stripMask.fillRule = .evenOdd
+        topDimStrip.layer.mask = stripMask
+        window.bringSubviewToFront(topDimStrip)
+        if topDimStrip.alpha == 0 {
+            UIView.animate(withDuration: 0.25) { self.topDimStrip.alpha = 1 }
+        }
+    }
+
+    // MARK: - No dimming behind the sheet
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        removeBackdropDimming()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        removeBackdropDimming()
+    }
+
+    /// Asks for the host app to show through undimmed above the sheet. Whether
+    /// the system honours either request from inside an extension is up to iOS:
+    /// the dimming view is drawn by the presentation, not by this process.
+    private func removeBackdropDimming() {
+        if let sheet = sheetPresentationController {
+            sheet.detents = [.medium()]
+            sheet.largestUndimmedDetentIdentifier = .medium
+        }
+
+        // Everything above us in this process, and every dimming/shadow/backdrop
+        // sibling next to it. Only views in this process's own window can be
+        // reached; anything the host draws is out of bounds.
+        var child: UIView = view
+        var ancestor = view.superview
+        while let current = ancestor {
+            current.backgroundColor = .clear
+            for sibling in current.subviews where sibling !== child {
+                let name = String(describing: type(of: sibling))
+                if name.localizedCaseInsensitiveContains("dimming")
+                    || name.localizedCaseInsensitiveContains("backdrop")
+                    || name.localizedCaseInsensitiveContains("shadow") {
+                    sibling.alpha = 0
+                    sibling.backgroundColor = .clear
+                }
+            }
+            child = current
+            ancestor = current.superview
+        }
+    }
+
     // MARK: - Reading what was shared
 
     /// Pulls URLs, text and **titles** out of the extension context.

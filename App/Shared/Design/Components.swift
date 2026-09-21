@@ -175,6 +175,13 @@ struct AssetSwitcher: View {
 /// "+"/"-" prefix cluttering the number.
 struct ActivityRow: View {
     let transaction: WalletTransaction
+    /// Turns the settled asset into the user's own currency. Without it (rates
+    /// unavailable) the row falls back to the raw asset amount.
+    var converter: FiatConverter?
+
+    private var amountText: String {
+        converter?.fiat(for: transaction.amount)?.formatted ?? transaction.amount.formatted
+    }
 
     var body: some View {
         HStack(spacing: Theme.spacingSmall) {
@@ -197,7 +204,7 @@ struct ActivityRow: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 2) {
-                Text((transaction.isOutgoing ? "-" : "+") + transaction.amount.formatted)
+                Text((transaction.isOutgoing ? "-" : "+") + amountText)
                     .font(Theme.body.weight(.semibold).monospacedDigit())
                     .foregroundStyle(transaction.isOutgoing ? Theme.textPrimary : Theme.positive)
                 if transaction.status != .completed {
@@ -224,7 +231,7 @@ struct ActivityRow: View {
         case .tipSent: return transaction.counterparty.map { "Tipped \($0)" } ?? "Tip sent"
         case .send: return transaction.counterparty ?? "Sent"
         case .receive: return transaction.counterparty ?? "Received"
-        case .withdrawal: return "Bank withdrawal"
+        case .withdrawal: return transaction.counterparty ?? "Withdrawal"
         }
     }
 

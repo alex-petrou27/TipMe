@@ -261,7 +261,7 @@ struct TipSheetView: View {
                 .font(Theme.headline)
                 .foregroundStyle(Theme.textPrimary)
 
-            Text(amount.formatted)
+            Text(viewModel.sentFiat?.formatted ?? amount.formatted)
                 .font(Theme.amountMedium)
                 .foregroundStyle(Theme.brand)
 
@@ -293,10 +293,10 @@ struct TipSheetView: View {
             }
 
             Card {
-                row("They receive", quote.fiatTip.formatted, emphasised: true)
                 if quote.hasFee {
-                    row("TipMe fee (\(quote.feePolicy.percentageDescription))", quote.fiatFee.formatted)
+                    row("TipMe fee (\(quote.feePolicy.percentageDescription))", "-" + quote.fiatFee.formatted)
                 }
+                row("They receive", quote.fiatTip.formatted, emphasised: true)
             }
 
             if viewModel.needsApplePayTopUp, let shortfall = viewModel.applePayShortfall {
@@ -337,7 +337,7 @@ struct TipSheetView: View {
                 .font(Theme.headline)
                 .foregroundStyle(Theme.textPrimary)
 
-            Text(result.tipReceipt.sentAmount.formatted)
+            Text(viewModel.sentFiat?.formatted ?? result.tipReceipt.sentAmount.formatted)
                 .font(Theme.amountMedium)
                 .foregroundStyle(succeeded ? Theme.brand : Theme.textPrimary)
 

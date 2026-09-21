@@ -18,6 +18,7 @@ struct TipByHandleView: View {
     @State private var platform: Platform = .instagram
     @State private var username = ""
     @State private var payload: CreatorHandle?
+    @State private var recent: [CreatorHandle] = []
 
     private var parsedHandle: CreatorHandle? {
         CreatorHandle(platform: platform, rawUsername: username)
@@ -67,13 +68,46 @@ struct TipByHandleView: View {
                     .foregroundStyle(Theme.textTertiary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, Theme.spacingLarge)
+
+                if !recent.isEmpty {
+                    VStack(alignment: .leading, spacing: Theme.spacingSmall) {
+                        Text("TIP AGAIN")
+                            .font(Theme.label)
+                            .foregroundStyle(Theme.textTertiary)
+                            .padding(.horizontal, Theme.spacing)
+                        Card {
+                            ForEach(Array(recent.prefix(8).enumerated()), id: \.element.registryKey) { index, handle in
+                                if index > 0 { Divider().overlay(Theme.divider) }
+                                Button {
+                                    Haptics.tap()
+                                    payload = handle
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        IconBadge(systemImage: handle.platform == .instagram ? "camera.fill" : "music.note")
+                                        Text(handle.displayName)
+                                            .font(Theme.body.weight(.medium))
+                                            .foregroundStyle(Theme.textPrimary)
+                                        Spacer()
+                                        Text(handle.platform.displayName)
+                                            .font(Theme.caption)
+                                            .foregroundStyle(Theme.textSecondary)
+                                    }
+                                    .padding(.vertical, 2)
+                                }
+                                .buttonStyle(.pressable)
+                            }
+                        }
+                        .padding(.horizontal, Theme.spacing)
+                    }
+                }
             }
             .padding(.vertical, Theme.spacing)
         }
         .background(Theme.background)
+        .onAppear { recent = services.recentlyTipped() }
         .navigationTitle("Tip by handle")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $payload) { handle in
+        .sheet(item: $payload, onDismiss: { recent = services.recentlyTipped() }) { handle in
             TipByHandleHost(services: services, handle: handle) { payload = nil }
         }
     }
@@ -81,7 +115,7 @@ struct TipByHandleView: View {
 
 /// Runs the same `TipSheetView` the share extension and paste flow use, so
 /// this path cannot drift from either of them.
-private struct TipByHandleHost: View {
+struct TipByHandleHost: View {
     let services: TipMeServices
     let handle: CreatorHandle
     let onFinish: () -> Void

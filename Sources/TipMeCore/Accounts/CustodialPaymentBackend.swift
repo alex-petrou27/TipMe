@@ -327,10 +327,45 @@ public actor CustodialPaymentBackend: PaymentBackend, WalletBackend {
     }
 
     public func transactionHistory(limit: Int) async throws -> [WalletTransaction] {
-        // No ledger-entries endpoint yet either. An empty history is the
-        // honest answer -- "we don't know of any transactions" -- rather
-        // than a fabricated one.
-        []
+        guard let token = sessionTokenProvider() else {
+            throw PaymentBackendError.notConnected
+        }
+        let entries: [AccountClient.LedgerEntry]
+        do {
+            entries = try await client.history(sessionToken: token, limit: limit)
+        } catch {
+            throw Self.paymentBackendError(for: error)
+        }
+        return entries.map(Self.transaction(from:))
+    }
+
+    static func transaction(from entry: AccountClient.LedgerEntry) -> WalletTransaction {
+        let kind: WalletTransaction.Kind
+        var counterparty = entry.counterparty
+        switch entry.reason {
+        case "internal_transfer_sent", "pending_tip_sent":
+            kind = .tipSent
+        case "lightning_withdrawal", "bitcoin_withdrawal":
+            kind = .withdrawal
+            counterparty = entry.reason == "bitcoin_withdrawal" ? "Bitcoin withdrawal" : "Lightning withdrawal"
+        default:
+            kind = entry.deltaMinor >= 0 ? .receive : .send
+            switch entry.reason {
+            case "lightning_deposit": counterparty = "Lightning deposit"
+            case "bitcoin_deposit": counterparty = "Bitcoin deposit"
+            case "apple_pay_deposit": counterparty = "Apple Pay deposit"
+            case "lightning_withdrawal_failed_refund", "bitcoin_withdrawal_failed_refund":
+                counterparty = "Withdrawal refunded"
+            case "pending_tip_reclaimed": counterparty = "Unclaimed tip returned"
+            case "pending_tip_claimed": counterparty = counterparty.map { "Tip from \($0)" } ?? "Tip received"
+            case "internal_transfer_received": counterparty = counterparty.map { "Tip from \($0)" } ?? "Tip received"
+            default: break
+            }
+        }
+        return WalletTransaction(
+            id: entry.id, kind: kind, status: .completed, asset: entry.asset,
+            amount: Amount(asset: entry.asset, minorUnits: abs(entry.deltaMinor)),
+            counterparty: counterparty, timestamp: entry.createdAt)
     }
 
     // MARK: - ExchangeRateProvider

@@ -13,9 +13,11 @@ import TipMeCore
 /// settings page rather than part of this product.
 struct SettingsView: View {
     let services: TipMeServices
+    let onServicesChange: () -> Void
     let onLogout: () -> Void
 
     @State private var isLoggingOut = false
+    @State private var isEditingLimits = false
 
     private var signedInEmail: String? {
         try? services.accountKeychain.loadSession().email
@@ -28,6 +30,7 @@ struct SettingsView: View {
         ScrollView {
             VStack(spacing: Theme.spacingLarge) {
                 profileHeader
+                currencySection
                 accountsSection
                 helpSection
                 feeSection
@@ -82,6 +85,47 @@ struct SettingsView: View {
         }
     }
 
+    private var currencySection: some View {
+        sectionCard(title: "Currency") {
+            HStack(spacing: 12) {
+                IconBadge(systemImage: "sterlingsign.circle")
+                Text("Your currency")
+                    .font(Theme.body)
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer()
+                Menu {
+                    Picker("Your currency", selection: currencyBinding) {
+                        ForEach(CurrencyPreference.supported, id: \.code) { option in
+                            Text(option.name).tag(option.code)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(services.currencyCode)
+                            .font(Theme.body.weight(.medium))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundStyle(Theme.textSecondary)
+                }
+            }
+            Text("Balances, deposits, sends and tips are all shown in this currency. Defaults to your device's region.")
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textTertiary)
+                .padding(.top, 4)
+        }
+    }
+
+    private var currencyBinding: Binding<String> {
+        Binding(
+            get: { services.currencyCode },
+            set: { code in
+                guard code != services.currencyCode else { return }
+                services.savePreferredCurrency(code)
+                onServicesChange()
+            })
+    }
+
     private var helpSection: some View {
         sectionCard(title: "Help") {
             NavigationLink {
@@ -106,7 +150,7 @@ struct SettingsView: View {
     private var feeSection: some View {
         sectionCard(title: "Fee") {
             settingsRow(icon: "percent", label: "TipMe fee", value: services.configuration.feePolicy.percentageDescription)
-            Text("Added on top of your tip. The creator always receives the full amount you chose.")
+            Text("Taken out of your tip, so you pay exactly the amount you choose and the creator receives that amount minus the fee.")
                 .font(Theme.caption)
                 .foregroundStyle(Theme.textTertiary)
                 .padding(.top, 4)
@@ -123,6 +167,27 @@ struct SettingsView: View {
             Divider().overlay(Theme.divider)
             settingsRow(icon: "person.crop.circle.badge.clock", label: "Same creator",
                        value: "\(limits.sameHandleCount) per \(Int(limits.sameHandleWindow / 60)) min")
+            Divider().overlay(Theme.divider)
+            Button {
+                Haptics.tap()
+                isEditingLimits = true
+            } label: {
+                HStack(spacing: 12) {
+                    IconBadge(systemImage: "slider.horizontal.3")
+                    Text("Change limits")
+                        .font(Theme.body)
+                        .foregroundStyle(Theme.textPrimary)
+                    Spacer()
+                    Image(systemName: "faceid")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .padding(.vertical, 2)
+            }
+            .buttonStyle(.pressable)
+        }
+        .sheet(isPresented: $isEditingLimits) {
+            EditSendLimitsView(services: services, onSaved: onServicesChange)
         }
     }
 

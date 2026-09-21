@@ -53,6 +53,9 @@ final class TipSheetViewModel: ObservableObject {
     }
 
     @Published private(set) var screen: Screen = .loading("Reading link…")
+    /// What the sender agreed to pay, in their own currency, for the receipt
+    /// -- the asset amount underneath is never shown.
+    @Published private(set) var sentFiat: FiatAmount?
     @Published var manualAddress: String = ""
     /// The optional "leave a message" text for an escrowed tip -- shown only
     /// on `.pendingConfirm`. Cleared on every fresh identify so a leftover
@@ -134,7 +137,7 @@ final class TipSheetViewModel: ObservableObject {
         screen = .loading("Checking amount…")
         do {
             let rate = try await services.backend.rate(for: creator.preferredAsset, in: fiatCurrency)
-            apply(await flow.quote(tip: rate.assetAmount(for: fiat), for: creator))
+            apply(await flow.quote(total: rate.assetAmount(for: fiat), for: creator))
         } catch {
             screen = .error("Couldn't price that tip. Try again in a moment.")
         }
@@ -189,9 +192,11 @@ final class TipSheetViewModel: ObservableObject {
 
     func confirmPendingTip() async {
         guard case .pendingConfirm(let handle, let amount, let fiat) = screen else { return }
+        sentFiat = fiat
         screen = .paying
         switch await pendingFlow.send(handle: handle, amount: amount, fiatAmount: fiat, note: pendingNoteText) {
         case .succeeded(let handle, let amount, _, _):
+            services.recordTip(to: handle)
             screen = .pendingReceipt(handle, amount)
         case .confirming:
             screen = .pendingConfirm(handle, amount, fiat) // Face ID was cancelled
@@ -261,7 +266,9 @@ final class TipSheetViewModel: ObservableObject {
             reference = "test-\(UUID().uuidString)"
         }
 
-        guard case .completed = await applePayFlow.pay(amountMinor: shortfall.minorUnits, reference: reference) else {
+        // The shortfall is in the user's currency; the top-up credits USDT.
+        guard let topUp = try? await services.assetAmount(for: shortfall, in: .usdt),
+              case .completed = await applePayFlow.pay(amountMinor: topUp.minorUnits, reference: reference) else {
             screen = .error("Couldn't add funds. Try again.")
             return
         }
@@ -271,6 +278,7 @@ final class TipSheetViewModel: ObservableObject {
 
     func confirm() async {
         guard case .confirm(let creator, let quote) = screen else { return }
+        sentFiat = quote.fiatTip
         screen = .paying
         apply(await flow.confirmAndPay(quote: quote, creator: creator, sourceLink: sourceLink))
     }
@@ -306,6 +314,7 @@ final class TipSheetViewModel: ObservableObject {
         case .paying:
             screen = .paying
         case .succeeded(let result, let creator):
+            services.recordTip(to: creator.handle)
             screen = .receipt(result, creator)
         case .failed(let message):
             screen = .error(message)

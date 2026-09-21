@@ -18,9 +18,9 @@ struct TipMeApp: App {
                 case .locked(let services):
                     AppLockView { appModel.unlock(services: services) }
                 case .ready(let services):
-                    MainTabView(services: services) {
-                        appModel.returnToOnboarding(services: services)
-                    }
+                    MainTabView(services: services,
+                                onServicesChange: { appModel.servicesChanged() },
+                                onLogout: { appModel.returnToOnboarding(services: services) })
                 }
             }
         }
@@ -68,6 +68,13 @@ final class AppModel: ObservableObject {
     /// right after typing a password.
     func finishedOnboarding(services: TipMeServices) {
         phase = .ready(services)
+    }
+
+    /// Rebuilds the services so every screen picks up the newly saved currency.
+    func servicesChanged() {
+        if let services = try? TipMeServices.make(origin: .hostApp) {
+            phase = .ready(services)
+        }
     }
 
     /// Called after logging out — the session is already cleared from the

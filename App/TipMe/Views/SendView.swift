@@ -5,12 +5,16 @@ import TipMeCore
 final class SendViewModel: ObservableObject {
     @Published var destinationText = ""
     @Published var amountText = ""
-    @Published var selectedAsset: Asset = .bitcoin
     @Published private(set) var state: WalletSendState = .idle
+    @Published private(set) var sentFiat: FiatAmount?
 
+    let currencyCode: String
+    private let services: TipMeServices
     private let flow: WalletSendFlow
 
     init(services: TipMeServices) {
+        self.services = services
+        self.currencyCode = services.currencyCode
         self.flow = services.makeWalletSendFlow()
     }
 
@@ -22,16 +26,32 @@ final class SendViewModel: ObservableObject {
 
     func requestQuote() async {
         guard case .destinationFound(let destination) = state else { return }
-        guard let minorUnits = Int64(amountText.filter(\.isNumber)), minorUnits > 0 else {
-            state = .failed("Enter an amount.")
-            return
+
+        let amount: Amount
+        if case .lightningInvoice(_, let amountSat?, _) = destination {
+            amount = .sats(amountSat)
+        } else {
+            guard let fiat = FiatAmount(parsing: amountText, currencyCode: currencyCode) else {
+                state = .failed("Enter an amount.")
+                return
+            }
+            // Bitcoin unless the destination is specifically a USDT address:
+            // the person picks how much money to send, not which coin.
+            var asset = Asset.bitcoin
+            if case .liquidAddress(_, let hint?) = destination { asset = hint }
+            guard let converted = try? await services.assetAmount(for: fiat, in: asset),
+                  converted.minorUnits > 0 else {
+                state = .failed("Couldn't get today's exchange rate. Try again in a moment.")
+                return
+            }
+            amount = converted
         }
-        let amount = Amount(asset: selectedAsset, minorUnits: minorUnits)
         state = await flow.quote(amount: amount, for: destination)
     }
 
     func confirm() async {
         guard case .quoted(let destination, let amount, let route, let fiat) = state else { return }
+        sentFiat = fiat
         state = .sending
         state = await flow.confirmAndSend(destination: destination, amount: amount,
                                           route: route, fiatAmount: fiat)
@@ -138,9 +158,8 @@ struct SendView: View {
                     .font(Theme.caption)
                     .foregroundStyle(Theme.textSecondary)
             } else {
-                AssetSwitcher(selection: $viewModel.selectedAsset)
-                TextField("Amount", text: $viewModel.amountText)
-                    .keyboardType(.numberPad)
+                TextField("Amount (\(viewModel.currencyCode))", text: $viewModel.amountText)
+                    .keyboardType(.decimalPad)
                     .font(Theme.amountLarge)
                     .multilineTextAlignment(.center)
             }
@@ -155,7 +174,6 @@ struct SendView: View {
         VStack(spacing: Theme.spacing) {
             Card {
                 VStack(alignment: .leading, spacing: Theme.spacingSmall) {
-                    row("Sending", amount.formatted)
                     row("To", destination.displaySummary)
                     Divider()
                     row("Total", fiat.formatted, emphasised: true)
@@ -178,7 +196,9 @@ struct SendView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(Theme.positive)
             Text("Sent").font(Theme.title)
-            Text(result.receipt.sentAmount.formatted).font(Theme.amountMedium)
+            if let fiat = viewModel.sentFiat {
+                Text(fiat.formatted).font(Theme.amountMedium)
+            }
             PrimaryButton(title: "Done") { dismiss() }
         }
         .padding(.vertical, 24)

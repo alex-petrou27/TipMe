@@ -29,13 +29,20 @@ final class DepositViewModel: ObservableObject {
     @Published private(set) var onchainState: OnChainDepositState = .idle
     @Published private(set) var applePayState: ApplePayDepositState = .idle
     @Published private(set) var copied = false
+    /// What was asked for, in the user's own currency -- shown instead of the
+    /// sats or USDT it was converted into.
+    @Published private(set) var requestedFiat: FiatAmount?
 
+    let currencyCode: String
+    private let services: TipMeServices
     private let lightningFlow: LightningDepositFlow
     private let onchainFlow: OnChainDepositFlow
     private let applePayFlow: ApplePayDepositFlow
     private let applePayAuthorizer = ApplePayAuthorizer()
 
     init(services: TipMeServices) {
+        self.services = services
+        self.currencyCode = services.currencyCode
         self.lightningFlow = services.makeLightningDepositFlow()
         self.onchainFlow = services.makeOnChainDepositFlow()
         self.applePayFlow = services.makeApplePayDepositFlow()
@@ -57,12 +64,17 @@ final class DepositViewModel: ObservableObject {
     func create() async {
         switch method {
         case .lightning:
-            guard let amountSats = Int64(amountText.filter(\.isNumber)), amountSats > 0 else {
+            guard let fiat = FiatAmount(parsing: amountText, currencyCode: currencyCode) else {
                 lightningState = .failed("Enter an amount.")
                 return
             }
             lightningState = .creating
-            lightningState = await lightningFlow.create(amountSats: amountSats)
+            guard let sats = try? await services.assetAmount(for: fiat, in: .bitcoin), sats.minorUnits > 0 else {
+                lightningState = .failed("Couldn't get today's exchange rate. Try again in a moment.")
+                return
+            }
+            requestedFiat = fiat
+            lightningState = await lightningFlow.create(amountSats: sats.minorUnits)
         case .onchain:
             onchainState = .creating
             onchainState = await onchainFlow.create()
@@ -76,35 +88,32 @@ final class DepositViewModel: ObservableObject {
     /// present one; either way, what actually credits the ledger is the
     /// same one call with a fresh idempotency reference.
     private func payWithApplePay() async {
-        guard let amountMinor = Self.parseDollarsToMinorUnits(amountText), amountMinor > 0 else {
+        guard let fiat = FiatAmount(parsing: amountText, currencyCode: currencyCode) else {
             applePayState = .failed("Enter an amount.")
             return
         }
         applePayState = .paying
 
+        guard let usdt = try? await services.assetAmount(for: fiat, in: .usdt), usdt.minorUnits > 0 else {
+            applePayState = .failed("Couldn't get today's exchange rate. Try again in a moment.")
+            return
+        }
+        requestedFiat = fiat
+
         if canUseRealApplePay {
-            let dollars = Decimal(amountMinor) / 100
+            let amount = Decimal(fiat.minorUnits) / 100
             guard let payment = await applePayAuthorizer.requestPayment(
-                amount: dollars, currencyCode: "USD", label: "TipMe balance top-up",
+                amount: amount, currencyCode: currencyCode, label: "TipMe balance top-up",
             ) else {
                 applePayState = .idle // cancelled or the sheet didn't present -- not a failure
                 return
             }
             applePayState = await applePayFlow.pay(
-                amountMinor: amountMinor, reference: payment.token.transactionIdentifier)
+                amountMinor: usdt.minorUnits, reference: payment.token.transactionIdentifier)
         } else {
             applePayState = await applePayFlow.pay(
-                amountMinor: amountMinor, reference: "test-\(UUID().uuidString)")
+                amountMinor: usdt.minorUnits, reference: "test-\(UUID().uuidString)")
         }
-    }
-
-    /// "12.34" -> 1234 minor units. Apple Pay's amount is naturally a dollar
-    /// figure, unlike Lightning's sats -- this is the one deposit method
-    /// here that needs decimal parsing rather than a bare integer.
-    private static func parseDollarsToMinorUnits(_ text: String) -> Int64? {
-        let normalised = text.replacingOccurrences(of: ",", with: ".")
-        guard let dollars = Decimal(string: normalised), dollars > 0 else { return nil }
-        return NSDecimalNumber(decimal: dollars * 100).int64Value
     }
 
     func checkStatus() async {
@@ -130,6 +139,7 @@ final class DepositViewModel: ObservableObject {
 
     func reset() {
         amountText = ""
+        requestedFiat = nil
         copied = false
         lightningState = .idle
         onchainState = .idle
@@ -179,12 +189,12 @@ struct DepositView: View {
         switch viewModel.lightningState {
         case .idle, .creating:
             amountEntry
-        case .awaitingPayment(let paymentRequest, _, let amountSats):
-            invoiceDisplay(destination: paymentRequest, amountSats: amountSats, isChecking: false)
-        case .checking(let paymentRequest, _, let amountSats):
-            invoiceDisplay(destination: paymentRequest, amountSats: amountSats, isChecking: true)
-        case .completed(let balances):
-            successState(balances)
+        case .awaitingPayment(let paymentRequest, _, _):
+            invoiceDisplay(destination: paymentRequest, showAmount: true, isChecking: false)
+        case .checking(let paymentRequest, _, _):
+            invoiceDisplay(destination: paymentRequest, showAmount: true, isChecking: true)
+        case .completed:
+            successState()
         case .failed(let message):
             failureState(message)
         }
@@ -196,11 +206,11 @@ struct DepositView: View {
         case .idle, .creating:
             amountEntry
         case .awaitingPayment(let address):
-            invoiceDisplay(destination: address, amountSats: nil, isChecking: false)
+            invoiceDisplay(destination: address, showAmount: false, isChecking: false)
         case .checking(let address):
-            invoiceDisplay(destination: address, amountSats: nil, isChecking: true)
-        case .completed(let balances):
-            successState(balances)
+            invoiceDisplay(destination: address, showAmount: false, isChecking: true)
+        case .completed:
+            successState()
         case .failed(let message):
             failureState(message)
         }
@@ -211,8 +221,8 @@ struct DepositView: View {
         switch viewModel.applePayState {
         case .idle, .paying:
             amountEntry
-        case .completed(let balances):
-            successState(balances, asset: .usdt)
+        case .completed:
+            successState()
         case .failed(let message):
             failureState(message)
         }
@@ -232,11 +242,11 @@ struct DepositView: View {
             Card {
                 switch viewModel.method {
                 case .lightning:
-                    Text("Add real sats to your TipMe balance over Lightning.")
+                    Text("Add money to your TipMe balance over Lightning.")
                         .font(Theme.caption)
                         .foregroundStyle(Theme.textSecondary)
-                    TextField("Amount (sats)", text: $viewModel.amountText)
-                        .keyboardType(.numberPad)
+                    TextField("Amount (\(viewModel.currencyCode))", text: $viewModel.amountText)
+                        .keyboardType(.decimalPad)
                         .font(Theme.amountLarge)
                         .multilineTextAlignment(.center)
                 case .onchain:
@@ -249,7 +259,7 @@ struct DepositView: View {
                          : "Apple Pay isn't set up on this device. Add test funds instead — no card needed.")
                         .font(Theme.caption)
                         .foregroundStyle(Theme.textSecondary)
-                    TextField("Amount (USD)", text: $viewModel.amountText)
+                    TextField("Amount (\(viewModel.currencyCode))", text: $viewModel.amountText)
                         .keyboardType(.decimalPad)
                         .font(Theme.amountLarge)
                         .multilineTextAlignment(.center)
@@ -270,7 +280,7 @@ struct DepositView: View {
         }
     }
 
-    private func invoiceDisplay(destination: String, amountSats: Int64?, isChecking: Bool) -> some View {
+    private func invoiceDisplay(destination: String, showAmount: Bool, isChecking: Bool) -> some View {
         VStack(spacing: Theme.spacing) {
             Card {
                 VStack(spacing: Theme.spacing) {
@@ -279,8 +289,8 @@ struct DepositView: View {
                         .padding(Theme.spacingSmall)
                         .background(.white, in: RoundedRectangle(cornerRadius: Theme.cornerRadiusSmall))
 
-                    if let amountSats {
-                        Text(TipMeCore.Amount.sats(amountSats).formatted)
+                    if showAmount, let fiat = viewModel.requestedFiat {
+                        Text(fiat.formatted)
                             .font(Theme.amountMedium)
                     }
 
@@ -312,25 +322,18 @@ struct DepositView: View {
         }
     }
 
-    private func successState(_ balances: [Asset: Int64], asset: Asset = .bitcoin) -> some View {
+    private func successState() -> some View {
         VStack(spacing: Theme.spacing) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(Theme.positive)
             Text("Deposited").font(Theme.title)
-            if let minorUnits = balances[asset] {
-                Text(Self.formatted(minorUnits, asset: asset)).font(Theme.amountMedium)
+            if let fiat = viewModel.requestedFiat {
+                Text(fiat.formatted).font(Theme.amountMedium)
             }
             PrimaryButton(title: "Done") { dismiss() }
         }
         .padding(.vertical, 24)
-    }
-
-    private static func formatted(_ minorUnits: Int64, asset: Asset) -> String {
-        switch asset {
-        case .bitcoin: return TipMeCore.Amount.sats(minorUnits).formatted
-        case .usdt: return TipMeCore.Amount.usdtCents(minorUnits).formatted
-        }
     }
 
     private func failureState(_ message: String) -> some View {

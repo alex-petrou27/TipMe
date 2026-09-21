@@ -8,6 +8,7 @@ import TipMeCore
 /// burying them in a "More" screen.
 struct MainTabView: View {
     let services: TipMeServices
+    let onServicesChange: () -> Void
     let onLogout: () -> Void
 
     var body: some View {
@@ -23,24 +24,11 @@ struct MainTabView: View {
             .tabItem { Label("Get Tipped", systemImage: "person.crop.circle.badge.checkmark") }
 
             NavigationStack {
-                SettingsView(services: services, onLogout: onLogout)
+                SettingsView(services: services, onServicesChange: onServicesChange, onLogout: onLogout)
             }
             .tabItem { Label("Settings", systemImage: "gearshape.fill") }
         }
         .tint(Theme.brand)
-    }
-}
-
-/// What the big number on Home actually shows -- see `HomeView.balancePanel`.
-private enum BalanceDisplay: String, CaseIterable {
-    case total, bitcoin, usdt
-
-    var label: String {
-        switch self {
-        case .total: return "Total"
-        case .bitcoin: return "BTC"
-        case .usdt: return "USDT"
-        }
     }
 }
 
@@ -56,7 +44,7 @@ struct HomeView: View {
     @State private var fiatTotal: FiatAmount?
     @State private var recentActivity: [WalletTransaction] = []
     @State private var isRefreshing = false
-    @State private var displayMode: BalanceDisplay = .total
+    @State private var converter: FiatConverter?
 
     var body: some View {
         ScrollView {
@@ -73,7 +61,7 @@ struct HomeView: View {
         .background(Theme.background)
         .navigationTitle("TipMe")
         .refreshable { await refresh() }
-        .task { await refresh() }
+        .onAppear { Task { await refresh() } }
     }
 
     /// One number by default -- what the balance is worth in the currency the
@@ -97,8 +85,6 @@ struct HomeView: View {
                 .contentTransition(.numericText())
                 .animation(Theme.motion, value: displayedBalance)
 
-            balanceDisplayPicker
-                .padding(.top, Theme.spacingSmall)
         }
         .padding(.vertical, Theme.spacingLarge)
         .frame(maxWidth: .infinity)
@@ -114,36 +100,7 @@ struct HomeView: View {
         .padding(.horizontal, Theme.spacing)
     }
 
-    private var displayedBalance: String {
-        switch displayMode {
-        case .total: return fiatTotal?.formatted ?? "—"
-        case .bitcoin: return bitcoinBalance.formatted
-        case .usdt: return usdtBalance.formatted
-        }
-    }
-
-    private var balanceDisplayPicker: some View {
-        HStack(spacing: 4) {
-            ForEach(BalanceDisplay.allCases, id: \.self) { mode in
-                let isSelected = displayMode == mode
-                Button {
-                    Haptics.tap()
-                    displayMode = mode
-                } label: {
-                    Text(mode.label)
-                        .font(Theme.caption.weight(.semibold))
-                        .foregroundStyle(isSelected ? Theme.onBrand : Theme.textSecondary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(isSelected ? Theme.brand : Color.clear, in: Capsule())
-                }
-                .buttonStyle(.pressable)
-            }
-        }
-        .padding(4)
-        .background(Theme.surfaceRaised, in: Capsule())
-        .animation(Theme.motion, value: displayMode)
-    }
+    private var displayedBalance: String { fiatTotal?.formatted ?? "—" }
 
     private var quickActions: some View {
         HStack(spacing: Theme.spacingLarge) {
@@ -183,7 +140,7 @@ struct HomeView: View {
                 Card {
                     ForEach(Array(recentActivity.prefix(5).enumerated()), id: \.element.id) { index, tx in
                         if index > 0 { Divider().overlay(Theme.divider) }
-                        ActivityRow(transaction: tx)
+                        ActivityRow(transaction: tx, converter: converter)
                     }
                 }
                 .padding(.horizontal, Theme.spacing)
@@ -213,5 +170,6 @@ struct HomeView: View {
             total = total.map { $0 + usdtFiat } ?? usdtFiat
         }
         fiatTotal = total
+        converter = await services.fiatConverter()
     }
 }

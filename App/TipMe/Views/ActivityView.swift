@@ -22,6 +22,7 @@ struct ActivityView: View {
 
     @State private var transactions: [WalletTransaction] = []
     @State private var refused: [AuditEvent] = []
+    @State private var converter: FiatConverter?
     @State private var isLoading = false
     @State private var export: ExportFile?
 
@@ -42,7 +43,7 @@ struct ActivityView: View {
                         section("Wallet") {
                             ForEach(Array(transactions.enumerated()), id: \.element.id) { index, tx in
                                 if index > 0 { Divider().overlay(Theme.divider) }
-                                ActivityRow(transaction: tx)
+                                ActivityRow(transaction: tx, converter: converter)
                             }
                         }
                     }
@@ -132,6 +133,7 @@ struct ActivityView: View {
         defer { isLoading = false }
 
         transactions = (try? await services.backend.transactionHistory(limit: 50)) ?? []
+        converter = await services.fiatConverter()
 
         if let log = services.auditLog as? JSONLinesAuditLog {
             let events = await log.readAll()

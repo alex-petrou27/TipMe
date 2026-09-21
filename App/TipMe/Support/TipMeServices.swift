@@ -34,11 +34,25 @@ public struct TipMeServices: Sendable {
         return try make(configuration: configuration, origin: origin, clock: clock)
     }
 
-    public static func make(configuration: AppConfiguration,
+    public static func make(configuration baseConfiguration: AppConfiguration,
                             origin: PaymentIntent.Origin,
                             clock: Clock = SystemClock()) throws -> TipMeServices {
-        guard let store = AppGroupKeyValueStore(appGroup: configuration.appGroup) else {
-            throw SharedContainer.ContainerError.appGroupUnavailable(configuration.appGroup)
+        guard let store = AppGroupKeyValueStore(appGroup: baseConfiguration.appGroup) else {
+            throw SharedContainer.ContainerError.appGroupUnavailable(baseConfiguration.appGroup)
+        }
+
+        // The user's own currency choice wins over the build's default. The
+        // send caps are held in whole units of that currency (the same
+        // numbers, not converted), so they follow it.
+        var configuration = baseConfiguration
+        if let chosen = CurrencyPreference(store: store).saved {
+            configuration.fiatCurrency = chosen
+        }
+        configuration.capPolicy.currencyCode = configuration.fiatCurrency
+        if let limits = SendLimitsPreference(store: store).saved {
+            configuration.capPolicy.perTip = limits.perTip
+            configuration.capPolicy.perDay = limits.perDay
+            configuration.capPolicy.perWeek = limits.perWeek
         }
 
         let accountKeychain = AccountKeychain(accessGroup: configuration.keychainAccessGroup)

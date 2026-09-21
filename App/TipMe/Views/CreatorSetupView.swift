@@ -119,6 +119,13 @@ struct CreatorSetupView: View {
         .animation(Theme.motion, value: phase)
     }
 
+    /// The optional minimum tip is typed in the user's own currency; the
+    /// registry stores it in whatever asset tips arrive in.
+    private func minimumTipAmount() async -> Amount? {
+        guard let fiat = FiatAmount(parsing: minimumTipText, currencyCode: services.currencyCode) else { return nil }
+        return try? await services.assetAmount(for: fiat, in: preferredAsset)
+    }
+
     // MARK: - Editing
 
     @ViewBuilder
@@ -194,16 +201,9 @@ struct CreatorSetupView: View {
         .padding(.horizontal, Theme.spacing)
 
         Card {
-            Picker("Receive in", selection: $preferredAsset) {
-                Text("Bitcoin").tag(Asset.bitcoin)
-                Text("USDT").tag(Asset.usdt)
-            }
-            .pickerStyle(.segmented)
-
-            TextField("Minimum tip (optional)", text: $minimumTipText)
+            TextField("Minimum tip in \(services.currencyCode) (optional)", text: $minimumTipText)
                 .font(Theme.body)
-                .keyboardType(.numberPad)
-                .padding(.top, 8)
+                .keyboardType(.decimalPad)
         }
         .padding(.horizontal, Theme.spacing)
 
@@ -444,8 +444,7 @@ struct CreatorSetupView: View {
         errorMessage = nil
         phase = .verifying
 
-        let minimumTip = Int64(minimumTipText.filter(\.isNumber))
-            .map { Amount(asset: preferredAsset, minorUnits: $0) }
+        let minimumTip = await minimumTipAmount()
 
         let registrar = CreatorRegistrar(baseURL: services.configuration.registryBaseURL)
         let session = try? services.accountKeychain.loadSession()
@@ -532,8 +531,7 @@ struct CreatorSetupView: View {
         errorMessage = nil
         phase = .connecting
 
-        let minimumTip = Int64(minimumTipText.filter(\.isNumber))
-            .map { Amount(asset: preferredAsset, minorUnits: $0) }
+        let minimumTip = await minimumTipAmount()
 
         let connector = SocialAccountConnector(baseURL: services.configuration.registryBaseURL)
         do {
