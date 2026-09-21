@@ -1,5 +1,10 @@
 import Foundation
 
+public enum PendingTipReclaimOutcome: Sendable {
+    case succeeded(balances: [Asset: Int64])
+    case failed(String)
+}
+
 public enum PendingTipState: Sendable {
     case idle
     case confirming(handle: CreatorHandle, amount: Amount, fiatAmount: FiatAmount, note: String?)
@@ -93,21 +98,21 @@ public actor PendingTipFlow {
     }
 
     /// Takes back a pending tip nobody has claimed yet.
-    public func reclaim(id: String) async -> Result<[Asset: Int64], String> {
+    public func reclaim(id: String) async -> PendingTipReclaimOutcome {
         do {
             let result = try await backend.reclaimPendingTip(id: id)
             await auditLog.append(AuditEvent(
                 timestamp: clock.now, intentID: id, stage: .pendingTipReclaimed, outcome: .ok,
                 origin: origin.rawValue))
-            return .success(result.balances)
+            return .succeeded(balances: result.balances)
         } catch let error as PaymentBackendError {
             let message = TipFlow.describe(error)
             await auditLog.append(AuditEvent(
                 timestamp: clock.now, intentID: id, stage: .pendingTipReclaimFailed, outcome: .failed,
                 origin: origin.rawValue, detail: message))
-            return .failure(message)
+            return .failed(message)
         } catch {
-            return .failure("Couldn't take that back right now. Try again in a moment.")
+            return .failed("Couldn't take that back right now. Try again in a moment.")
         }
     }
 }
