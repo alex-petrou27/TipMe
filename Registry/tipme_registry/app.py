@@ -1843,14 +1843,18 @@ def unregister(
     platform: str,
     username: str,
     x_admin_token: str | None = Header(default=None),
+    x_management_token: str | None = Header(default=None),
     settings: Settings = Depends(get_settings),
     storage: Storage = Depends(get_storage),
 ) -> Response:
-    _require_admin(x_admin_token, settings)
     try:
         handle = normalise_handle(platform, username)
     except InvalidHandle as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+    # The creator can unlink their own handle with its management token (the
+    # same secret every other change to it needs); admin still can too.
+    _authorise_update(handle, storage, x_management_token, x_admin_token, settings)
 
     if not storage.delete(handle):
         raise HTTPException(status_code=404, detail="creator not registered")

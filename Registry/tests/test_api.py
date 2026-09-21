@@ -256,6 +256,17 @@ def test_delete_requires_admin_and_removes_the_record(client, registered):
     assert client.get("/v1/creators/tiktok/creator").status_code == 404
 
 
+def test_creator_can_unlink_their_own_handle_with_the_management_token(client, management_token):
+    assert client.delete("/v1/creators/tiktok/creator").status_code == 403
+    assert client.delete("/v1/creators/tiktok/creator",
+                         headers={"X-Management-Token": "wrong"}).status_code == 403
+
+    response = client.delete("/v1/creators/tiktok/creator",
+                             headers={"X-Management-Token": management_token})
+    assert response.status_code == 204
+    assert client.get("/v1/creators/tiktok/creator").status_code == 404
+
+
 def test_signed_at_is_fresh_on_every_lookup(client, registered):
     """signed_at is what makes a captured response un-replayable after a creator
     moves wallet, so it must be per-response, not per-record."""
