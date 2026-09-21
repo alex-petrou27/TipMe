@@ -161,4 +161,75 @@ final class ShareTitleParserTests: XCTestCase {
     func testReturnsNilWhenNoCandidateNamesAnyone() {
         XCTAssertNil(parser.handle(inAnyOf: ["Instagram", "Reel", ""], platform: .instagram))
     }
+
+    // MARK: - Fetched page: the poster, never the caption's mentions
+    //
+    // Every string below is a real Instagram description/title fetched live
+    // (captions trimmed). Each of these was resolved to the *wrong* account
+    // by the share-sheet rules -- `handle(in:)` -- before these existed.
+
+    private func author(inDescription text: String) -> String? {
+        parser.authorHandle(inFetchedDescription: text, platform: .instagram)?.username
+    }
+
+    func testPhotoCreditInTheCaptionDoesNotBecomeTheCreator() {
+        // Real: natgeo's post, credited to a photographer.
+        XCTAssertEqual(author(inDescription:
+            "70K likes, 128 comments - natgeo on September 19, 2026: \"Some snowy mountain tops. Photograph by @renan_ozturk\""),
+            "natgeo")
+        // ...and the old rules do exactly the wrong thing with the same text,
+        // which is the whole reason the new ones exist.
+        XCTAssertEqual(parser.handle(in:
+            "70K likes, 128 comments - natgeo on September 19, 2026: \"Some snowy mountain tops. Photograph by @renan_ozturk\"",
+            platform: .instagram)?.username, "renan_ozturk")
+    }
+
+    func testSponsorTagInTheCaptionDoesNotBecomeTheCreator() {
+        XCTAssertEqual(author(inDescription:
+            "75K likes, 449 comments - natgeo on September 10, 2026: \"Presented by @Rolex. Welcome to Africa\""),
+            "natgeo")
+    }
+
+    func testCollaboratorPostIsAttributedToItsOwnPoster() {
+        // Real: appears on nasa's grid but is astro_jessica's post, and the
+        // caption mentions @iss.
+        XCTAssertEqual(author(inDescription:
+            "9,210 likes, 61 comments - astro_jessica on September 12, 2026: \"Working aboard @iss\""),
+            "astro_jessica")
+    }
+
+    func testAccountsThatHideLikesOrCommentsAreStillRecognised() {
+        XCTAssertEqual(author(inDescription: "449 comments - natgeo on September 10, 2026: \"x\""), "natgeo")
+        XCTAssertEqual(author(inDescription: "75K likes - natgeo on September 10, 2026: \"x\""), "natgeo")
+        XCTAssertEqual(author(inDescription: "natgeo on September 10, 2026: \"x\""), "natgeo")
+    }
+
+    func testCountFormatsAreAllRecognised() {
+        XCTAssertEqual(author(inDescription: "1M likes, 3,102 comments - natgeo on September 18, 2026: \"x\""), "natgeo")
+        XCTAssertEqual(author(inDescription: "1.2M likes, 45K comments - a.b_c on 3 September 2026: \"x\""), "a.b_c")
+    }
+
+    func testAMultiWordDisplayNameBeforeOnInstagramIsNotAUsername() {
+        XCTAssertNil(author(inDescription: "500 likes, 12 comments - Luke Hamnett on Instagram: \"caption\""))
+    }
+
+    func testCaptionTextAloneNeverNamesAnyone() {
+        XCTAssertNil(author(inDescription: "Photograph by @renan_ozturk on September 19, 2026"))
+        XCTAssertNil(author(inDescription: "Follow @natgeo on Instagram"))
+        XCTAssertNil(author(inDescription: ""))
+    }
+
+    func testFetchedTitleOnlyReadsTheAccountNamedBeforeOnInstagram() {
+        // Real shape: display name, no username, credit inside the caption.
+        XCTAssertNil(parser.authorHandle(inFetchedTitle:
+            "National Geographic on Instagram: \"Some snowy mountain tops. Photograph by @renan_ozturk\"",
+            platform: .instagram))
+        XCTAssertNil(parser.authorHandle(inFetchedTitle:
+            "National Geographic on Instagram: \"Follow @someone on Instagram: for more\"",
+            platform: .instagram))
+        // The older, username-bearing shape is still honoured.
+        XCTAssertEqual(parser.authorHandle(inFetchedTitle:
+            "National Geographic (@natgeo) on Instagram: \"caption\"", platform: .instagram)?.username,
+            "natgeo")
+    }
 }

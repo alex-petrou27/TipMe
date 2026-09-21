@@ -278,6 +278,32 @@ final class TipFlowTests: XCTestCase {
         XCTAssertTrue(reason.contains("couldn't tell whose Reel"))
     }
 
+    /// Real, measured failure: a post credited to a photographer in its
+    /// caption. The page's title and description both contain "Photograph by
+    /// @renan_ozturk", and the flow used to hand the tip to *that* account --
+    /// a registered creator, so it would not even have looked wrong -- instead
+    /// of natgeo, who posted it. Both accounts are registered here so a wrong
+    /// answer resolves cleanly rather than failing, which is what makes this
+    /// dangerous in practice.
+    func testPhotoCreditInAPostCaptionDoesNotRedirectTheTipToThePhotographer() async {
+        let harness = makeHarness(
+            records: [.stub(username: "natgeo", platform: .instagram),
+                      .stub(username: "renan_ozturk", platform: .instagram)],
+            pageMetadataFetcher: StubPageMetadataFetcher(
+                title: "National Geographic on Instagram: \"Some snowy mountain tops.\n\nPhotograph by @renan_ozturk\"",
+                canonicalURL: URL(string: "https://www.instagram.com/p/DdfI0_xlxGG/"),
+                description: "70K likes, 128 comments - natgeo on September 19, 2026: \"Some snowy mountain tops.\n\nPhotograph by @renan_ozturk\""))
+        let state = await harness.flow.identify(
+            attachedURLs: [URL(string: "https://www.instagram.com/p/DdfI0_xlxGG/?igsh=abc")!],
+            sharedText: [],
+            titles: [])
+
+        guard case .ready(let record) = state else {
+            return XCTFail("expected a ready state, got \(state)")
+        }
+        XCTAssertEqual(record.handle.username, "natgeo")
+    }
+
     /// A fetch failure (network down, timeout, blocked) must not crash the
     /// flow — it degrades to the same manual-entry offer as any other
     /// unidentifiable share.

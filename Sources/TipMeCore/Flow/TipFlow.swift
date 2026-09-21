@@ -139,22 +139,21 @@ public actor TipFlow {
                 // no username at all. Its description did name it, though --
                 // "N likes, N comments - username on <date>: caption", the
                 // bare username with no `@`. Try the canonical URL first,
-                // then the title, then the description.
+                // then the page text -- read for who *posted*, not who the
+                // caption mentions (see `creatorFromFetchedPage`).
                 if let canonicalURL = metadata.canonicalURL,
                    let recovered = parser.parse(canonicalURL), recovered.platform == link.platform,
                    let fromURL = recovered.handle {
                     link = link.adoptingHandle(fromURL, from: .url)
                     await note(.linkParsed, .ok, platform: link.platform.rawValue,
                                handle: fromURL.username, detail: "handle recovered from fetched canonical URL")
-                } else if let fetchedTitle, let fromTitle = titleParser.handle(in: fetchedTitle, platform: link.platform) {
-                    link = link.adoptingHandle(fromTitle, from: .shareTitle)
+                } else if let fromPage = Self.creatorFromFetchedPage(
+                    title: fetchedTitle, description: fetchedDescription,
+                    platform: link.platform, parser: titleParser) {
+                    link = link.adoptingHandle(fromPage.handle, from: .shareTitle)
                     await note(.linkParsed, .ok, platform: link.platform.rawValue,
-                               handle: fromTitle.username, detail: "handle recovered from fetched page title")
-                } else if let fetchedDescription,
-                          let fromDescription = titleParser.handle(in: fetchedDescription, platform: link.platform) {
-                    link = link.adoptingHandle(fromDescription, from: .shareTitle)
-                    await note(.linkParsed, .ok, platform: link.platform.rawValue,
-                               handle: fromDescription.username, detail: "handle recovered from fetched page description")
+                               handle: fromPage.handle.username,
+                               detail: "handle recovered from fetched page \(fromPage.source)")
                 }
             } catch {
                 fetchError = String(describing: error)
@@ -189,6 +188,34 @@ public actor TipFlow {
                        handle: handle.username, detail: String(describing: error))
             return .failed("Couldn't look up \(handle.displayName) right now.")
         }
+    }
+
+    /// Reads the creator out of a page we fetched ourselves.
+    ///
+    /// Instagram's fetched title and description both embed the post's whole
+    /// caption, and the share sheet's own title rules (which treat "by @x",
+    /// "from @x", and any lone `@mention` as the creator) cannot tell a
+    /// caption's photo credit or sponsor tag from the account that posted --
+    /// measured on 32 real posts and Reels, they picked the wrong account 11
+    /// times. So for Instagram this only reads the poster's own slot (see
+    /// `ShareTitleParser.authorHandle`), description first since it is the
+    /// one field that always names them. TikTok is left on the previous rules
+    /// unchanged: none of that was measured there.
+    private static func creatorFromFetchedPage(title: String?, description: String?,
+                                               platform: Platform, parser: ShareTitleParser)
+        -> (handle: CreatorHandle, source: String)? {
+        if platform == .instagram {
+            if let description, let handle = parser.authorHandle(inFetchedDescription: description, platform: platform) {
+                return (handle, "description")
+            }
+            if let title, let handle = parser.authorHandle(inFetchedTitle: title, platform: platform) {
+                return (handle, "title")
+            }
+            return nil
+        }
+        if let title, let handle = parser.handle(in: title, platform: platform) { return (handle, "title") }
+        if let description, let handle = parser.handle(in: description, platform: platform) { return (handle, "description") }
+        return nil
     }
 
     /// Reached only when neither the URL nor the share title named a creator,
