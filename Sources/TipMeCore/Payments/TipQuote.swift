@@ -9,11 +9,13 @@ import Foundation
 public struct TipQuote: Equatable, Codable, Sendable {
     /// What the creator receives, in the creator's preferred asset.
     public let creatorReceives: Amount
-    /// Our fee, in the sender's asset, added on top. Never deducted from the tip.
+    /// Our fee, in the sender's asset. It comes out of the amount the sender
+    /// chose to give -- they pay exactly that, and the creator gets the rest.
     public let fee: Amount
     /// Conversion detail (a no-op route when both sides use the same asset).
     public let route: SettlementRoute
-    /// Total debited from the sender: tip + conversion cost + fee.
+    /// Total debited from the sender: what they chose to give (net tip + fee)
+    /// plus any conversion cost.
     public let senderPays: Amount
     /// Fiat rendering of the total, for display and for cap enforcement.
     public let fiatTotal: FiatAmount
@@ -40,10 +42,10 @@ public struct TipQuote: Equatable, Codable, Sendable {
 
     public var hasFee: Bool { fee.isPositive }
 
-    /// The disclosure line, e.g. "£1.00 tip + £0.03 fee = £1.03".
+    /// The disclosure line, e.g. "£5 sent = £4.85 to the creator + £0.15 fee".
     public var disclosure: String {
-        guard hasFee else { return "\(fiatTip.formatted) tip, no fee" }
-        return "\(fiatTip.formatted) tip + \(fiatFee.formatted) fee = \(fiatTotal.formatted)"
+        guard hasFee else { return "\(fiatTotal.formatted) sent, no fee" }
+        return "\(fiatTotal.formatted) sent = \(fiatTip.formatted) to the creator + \(fiatFee.formatted) fee"
     }
 
     public var conversionDisclosure: String? {
@@ -61,17 +63,28 @@ public struct TipQuoteBuilder: Sendable {
         self.feePolicy = feePolicy
     }
 
+    /// Splits what the sender chose to give into the part the creator gets and
+    /// our fee. The fee is worked out on the full amount and comes out of it,
+    /// so `net + fee == total` exactly. A tip too small to leave anything
+    /// after the fee pays none.
+    public func split(total: Amount) -> (net: Amount, fee: Amount) {
+        let fee = feePolicy.fee(on: total)
+        guard fee < total else { return (total, .zero(total.asset)) }
+        return (total - fee, fee)
+    }
+
     /// - Parameters:
-    ///   - tip: what the sender chose to give, denominated in the asset they
-    ///     are spending.
+    ///   - tip: what the creator is to receive, denominated in the asset the
+    ///     sender is spending (the fee is added to this).
     ///   - route: conversion terms from the payment backend. Must debit `tip`.
     ///   - sendRate: fiat price of the sender's asset.
-    public func quote(tip: Amount, route: SettlementRoute, sendRate: AssetRate) throws -> TipQuote {
+    public func quote(tip: Amount, route: SettlementRoute, sendRate: AssetRate,
+                      fee explicitFee: Amount? = nil) throws -> TipQuote {
         guard tip.isPositive else { throw QuoteError.nonPositiveTip }
         guard route.debited == tip else { throw QuoteError.routeDoesNotMatchTip }
         guard sendRate.asset == tip.asset else { throw QuoteError.rateAssetMismatch }
 
-        let fee = feePolicy.fee(on: tip)
+        let fee = explicitFee ?? feePolicy.fee(on: tip)
         let senderPays = tip + route.conversionCost + fee
 
         return TipQuote(creatorReceives: route.credited,

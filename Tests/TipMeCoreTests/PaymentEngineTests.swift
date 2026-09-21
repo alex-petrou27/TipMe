@@ -88,7 +88,7 @@ final class PaymentEngineTests: XCTestCase {
         XCTAssertEqual(quote.creatorReceives, .sats(2_000), "the creator is never skimmed")
         XCTAssertEqual(quote.fee, .sats(60))
         XCTAssertEqual(quote.senderPays, .sats(2_060), "the sender pays tip + fee")
-        XCTAssertEqual(quote.disclosure, "£1 tip + £0.03 fee = £1.03")
+        XCTAssertEqual(quote.disclosure, "£1.03 sent = £1 to the creator + £0.03 fee")
 
         _ = try await harness.engine.execute(try await authorize(harness, quote: quote, creator: creator))
 

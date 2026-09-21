@@ -547,6 +547,19 @@ final class TipFlowTests: XCTestCase {
 
     // MARK: - Quote and pay
 
+    /// The sender pays exactly what they chose; the fee comes out of it.
+    func testFeeComesOutOfTheAmountTheSenderChose() async {
+        let harness = makeHarness()
+        let quoted = await harness.flow.quote(total: .sats(2_000), for: .stub())
+        guard case .quoted(_, let quote) = quoted else {
+            return XCTFail("quoting failed: \(quoted)")
+        }
+        XCTAssertEqual(quote.senderPays, .sats(2_000), "the sender pays exactly what they chose")
+        XCTAssertEqual(quote.fee, .sats(60))
+        XCTAssertEqual(quote.creatorReceives, .sats(1_940))
+        XCTAssertEqual(quote.disclosure, "£1 sent = £0.97 to the creator + £0.03 fee")
+    }
+
     func testFullShareToReceiptJourney() async throws {
         let harness = makeHarness()
         let creator = CreatorRecord.stub()
@@ -562,7 +575,7 @@ final class TipFlowTests: XCTestCase {
         guard case .quoted(_, let quote) = quoted else {
             return XCTFail("quoting failed: \(quoted)")
         }
-        XCTAssertEqual(quote.disclosure, "£1 tip + £0.03 fee = £1.03")
+        XCTAssertEqual(quote.disclosure, "£1.03 sent = £1 to the creator + £0.03 fee")
 
         let paid = await harness.flow.confirmAndPay(quote: quote, creator: record, sourceLink: nil)
         guard case .succeeded(let result, _) = paid else {

@@ -307,21 +307,38 @@ public actor TipFlow {
 
     // MARK: - Step 2: price it
 
-    /// Builds the quote the confirm screen renders and the engine spends from.
-    public func quote(tip: Amount, for creator: CreatorRecord) async -> TipFlowState {
-        if let minimum = creator.minimumTipMinorUnits {
-            let minimumAmount = Amount(asset: creator.preferredAsset, minorUnits: minimum)
-            if creator.preferredAsset == tip.asset, tip < minimumAmount {
-                return .failed("\(creator.handle.displayName) accepts tips of \(minimumAmount.formatted) or more.")
-            }
+    /// Quotes a tip where `total` is exactly what the sender pays: our fee
+    /// comes out of it and the creator receives the rest.
+    public func quote(total: Amount, for creator: CreatorRecord) async -> TipFlowState {
+        if let rejection = minimumTipRejection(for: total, creator: creator) { return rejection }
+        let split = quoteBuilder.split(total: total)
+        return await quote(tip: split.net, fee: split.fee, for: creator)
+    }
+
+    private func minimumTipRejection(for tip: Amount, creator: CreatorRecord) -> TipFlowState? {
+        guard let minimum = creator.minimumTipMinorUnits else { return nil }
+        let minimumAmount = Amount(asset: creator.preferredAsset, minorUnits: minimum)
+        if creator.preferredAsset == tip.asset, tip < minimumAmount {
+            return .failed("\(creator.handle.displayName) accepts tips of \(minimumAmount.formatted) or more.")
         }
+        return nil
+    }
+
+    /// Builds the quote the confirm screen renders and the engine spends from.
+    /// Here `tip` is what the creator receives and the fee is added on top.
+    public func quote(tip: Amount, for creator: CreatorRecord) async -> TipFlowState {
+        if let rejection = minimumTipRejection(for: tip, creator: creator) { return rejection }
+        return await quote(tip: tip, fee: nil, for: creator)
+    }
+
+    private func quote(tip: Amount, fee: Amount?, for creator: CreatorRecord) async -> TipFlowState {
 
         do {
             let route = try await backend.prepareRoute(tip: tip,
                                                        to: creator.lightningAddress,
                                                        receiveAsset: creator.preferredAsset)
             let rate = try await backend.rate(for: tip.asset, in: fiatCurrency)
-            let quote = try quoteBuilder.quote(tip: tip, route: route, sendRate: rate)
+            let quote = try quoteBuilder.quote(tip: tip, route: route, sendRate: rate, fee: fee)
             await note(.quotePrepared, .ok,
                        platform: creator.handle.platform.rawValue,
                        handle: creator.handle.username,
