@@ -15,7 +15,7 @@ import os
 import secrets
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -28,7 +28,10 @@ from dotenv import load_dotenv
 
 from . import accounts, bitcoin_chain, grid_rail, lightning, lightning_node, oauth, rates as rates_module, signing, turnkey_stamp
 from .handles import Handle, InvalidHandle, normalise as normalise_handle
-from .storage import Account, CreatorRecord, EmailTaken, InsufficientBalance, PendingDeposit, Storage
+from .storage import (
+    Account, CreatorRecord, EmailTaken, InsufficientBalance, PendingCreatorTip,
+    PendingDeposit, Storage,
+)
 
 # `.env` lives at the repo root, one level above `Registry/`, and populates
 # Config/Secrets.xcconfig for the iOS side -- but nothing was ever loading it
@@ -142,6 +145,15 @@ class _PendingOAuth:
     minimum_tip_minor: int | None
     display_name: str | None
     created_at: float
+    # Set only when whoever started this sign-in was also a signed-in TipMe
+    # user -- see `oauth_start`. A completed callback then links *and*
+    # OAuth-verifies the handle in the same step, which is what makes it
+    # safe to release any pending escrowed tips (see `_maybe_claim_pending`):
+    # this is the one path in the whole registry where "this account is
+    # linked" and "the platform itself confirmed who owns the handle" are
+    # proven together, atomically, rather than as two separate, spoofable
+    # claims.
+    tipme_user_id: str | None = None
 
 
 @dataclass
@@ -160,6 +172,10 @@ class _OAuthSession:
     management_token: str | None
     claim_token: str | None
     created_at: float
+    # Any pending tips this OAuth link just released -- see
+    # `_maybe_claim_pending`. Empty unless this was a signed-in-user link
+    # that just became OAuth-verified for the first time.
+    claimed: list[PendingCreatorTip] = field(default_factory=list)
 
 
 @dataclass
@@ -366,6 +382,12 @@ class OAuthStartResponse(BaseModel):
     expires_in: int
 
 
+class ClaimedTipEntry(BaseModel):
+    asset: str
+    amount_minor: int
+    note: str | None
+
+
 class OAuthSessionResponse(BaseModel):
     platform: str
     username: str
@@ -373,6 +395,10 @@ class OAuthSessionResponse(BaseModel):
     verified: bool
     claim_token: str | None
     management_token: str | None
+    # Any tips that were sent to this handle before it was ever linked --
+    # see `_maybe_claim_pending`. Empty on almost every call; when it isn't,
+    # the client shows the "you had money waiting" moment.
+    claimed: list[ClaimedTipEntry] = []
 
 
 class SignupRequest(BaseModel):
@@ -465,6 +491,27 @@ class SimulateTestPaymentRequest(BaseModel):
 class TipToCreatorRequest(BaseModel):
     asset: str
     amount_minor: int = Field(gt=0)
+    note: str | None = Field(default=None, max_length=280)
+
+
+class PendingTipResponse(BaseModel):
+    balances: list[BalanceEntry]
+    pending_tip_id: str
+
+
+class PendingTipEntry(BaseModel):
+    id: str
+    platform: str
+    username: str
+    asset: str
+    amount_minor: int
+    note: str | None
+    status: str
+    created_at: str
+
+
+class PendingTipsResponse(BaseModel):
+    tips: list[PendingTipEntry]
 
 
 class DepositApplePayRequest(BaseModel):
@@ -1138,6 +1185,97 @@ def tip_creator(
     return TransferResponse(balances=_balance_entries(user_id, storage))
 
 
+@app.post("/v1/tip/{platform}/{username}/pending", response_model=PendingTipResponse, status_code=201)
+def tip_pending(
+    platform: str,
+    username: str,
+    request: TipToCreatorRequest,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> PendingTipResponse:
+    """Tips a handle nobody has claimed on TipMe yet -- the "send my friend
+    a fiver on their graduation post before they've ever heard of TipMe"
+    case `tip_creator` above deliberately doesn't handle.
+
+    Modelled on Venmo/PayPal's own answer to the identical problem: the
+    sender's balance is debited right now, in full, and the money sits in
+    escrow tagged to this exact (platform, username) until whoever actually
+    owns that handle proves it -- see `_maybe_claim_pending`. Nothing about
+    identity is checked here at all; that question is deferred entirely to
+    claim time, which is what makes sending instant regardless of whether
+    the recipient has ever heard of TipMe.
+
+    Only for a handle with no `creators` row at all. One that's already
+    registered -- even unlinked, pointing at someone else's external
+    wallet -- already has a real address to pay over Lightning right now,
+    which is strictly better than escrow, so this refuses rather than
+    quietly shadowing that path.
+    """
+    try:
+        handle = normalise_handle(platform, username)
+    except InvalidHandle as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    if request.asset not in ASSETS:
+        raise HTTPException(status_code=400, detail=f"asset must be one of {ASSETS}")
+
+    if storage.get(handle) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"@{username} on {platform} is already registered -- pay them directly instead",
+        )
+
+    try:
+        tip = storage.create_pending_tip(
+            platform=handle.platform, username=handle.username, sender_user_id=user_id,
+            asset=request.asset, amount_minor=request.amount_minor, note=request.note,
+        )
+    except InsufficientBalance as error:
+        raise HTTPException(status_code=402, detail=str(error)) from error
+
+    return PendingTipResponse(balances=_balance_entries(user_id, storage), pending_tip_id=tip.id)
+
+
+@app.get("/v1/tip/pending", response_model=PendingTipsResponse)
+def list_pending_tips(
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> PendingTipsResponse:
+    """Every pending tip this account has ever sent -- claimed, reclaimed, or
+    still waiting -- so the client can show them in Activity and offer
+    "take back" on whichever are still pending.
+    """
+    tips = storage.list_pending_tips_sent(user_id)
+    return PendingTipsResponse(tips=[
+        PendingTipEntry(
+            id=tip.id, platform=tip.platform, username=tip.username, asset=tip.asset,
+            amount_minor=tip.amount_minor, note=tip.note, status=tip.status,
+            created_at=signing.iso8601(tip.created_at),
+        )
+        for tip in tips
+    ])
+
+
+@app.post("/v1/tip/pending/{tip_id}/reclaim", response_model=TransferResponse)
+def reclaim_pending_tip(
+    tip_id: str,
+    user_id: str = Depends(get_current_user),
+    storage: Storage = Depends(get_storage),
+) -> TransferResponse:
+    """Takes back a pending tip nobody has claimed yet -- Venmo's "take
+    back" for the identical situation, available any time before the
+    recipient's handle is linked and verified. Only the original sender can
+    do this, and only while it's still genuinely unclaimed.
+    """
+    tip = storage.reclaim_pending_tip(tip_id, user_id)
+    if tip is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no reclaimable pending tip with that id for your account",
+        )
+    return TransferResponse(balances=_balance_entries(user_id, storage))
+
+
 @app.get("/v1/rates", response_model=RatesResponse)
 async def get_rates(currency: str = "GBP") -> RatesResponse:
     try:
@@ -1318,6 +1456,7 @@ def oauth_start(
     request: OAuthStartRequest,
     http_request: Request,
     settings: Settings = Depends(get_settings),
+    tipme_user_id: str | None = Depends(_optional_current_user),
 ) -> OAuthStartResponse:
     """Begins platform sign-in for a handle a creator is claiming or already
     owns.
@@ -1329,6 +1468,13 @@ def oauth_start(
     always had — someone who registered `@realcreator` first, pointing tips
     at their own wallet, cannot also sign in as `@realcreator` on Instagram.
     Only the real account owner can complete the callback that follows this.
+
+    Called with a live TipMe session (the normal case: a creator signing in
+    from inside the app to link their account), the completed callback links
+    `tipme_user_id` *and* marks the record OAuth-verified in the same step --
+    see `_maybe_claim_pending`. Called with no session at all, it still works
+    exactly as before: proving a handle for an external wallet with no TipMe
+    account behind it.
     """
     if platform != request.platform:
         raise HTTPException(status_code=400, detail="platform mismatch")
@@ -1363,6 +1509,7 @@ def oauth_start(
         minimum_tip_minor=request.minimum_tip_minor_units,
         display_name=request.display_name,
         created_at=time.monotonic(),
+        tipme_user_id=tipme_user_id,
     )
     return OAuthStartResponse(
         authorize_url=oauth.build_authorize_url(config, state),
@@ -1429,10 +1576,12 @@ async def oauth_callback(
         display_name=pending.display_name,
         claim_token=f"tipme-verify-{secrets.token_urlsafe(8)}",
         management_token=management_token,
+        tipme_user_id=pending.tipme_user_id,
     )
     record = storage.set_verified(
         pending.handle, True, via="oauth", platform_user_id=platform_user_id,
     )
+    claimed = _maybe_claim_pending(pending.handle, storage, credit_to=pending.tipme_user_id)
 
     session_id = secrets.token_urlsafe(24)
     _oauth_sessions[session_id] = _OAuthSession(
@@ -1441,6 +1590,7 @@ async def oauth_callback(
         management_token=management_token or storage.management_token(pending.handle),
         claim_token=storage.claim_token(pending.handle),
         created_at=time.monotonic(),
+        claimed=claimed,
     )
     return finish("success", username=username, session_id=session_id)
 
@@ -1463,6 +1613,10 @@ def oauth_session(session_id: str) -> OAuthSessionResponse:
         verified=True,
         claim_token=session.claim_token,
         management_token=session.management_token,
+        claimed=[
+            ClaimedTipEntry(asset=tip.asset, amount_minor=tip.amount_minor, note=tip.note)
+            for tip in session.claimed
+        ],
     )
 
 
@@ -1544,6 +1698,51 @@ def _client_key(request: Request) -> str:
     if forwarded:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+def _maybe_claim_pending(
+    handle: Handle, storage: Storage, *, credit_to: str | None,
+) -> list[PendingCreatorTip]:
+    """Releases any escrowed tips waiting on `handle` to `credit_to` -- but
+    only once real proof, not just a claimed string, backs that release.
+
+    This is the fix for the exact hole a pending-tip system would otherwise
+    open up: without it, registering `@someone_famous` and pointing it at
+    your own account would be enough to drain every tip anyone had ever
+    sent them, unverified, on nothing but a claimed string. `verified` has
+    always been cosmetic for a *direct* tip -- a sender who typed or shared
+    a specific handle made their own trust call, same as ever -- but an
+    escrowed tip has no sender present at claim time to make that call, so
+    releasing it needs the one kind of proof in this codebase the platform
+    itself vouches for: OAuth, or a human who actually checked.
+
+    `credit_to` must be an account the *caller* just proved, in this exact
+    request, is authorized -- an OAuth exchange that just succeeded for a
+    signed-in caller (see `oauth_callback`), or the record's current holder
+    at the moment an admin verifies it (see `verify`). This deliberately
+    never re-derives the recipient by reading `storage.get(handle)
+    .tipme_user_id` on its own: that column can carry an entirely earlier,
+    unverified registration -- a squatter who claimed the handle signed in,
+    then walked away, before the real owner ever touched TipMe -- whose
+    provenance has nothing to do with whatever just got verified. Crediting
+    that stale link the instant a real OAuth check happens to succeed
+    against the record it happens to sit on (Instagram/TikTok's own
+    `COALESCE`-preserved handle, unrelated to who signed in for *this*
+    check) would hand the squatter every escrowed tip on exactly the
+    identity check meant to stop them.
+
+    Still confirms the record's verification actually qualifies
+    (`verified_via` is `"oauth"` or `"admin"`; `"self"` and plain
+    registration do not, on purpose -- see `self_verify`'s own docstring
+    for why that tier was never meant to gate money it doesn't already
+    gate) before releasing anything, as a second, independent check.
+    """
+    if credit_to is None:
+        return []
+    record = storage.get(handle)
+    if record is None or record.verified_via not in ("oauth", "admin"):
+        return []
+    return storage.claim_pending_tips(handle.platform, handle.username, credit_to)
 
 
 def _authorise_update(
@@ -1686,6 +1885,7 @@ def verify(
     record = storage.set_verified(handle, True, via="admin")
     if record is None:
         raise HTTPException(status_code=404, detail="creator not registered")
+    _maybe_claim_pending(handle, storage, credit_to=record.tipme_user_id)
     return {"platform": record.platform, "username": record.username, "verified": True}
 
 

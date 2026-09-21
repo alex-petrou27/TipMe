@@ -169,6 +169,33 @@ CREATE TABLE IF NOT EXISTS grid_wallet_sessions (
     expires_at          TEXT NOT NULL,
     created_at          TEXT NOT NULL
 );
+
+-- A tip sent to a (platform, username) that nobody has ever claimed on
+-- TipMe yet -- the "pay a friend's Instagram before they've heard of us"
+-- case. Modelled on Venmo/PayPal's own answer to the identical problem
+-- (send to a phone number with no account; the money sits in escrow until
+-- claimed, or the sender takes it back): the sender's balance is debited
+-- the instant they send, in full, with nothing about *identity* checked at
+-- all -- that question is deferred entirely to whoever later registers
+-- this exact handle. `status` starts 'pending' and ends exactly once, at
+-- either 'claimed' (the handle got linked to a TipMe account -- see
+-- `claim_pending_tips`, called from `register()`) or 'reclaimed' (the
+-- sender took it back -- see `reclaim_pending_tip`); never both.
+CREATE TABLE IF NOT EXISTS pending_creator_tips (
+    id             TEXT PRIMARY KEY,
+    platform       TEXT NOT NULL,
+    username       TEXT NOT NULL,
+    sender_user_id TEXT NOT NULL,
+    asset          TEXT NOT NULL,
+    amount_minor   INTEGER NOT NULL,
+    note           TEXT,
+    status         TEXT NOT NULL DEFAULT 'pending',
+    created_at     TEXT NOT NULL,
+    resolved_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_creator_tips_handle
+    ON pending_creator_tips (platform, username, status);
 """
 
 
@@ -230,6 +257,20 @@ class GridWalletSession:
     session_public_key: str
     expires_at: datetime
     created_at: datetime
+
+
+@dataclass
+class PendingCreatorTip:
+    id: str
+    platform: str
+    username: str
+    sender_user_id: str
+    asset: str
+    amount_minor: int
+    note: str | None
+    status: str
+    created_at: datetime
+    resolved_at: datetime | None
 
 
 @dataclass
@@ -633,6 +674,123 @@ class Storage:
                                  "internal_transfer_sent", counterparty=to_user_id)
             self._adjust_balance(conn, to_user_id, asset, amount_minor,
                                  "internal_transfer_received", counterparty=from_user_id)
+
+    # ----------------------------------------------------------------
+    # Pending tips -- money sent to a handle nobody has claimed yet
+    # ----------------------------------------------------------------
+
+    def create_pending_tip(
+        self, platform: str, username: str, sender_user_id: str, asset: str,
+        amount_minor: int, note: str | None,
+    ) -> PendingCreatorTip:
+        """Debits the sender and records an escrowed tip in one transaction.
+
+        Called only for a (platform, username) with no `creators` row at
+        all -- see `tip_pending` in app.py. A handle that has registered,
+        even without linking a TipMe account, already has a real
+        `lightning_address` to pay instead; escrow exists for the case
+        where there is genuinely nowhere else to send the money yet.
+        """
+        tip_id = secrets.token_urlsafe(16)
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            self._adjust_balance(
+                conn, sender_user_id, asset, -amount_minor,
+                "pending_tip_sent", counterparty=f"{platform}:{username}",
+            )
+            conn.execute(
+                """
+                INSERT INTO pending_creator_tips
+                    (id, platform, username, sender_user_id, asset, amount_minor,
+                     note, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (tip_id, platform, username, sender_user_id, asset, amount_minor,
+                 note, now.isoformat()),
+            )
+        return PendingCreatorTip(
+            id=tip_id, platform=platform, username=username, sender_user_id=sender_user_id,
+            asset=asset, amount_minor=amount_minor, note=note, status="pending",
+            created_at=now, resolved_at=None,
+        )
+
+    def claim_pending_tips(self, platform: str, username: str, user_id: str) -> list[PendingCreatorTip]:
+        """Credits `user_id`'s ledger with every still-pending tip addressed
+        to (platform, username) and marks each claimed, atomically per tip.
+
+        Called from `register()` the moment this exact handle is newly
+        linked to a TipMe account. This is the other half of the escrow: a
+        tip sent before its recipient ever signed up lands the instant they
+        do, with no action required from whoever sent it.
+        """
+        now = datetime.now(timezone.utc)
+        claimed: list[PendingCreatorTip] = []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM pending_creator_tips
+                WHERE platform = ? AND username = ? AND status = 'pending'
+                """,
+                (platform, username),
+            ).fetchall()
+            for row in rows:
+                self._adjust_balance(
+                    conn, user_id, row["asset"], row["amount_minor"],
+                    "pending_tip_claimed", counterparty=row["sender_user_id"],
+                )
+                conn.execute(
+                    "UPDATE pending_creator_tips SET status = 'claimed', resolved_at = ? WHERE id = ?",
+                    (now.isoformat(), row["id"]),
+                )
+                claimed.append(self._to_pending_tip(row, status="claimed", resolved_at=now))
+        return claimed
+
+    def list_pending_tips_sent(self, sender_user_id: str) -> list[PendingCreatorTip]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM pending_creator_tips WHERE sender_user_id = ? ORDER BY created_at DESC",
+                (sender_user_id,),
+            ).fetchall()
+        return [self._to_pending_tip(row) for row in rows]
+
+    def reclaim_pending_tip(self, tip_id: str, sender_user_id: str) -> PendingCreatorTip | None:
+        """Refunds an unclaimed pending tip back to whoever sent it --
+        Venmo's "take back" for the identical situation, available any time
+        before the recipient claims it. Returns `None`, changing nothing,
+        if the tip doesn't exist, was already resolved, or belongs to a
+        different sender.
+        """
+        now = datetime.now(timezone.utc)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM pending_creator_tips WHERE id = ?", (tip_id,),
+            ).fetchone()
+            if row is None or row["status"] != "pending" or row["sender_user_id"] != sender_user_id:
+                return None
+            self._adjust_balance(
+                conn, sender_user_id, row["asset"], row["amount_minor"],
+                "pending_tip_reclaimed", counterparty=f"{row['platform']}:{row['username']}",
+            )
+            conn.execute(
+                "UPDATE pending_creator_tips SET status = 'reclaimed', resolved_at = ? WHERE id = ?",
+                (now.isoformat(), tip_id),
+            )
+        return self._to_pending_tip(row, status="reclaimed", resolved_at=now)
+
+    @staticmethod
+    def _to_pending_tip(
+        row: sqlite3.Row, status: str | None = None, resolved_at: datetime | None = None,
+    ) -> PendingCreatorTip:
+        return PendingCreatorTip(
+            id=row["id"], platform=row["platform"], username=row["username"],
+            sender_user_id=row["sender_user_id"], asset=row["asset"],
+            amount_minor=row["amount_minor"], note=row["note"],
+            status=status if status is not None else row["status"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            resolved_at=resolved_at if resolved_at is not None else (
+                datetime.fromisoformat(row["resolved_at"]) if row["resolved_at"] else None
+            ),
+        )
 
     def complete_deposit_with_amount(
         self, method: str, external_reference: str, observed_amount_minor: int, reason: str,
