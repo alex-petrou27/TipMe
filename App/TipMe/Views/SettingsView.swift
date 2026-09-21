@@ -15,12 +15,7 @@ struct SettingsView: View {
     let services: TipMeServices
     let onLogout: () -> Void
 
-    @State private var connectedHandles: [Platform: String] = [:]
-    @State private var connectingPlatform: Platform?
-    @State private var accountError: String?
     @State private var isLoggingOut = false
-    @State private var editingPlatform: Platform?
-    @State private var editingUsername = ""
 
     private var signedInEmail: String? {
         try? services.accountKeychain.loadSession().email
@@ -28,15 +23,13 @@ struct SettingsView: View {
 
     private var caps: SendCapPolicy { services.configuration.capPolicy }
     private var limits: RateLimitPolicy { services.configuration.rateLimitPolicy }
-    private var identityStore: SenderIdentityStore? {
-        SenderIdentityStore(appGroup: services.configuration.appGroup)
-    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.spacingLarge) {
                 profileHeader
                 accountsSection
+                helpSection
                 feeSection
                 limitsSection
                 profileSection
@@ -47,10 +40,6 @@ struct SettingsView: View {
         .background(Theme.background)
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        .task { loadIdentities() }
-        .animation(Theme.motion, value: connectedHandles)
-        .animation(Theme.motion, value: connectingPlatform)
-        .animation(Theme.motion, value: accountError)
     }
 
     // MARK: - Sections
@@ -85,33 +74,33 @@ struct SettingsView: View {
         .padding(.horizontal, Theme.spacing)
     }
 
+    /// Read-only apart from disconnecting: connecting an account happens on
+    /// Get Tipped, and a platform only shows up here once it's connected.
     private var accountsSection: some View {
-        sectionCard(title: "Your accounts") {
-            accountRow(.instagram)
-            Divider().overlay(Theme.divider)
-            accountRow(.tiktok)
-            if let accountError {
-                Text(accountError)
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.negative)
-                    .padding(.top, 4)
-            }
-            Text("A \u{201C}Sending as\u{201D} badge only — sending a tip never needs this, and typing your handle is enough. \u{201C}Verify via sign-in\u{201D} additionally proves it's really you, but only works for a Business or Creator account — Instagram allows no sign-in at all for a personal one.")
-                .font(Theme.caption)
-                .foregroundStyle(Theme.textTertiary)
-                .padding(.top, 4)
-        }
-        .alert("Sending as", isPresented: editingAlertBinding) {
-            TextField("Your \(editingPlatform?.displayName ?? "") handle", text: $editingUsername)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            Button("Cancel", role: .cancel) {}
-            Button("Save") { saveTypedHandle() }
+        sectionCard(title: "Connected accounts") {
+            ConnectedAccountsList(services: services)
         }
     }
 
-    private var editingAlertBinding: Binding<Bool> {
-        Binding(get: { editingPlatform != nil }, set: { if !$0 { editingPlatform = nil } })
+    private var helpSection: some View {
+        sectionCard(title: "Help") {
+            NavigationLink {
+                ShareSheetGuideScreen()
+            } label: {
+                HStack(spacing: 12) {
+                    IconBadge(systemImage: "square.and.arrow.up")
+                    Text("How to add TipMe to your Share Sheet")
+                        .font(Theme.body)
+                        .foregroundStyle(Theme.textPrimary)
+                        .multilineTextAlignment(.leading)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .buttonStyle(.pressable)
+        }
     }
 
     private var feeSection: some View {
@@ -195,102 +184,10 @@ struct SettingsView: View {
         .padding(.vertical, 2)
     }
 
-    private func accountRow(_ platform: Platform) -> some View {
-        HStack(spacing: 12) {
-            IconBadge(systemImage: platform == .instagram ? "camera.fill" : "music.note")
-            Text(platform.displayName)
-                .font(Theme.body)
-                .foregroundStyle(Theme.textPrimary)
-            Spacer()
-            if connectingPlatform == platform {
-                ProgressView()
-            } else if let username = connectedHandles[platform] {
-                Text("@\(username)")
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.textSecondary)
-                Button("Remove") {
-                    Haptics.tap()
-                    disconnect(platform)
-                }
-                .font(Theme.caption.weight(.semibold))
-                .foregroundStyle(Theme.negative)
-                .buttonStyle(.pressable)
-            } else {
-                VStack(alignment: .trailing, spacing: 4) {
-                    Button("Set") {
-                        Haptics.tap()
-                        editingUsername = ""
-                        editingPlatform = platform
-                    }
-                    .font(Theme.caption.weight(.semibold))
-                    .foregroundStyle(Theme.brand)
-                    .buttonStyle(.pressable)
-
-                    Button("Verify via sign-in") {
-                        Haptics.tap()
-                        Task { await connect(platform) }
-                    }
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Theme.textTertiary)
-                    .buttonStyle(.pressable)
-                }
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
     // MARK: - Actions
 
     private func fiat(_ minorUnits: Int64) -> String {
         FiatAmount(currencyCode: caps.currencyCode, minorUnits: minorUnits).formatted
-    }
-
-    private func loadIdentities() {
-        guard let identityStore else { return }
-        for platform in Platform.allCases {
-            if let username = identityStore.username(for: platform) {
-                connectedHandles[platform] = username
-            }
-        }
-    }
-
-    private func connect(_ platform: Platform) async {
-        accountError = nil
-        connectingPlatform = platform
-        defer { connectingPlatform = nil }
-
-        let connector = SocialAccountConnector(baseURL: services.configuration.registryBaseURL)
-        do {
-            let result = try await connector.connectIdentity(platform: platform)
-            identityStore?.set(username: result.username, for: platform)
-            connectedHandles[platform] = result.username
-        } catch let error as SocialAccountConnector.ConnectorError {
-            accountError = error.userFacingReason
-        } catch {
-            accountError = String(describing: error)
-        }
-    }
-
-    private func disconnect(_ platform: Platform) {
-        identityStore?.clear(platform)
-        connectedHandles[platform] = nil
-    }
-
-    /// Self-declared, unverified -- no network call, nothing to fail. This is
-    /// deliberately the primary path, not a fallback: the badge it sets never
-    /// gates a payment (see `SenderIdentityStore`'s own doc), so requiring
-    /// platform sign-in to type your own handle here was solving a problem
-    /// this feature never had, while being permanently unusable on a
-    /// personal Instagram account. "Verify via sign-in" stays available
-    /// above for whoever does have a Business/Creator account and wants it.
-    private func saveTypedHandle() {
-        guard let platform = editingPlatform else { return }
-        let username = editingUsername.trimmingCharacters(in: .whitespaces)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
-        guard !username.isEmpty else { return }
-        identityStore?.set(username: username, for: platform)
-        connectedHandles[platform] = username
-        editingPlatform = nil
     }
 
     private func logout() {

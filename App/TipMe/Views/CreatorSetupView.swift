@@ -58,7 +58,7 @@ struct CreatorSetupView: View {
     /// Handles this device has already claimed, read from the keychain so they
     /// are available offline.
     private var claimedHandles: [CreatorHandle] {
-        services.creatorTokens.claimedHandles()
+        services.ownedClaimedHandles()
     }
 
     /// True when we hold the management token for the handle being edited, so
@@ -66,7 +66,7 @@ struct CreatorSetupView: View {
     /// the token.
     private var isUpdatingOwnHandle: Bool {
         guard let handle = parsedHandle else { return false }
-        return services.creatorTokens.token(for: handle) != nil
+        return services.ownedToken(for: handle) != nil
     }
 
     private var parsedAddress: LightningAddress? {
@@ -105,6 +105,7 @@ struct CreatorSetupView: View {
             .padding(.vertical, Theme.spacing)
         }
         .background(Theme.background)
+        .onAppear { ConnectedAccountsModel.shared(for: services).reload() }
         .navigationTitle("Get tipped")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -123,6 +124,8 @@ struct CreatorSetupView: View {
     @ViewBuilder
     private var editor: some View {
         previewCard(handle: previewHandleText, platform: platform, confirmed: false)
+
+        ConnectAccountsCard(services: services)
 
         if !claimedHandles.isEmpty {
             Card {
@@ -460,7 +463,7 @@ struct CreatorSetupView: View {
                 displayName: nil,
                 // Present only when this device made the original claim; the
                 // registry refuses anonymous changes to an existing record.
-                managementToken: services.creatorTokens.token(for: handle),
+                managementToken: services.ownedToken(for: handle),
                 // Signed in -> link this handle to the account, and skip the
                 // live Lightning check: once linked, tips route ledger-to-
                 // ledger and never touch this address at all. See
@@ -472,6 +475,7 @@ struct CreatorSetupView: View {
             // permanently loses the ability to move their tips elsewhere.
             if let token = registration.managementToken {
                 try? services.creatorTokens.store(token: token, for: handle)
+                services.recordOwner(of: handle)
             }
             Haptics.success()
             phase = .done(registration)
@@ -545,6 +549,7 @@ struct CreatorSetupView: View {
             // already in the keychain and does not need to be re-issued.
             if let token = session.managementToken {
                 try? services.creatorTokens.store(token: token, for: handle)
+                services.recordOwner(of: handle)
             }
             Haptics.success()
             phase = .done(CreatorRegistration(
@@ -575,7 +580,7 @@ struct CreatorSetupView: View {
         isUploadingPhoto = true
         defer { isUploadingPhoto = false }
 
-        guard let token = services.creatorTokens.token(for: handle) else {
+        guard let token = services.ownedToken(for: handle) else {
             photoUploadError = "Couldn't find this device's management token for this handle."
             return
         }

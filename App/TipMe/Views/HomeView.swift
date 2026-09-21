@@ -18,11 +18,6 @@ struct MainTabView: View {
             .tabItem { Label("Home", systemImage: "house.fill") }
 
             NavigationStack {
-                ActivityView(services: services)
-            }
-            .tabItem { Label("Activity", systemImage: "list.bullet") }
-
-            NavigationStack {
                 CreatorSetupView(services: services)
             }
             .tabItem { Label("Get Tipped", systemImage: "person.crop.circle.badge.checkmark") }

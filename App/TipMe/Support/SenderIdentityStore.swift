@@ -19,15 +19,29 @@ public struct SenderIdentityStore: Sendable {
 
     private func key(for platform: Platform) -> String { "sender-identity.\(platform.rawValue)" }
 
-    public func username(for platform: Platform) -> String? {
-        store.data(forKey: key(for: platform)).flatMap { String(data: $0, encoding: .utf8) }
+    /// Every account connected on this platform, oldest first. Stored as a JSON
+    /// list; a bare string from before multiple accounts were allowed is read
+    /// as a one-item list.
+    public func usernames(for platform: Platform) -> [String] {
+        guard let data = store.data(forKey: key(for: platform)) else { return [] }
+        if let list = try? JSONDecoder().decode([String].self, from: data) { return list }
+        return String(data: data, encoding: .utf8).map { [$0] } ?? []
     }
 
-    public func set(username: String, for platform: Platform) {
-        store.set(username.data(using: .utf8), forKey: key(for: platform))
+    /// Adds an account; connecting the same one twice (ignoring case) is a no-op.
+    public func add(username: String, for platform: Platform) {
+        var list = usernames(for: platform)
+        guard !list.contains(where: { $0.caseInsensitiveCompare(username) == .orderedSame }) else { return }
+        list.append(username)
+        save(list, for: platform)
     }
 
-    public func clear(_ platform: Platform) {
-        store.set(nil, forKey: key(for: platform))
+    public func remove(username: String, for platform: Platform) {
+        save(usernames(for: platform).filter { $0.caseInsensitiveCompare(username) != .orderedSame },
+             for: platform)
+    }
+
+    private func save(_ list: [String], for platform: Platform) {
+        store.set(list.isEmpty ? nil : try? JSONEncoder().encode(list), forKey: key(for: platform))
     }
 }

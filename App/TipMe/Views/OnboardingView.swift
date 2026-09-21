@@ -236,83 +236,37 @@ struct OnboardingView: View {
 
     // MARK: - Add to share sheet
 
-    /// Prompts the user to enable TipMe in the share sheet, right after their
-    /// account exists and before they land on Home — the same cadence apps use
-    /// for a notifications-permission prompt.
-    ///
-    /// There is no real equivalent to that prompt here. Notifications, camera,
-    /// location all have a genuine system permission API a third-party app can
-    /// trigger (`UNUserNotificationCenter.requestAuthorization`, and so on).
-    /// Whether TipMe is favourited in the share sheet is not a permission at
-    /// all — Apple exposes no API, no deep link, and no Settings.app entry for
-    /// it; it is edited only from inside the share sheet's own "More → Edit"
-    /// screen, which an app cannot open or complete on the user's behalf.
-    ///
-    /// So this does the closest real thing: it presents the *actual* system
-    /// share sheet via `ShareLink`, at the one moment we can walk someone
-    /// through what to do inside it. We cannot detect whether they actually
-    /// toggled TipMe on afterwards — there is no API for that either — so the
-    /// copy says what to do rather than confirming that it happened.
+    /// Teaches the user to move TipMe into the share sheet's Favorites row.
+    /// Optional and skippable: iOS has no API to do it, detect it, or open the
+    /// "More > Edit" screen for them, so this only explains -- the user does
+    /// it themselves. The same walkthrough lives in Settings.
     private var shareSetup: some View {
         VStack(spacing: 20) {
-            Spacer(minLength: 40)
+            Spacer(minLength: 20)
 
             IconBadge(systemImage: "square.and.arrow.up.fill", size: 64)
 
-            Text("Add TipMe to your share sheet")
+            Text("Get TipMe one tap away")
                 .font(Theme.title)
                 .foregroundStyle(Theme.textPrimary)
                 .multilineTextAlignment(.center)
-            Text("This is a one-time setup so TipMe shows up right away next time, instead of behind “More”.")
+            Text("You tip from the Share button in apps like Instagram and TikTok. Move TipMe into the main Share row and it's there immediately, instead of behind “More”.")
                 .font(Theme.body)
                 .foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
 
-            Card {
-                VStack(alignment: .leading, spacing: 14) {
-                    shareSetupStep(1, "Tap the button below to open the real share sheet.")
-                    shareSetupStep(2, "Scroll the icon row to the end and tap **More**.")
-                    shareSetupStep(3, "Turn on **TipMe**, then drag it to the top.")
-                }
-            }
-
-            Spacer(minLength: 20)
-
-            // The genuine system share sheet — not a lookalike. What the user
-            // shares here doesn't matter; this exists to put them inside the
-            // real "More → Edit" screen where the actual toggle lives.
-            ShareLink(item: "I just set up TipMe to tip creators straight from my share sheet ⚡️") {
-                HStack(spacing: 8) {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("Open the share sheet")
-                }
-                .font(Theme.headline)
-                .foregroundStyle(Theme.onBrand)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 17)
-                .background(Theme.brand, in: Capsule())
-            }
-            .buttonStyle(.pressable)
+            Card { ShareSheetGuide() }
 
             PrimaryButton(title: "Continue") { mode = .connectSocials }
 
-            Button("I'll do this later") { mode = .connectSocials }
+            Button("Skip for now") { mode = .connectSocials }
                 .font(Theme.caption)
                 .foregroundStyle(Theme.textSecondary)
                 .buttonStyle(.pressable)
-        }
-    }
 
-    private func shareSetupStep(_ number: Int, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("\(number)")
-                .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(Theme.onBrand)
-                .frame(width: 20, height: 20)
-                .background(Theme.brand, in: Circle())
-            Text(.init(text))
-                .font(Theme.body)
-                .foregroundStyle(Theme.textPrimary)
+            Text("You can find this again any time in Settings.")
+                .font(Theme.caption)
+                .foregroundStyle(Theme.textTertiary)
         }
     }
 
@@ -411,7 +365,7 @@ struct OnboardingView: View {
             .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
         guard !username.isEmpty else { return }
         SenderIdentityStore(appGroup: services.configuration.appGroup)?
-            .set(username: username, for: platform)
+            .add(username: username, for: platform)
         connectedHandles[platform] = username
         editingPlatform = nil
     }
@@ -425,7 +379,7 @@ struct OnboardingView: View {
         do {
             let result = try await connector.connectIdentity(platform: platform)
             SenderIdentityStore(appGroup: services.configuration.appGroup)?
-                .set(username: result.username, for: platform)
+                .add(username: result.username, for: platform)
             connectedHandles[platform] = result.username
         } catch let error as SocialAccountConnector.ConnectorError {
             socialError = error.userFacingReason
