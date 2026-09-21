@@ -4,7 +4,9 @@ import TipMeCore
 @MainActor
 final class WithdrawViewModel: ObservableObject {
     @Published var amountText = ""
-    @Published var selectedAsset: Asset = .bitcoin
+    // Same reasoning as SendViewModel's default: Apple Pay's top-up (the
+    // only funding path in this build) only ever credits USDT.
+    @Published var selectedAsset: Asset = .usdt
     @Published private(set) var state: WithdrawalState = .checkingAvailability
 
     private let flow: WithdrawalFlow

@@ -5,7 +5,13 @@ import TipMeCore
 final class SendViewModel: ObservableObject {
     @Published var destinationText = ""
     @Published var amountText = ""
-    @Published var selectedAsset: Asset = .bitcoin
+    // USDT, not bitcoin: the only funding path in this build is Apple Pay's
+    // top-up, which only ever credits USDT (no Lightning node is configured
+    // to actually acquire sats) -- defaulting to bitcoin here silently set
+    // every send up to fail with "insufficient funds" for a balance there
+    // was never a way to hold in the first place. Same reasoning as
+    // register()'s own default on the registry side.
+    @Published var selectedAsset: Asset = .usdt
     @Published private(set) var state: WalletSendState = .idle
 
     private let flow: WalletSendFlow
