@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TipMe — Tip the creators you watch, instantly</title>
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --paper: #fdfcfa;
+    --line: #e4e0d8;
+    --accent: #c2410c;
+    --muted: #6b6558;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #ece8e0;
+      --paper: #17150f;
+      --line: #35312a;
+      --accent: #e2793d;
+      --muted: #9c9587;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #ece8e0;
+    --paper: #17150f;
+    --line: #35312a;
+    --accent: #e2793d;
+    --muted: #9c9587;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 96px 24px 64px;
+    text-align: left;
+  }
+  .mark {
+    font-size: 0.9rem;
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    margin-bottom: 20px;
+  }
+  h1 {
+    font-size: 2.6rem;
+    line-height: 1.1;
+    margin: 0 0 20px;
+    letter-spacing: -0.02em;
+  }
+  p.lead {
+    font-size: 1.15rem;
+    color: var(--muted);
+    max-width: 46ch;
+    margin: 0;
+  }
+  .divider {
+    height: 1px;
+    background: var(--line);
+    max-width: 680px;
+    margin: 0 auto;
+  }
+  .details {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 56px 24px;
+    flex: 1;
+  }
+  .details p {
+    font-size: 1rem;
+    max-width: 56ch;
+  }
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 28px 24px;
+  }
+  .footer-inner {
+    max-width: 680px;
+    margin: 0 auto;
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    align-items: center;
+    font-size: 0.9rem;
+  }
+  footer a {
+    color: var(--ink);
+    text-decoration: none;
+    border-bottom: 1px solid var(--line);
+  }
+  footer a:hover { border-color: var(--accent); color: var(--accent); }
+  .footer-copy { color: var(--muted); margin-left: auto; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="mark">TipMe</div>
+    <h1>Tip the creators<br>you actually watch.</h1>
+    <p class="lead">
+      Send a tip to a creator straight from the share sheet on Instagram or TikTok — no searching, no separate app to dig through.
+    </p>
+  </header>
+
+  <div class="divider"></div>
+
+  <div class="details">
+    <p>
+      TipMe lets a viewer send a small, instant tip to a creator whose content they've just watched. TipMe holds your balance for you, so tips arrive straight away and creators are paid into their own TipMe balance.
+    </p>
+  </div>
+
+  <footer>
+    <div class="footer-inner">
+      <a href="privacy-policy.html">Privacy Policy</a>
+      <a href="terms-of-service.html">Terms of Service</a>
+      <span class="footer-copy">TipMe</span>
+    </div>
+  </footer>
+</body>
+</html>
