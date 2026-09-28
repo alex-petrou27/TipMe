@@ -118,7 +118,6 @@ public struct SocialOAuthClient: Sendable {
         public let handle: CreatorHandle
         public let lightningAddress: LightningAddress
         public let verified: Bool
-        public let claimToken: String?
         public let managementToken: String?
     }
 
@@ -166,7 +165,6 @@ public struct SocialOAuthClient: Sendable {
         return SessionResult(handle: handle,
                              lightningAddress: address,
                              verified: verified,
-                             claimToken: object["claim_token"] as? String,
                              managementToken: object["management_token"] as? String)
     }
 
@@ -240,7 +238,7 @@ public enum SocialOAuthError: Error, Equatable, Sendable {
     public var userFacingReason: String {
         switch self {
         case .notConfigured(let platform):
-            return "\(platform.displayName) sign-in isn't set up yet. Use the bio-code option below instead."
+            return "\(platform.displayName) sign-in isn't available right now. Please try again later."
         case .rejected(let reason): return reason
         case .transport: return "Couldn't reach TipMe. Check your connection and try again."
         case .responseMalformed: return "TipMe gave an unexpected response. Try again in a moment."

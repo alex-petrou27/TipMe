@@ -37,7 +37,7 @@ public final class SocialAccountConnector: NSObject, ASWebAuthenticationPresenta
                 case "access_denied":
                     return "Sign-in was cancelled."
                 case "not_configured":
-                    return "This platform's sign-in isn't set up yet. Use the bio-code option below instead."
+                    return "This platform's sign-in isn't available right now. Please try again later."
                 default:
                     // Not a code Instagram is documented to send back through this
                     // redirect, so this is a best guess rather than a matched

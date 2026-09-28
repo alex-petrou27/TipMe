@@ -24,7 +24,7 @@ Platform reality, so nobody is surprised later:
     admin-checked).
   * **TikTok** — Login Kit works for any account type, but a newly registered
     app is capped to its own sandbox testers until TikTok approves it for
-    production use of the ``user.info.basic`` scope.
+    production use of the ``user.info.basic`` and ``user.info.profile`` scopes.
 
 Neither of those is something this code can fix. What it needs to actually run
 is a real Meta app (Instagram product, Business Login) and/or a real TikTok
@@ -61,10 +61,23 @@ def _env(name: str) -> str | None:
     return value if value else None
 
 
-def _instagram_config() -> PlatformOAuthConfig | None:
+def _redirect_uri(prefix: str, *, purpose: str) -> str | None:
+    """The claim flow (`/callback`) and the identity-only "sending as" flow
+    (`/identity/callback`) share one client id/secret but cannot share one
+    redirect URI: the platform sends the browser to the single URL fixed when
+    the authorize request is built, and each callback only recognises its own
+    pending state. So each needs its own registered redirect address:
+    `<PLATFORM>_REDIRECT_URI` for claiming, `<PLATFORM>_IDENTITY_REDIRECT_URI`
+    for identity.
+    """
+    suffix = "_IDENTITY_REDIRECT_URI" if purpose == "identity" else "_REDIRECT_URI"
+    return _env(f"{prefix}{suffix}")
+
+
+def _instagram_config(*, purpose: str) -> PlatformOAuthConfig | None:
     client_id = _env("INSTAGRAM_CLIENT_ID")
     client_secret = _env("INSTAGRAM_CLIENT_SECRET")
-    redirect_uri = _env("INSTAGRAM_REDIRECT_URI")
+    redirect_uri = _redirect_uri("INSTAGRAM", purpose=purpose)
     if not (client_id and client_secret and redirect_uri):
         return None
     return PlatformOAuthConfig(
@@ -77,10 +90,10 @@ def _instagram_config() -> PlatformOAuthConfig | None:
     )
 
 
-def _tiktok_config() -> PlatformOAuthConfig | None:
+def _tiktok_config(*, purpose: str) -> PlatformOAuthConfig | None:
     client_id = _env("TIKTOK_CLIENT_KEY")
     client_secret = _env("TIKTOK_CLIENT_SECRET")
-    redirect_uri = _env("TIKTOK_REDIRECT_URI")
+    redirect_uri = _redirect_uri("TIKTOK", purpose=purpose)
     if not (client_id and client_secret and redirect_uri):
         return None
     return PlatformOAuthConfig(
@@ -89,15 +102,19 @@ def _tiktok_config() -> PlatformOAuthConfig | None:
         client_secret=client_secret,
         redirect_uri=redirect_uri,
         authorize_base="https://www.tiktok.com/v2/auth/authorize/",
-        scope="user.info.basic",
+        # `username` (the @handle) is only returned under user.info.profile;
+        # user.info.basic alone gives a display name and open_id.
+        scope="user.info.basic,user.info.profile",
     )
 
 
-def config_for(platform: str) -> PlatformOAuthConfig | None:
+def config_for(platform: str, *, purpose: str = "claim") -> PlatformOAuthConfig | None:
+    """`purpose` is "claim" (a creator proving they own the handle they are
+    registering a wallet for) or "identity" (a sender proving "this is me")."""
     if platform == "instagram":
-        return _instagram_config()
+        return _instagram_config(purpose=purpose)
     if platform == "tiktok":
-        return _tiktok_config()
+        return _tiktok_config(purpose=purpose)
     return None
 
 

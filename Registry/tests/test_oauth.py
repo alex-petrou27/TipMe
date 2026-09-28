@@ -33,7 +33,7 @@ def test_start_without_configured_platform_fails_closed(client):
 
 
 def test_start_returns_authorize_url_once_configured(client, monkeypatch):
-    monkeypatch.setattr(oauth_module, "config_for", lambda platform: _fake_config())
+    monkeypatch.setattr(oauth_module, "config_for", lambda platform, **_: _fake_config())
 
     response = client.post("/v1/oauth/instagram/start", json={
         "platform": "instagram",
@@ -47,7 +47,7 @@ def test_start_returns_authorize_url_once_configured(client, monkeypatch):
 
 
 def test_start_rejects_platform_mismatch(client, monkeypatch):
-    monkeypatch.setattr(oauth_module, "config_for", lambda platform: _fake_config())
+    monkeypatch.setattr(oauth_module, "config_for", lambda platform, **_: _fake_config())
     response = client.post("/v1/oauth/instagram/start", json={
         "platform": "tiktok",
         "username": "creator",
@@ -57,7 +57,7 @@ def test_start_rejects_platform_mismatch(client, monkeypatch):
 
 
 def test_start_rejects_invalid_handle(client, monkeypatch):
-    monkeypatch.setattr(oauth_module, "config_for", lambda platform: _fake_config())
+    monkeypatch.setattr(oauth_module, "config_for", lambda platform, **_: _fake_config())
     response = client.post("/v1/oauth/instagram/start", json={
         "platform": "instagram",
         "username": "not a real handle!!",
@@ -67,7 +67,7 @@ def test_start_rejects_invalid_handle(client, monkeypatch):
 
 
 def _start(client, monkeypatch, username="creator"):
-    monkeypatch.setattr(oauth_module, "config_for", lambda platform: _fake_config())
+    monkeypatch.setattr(oauth_module, "config_for", lambda platform, **_: _fake_config())
     response = client.post("/v1/oauth/instagram/start", json={
         "platform": "instagram",
         "username": username,
@@ -142,7 +142,7 @@ def test_callback_rejects_username_mismatch(client, monkeypatch):
 
 
 def test_callback_rejects_unknown_state(client, monkeypatch):
-    monkeypatch.setattr(oauth_module, "config_for", lambda platform: _fake_config())
+    monkeypatch.setattr(oauth_module, "config_for", lambda platform, **_: _fake_config())
     response = client.get(
         "/v1/oauth/instagram/callback",
         params={"code": "auth-code", "state": "not-a-real-state"},

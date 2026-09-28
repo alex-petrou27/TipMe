@@ -428,14 +428,6 @@ class Storage:
             )
         return self.get(handle)
 
-    def claim_token(self, handle: Handle) -> str | None:
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT claim_token FROM creators WHERE platform = ? AND username = ?",
-                (handle.platform, handle.username),
-            ).fetchone()
-        return row["claim_token"] if row else None
-
     @staticmethod
     def _to_record(row: sqlite3.Row) -> CreatorRecord:
         return CreatorRecord(

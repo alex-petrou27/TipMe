@@ -215,23 +215,46 @@ struct ConnectAccountsCard: View {
                 ProgressView()
             } else {
                 VStack(alignment: .trailing, spacing: 4) {
-                    Button(model.handles[platform] == nil ? "Connect" : "Add another") {
-                        Haptics.tap()
-                        editingUsername = ""
-                        editingPlatform = platform
-                        isEditing = true
-                    }
-                    .font(Theme.caption.weight(.semibold))
-                    .foregroundStyle(Theme.brand)
-                    .buttonStyle(.pressable)
+                    let title = model.handles[platform] == nil ? "Connect" : "Add another"
+                    if platform == .tiktok {
+                        // TikTok's real sign-in is the main path: Connect opens
+                        // TikTok itself. Typing a handle is the small fallback.
+                        Button(title) {
+                            Haptics.tap()
+                            Task { await model.connectViaSignIn(platform) }
+                        }
+                        .font(Theme.caption.weight(.semibold))
+                        .foregroundStyle(Theme.brand)
+                        .buttonStyle(.pressable)
 
-                    Button("Verify via sign-in") {
-                        Haptics.tap()
-                        Task { await model.connectViaSignIn(platform) }
+                        Button("Enter handle instead") {
+                            Haptics.tap()
+                            editingUsername = ""
+                            editingPlatform = platform
+                            isEditing = true
+                        }
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .buttonStyle(.pressable)
+                    } else {
+                        Button(title) {
+                            Haptics.tap()
+                            editingUsername = ""
+                            editingPlatform = platform
+                            isEditing = true
+                        }
+                        .font(Theme.caption.weight(.semibold))
+                        .foregroundStyle(Theme.brand)
+                        .buttonStyle(.pressable)
+
+                        Button("Verify via sign-in") {
+                            Haptics.tap()
+                            Task { await model.connectViaSignIn(platform) }
+                        }
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                        .buttonStyle(.pressable)
                     }
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Theme.textTertiary)
-                    .buttonStyle(.pressable)
                 }
             }
         }

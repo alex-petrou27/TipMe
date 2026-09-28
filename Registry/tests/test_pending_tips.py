@@ -9,7 +9,7 @@ check -- shows who actually controls that handle.
 The security-critical half of this file is the squatter tests: a pending
 tip must never be releasable just because *someone* registered the right
 username string and pointed it at their own account. Plain registration and
-self-verify must never unlock escrowed money, only "oauth"/"admin".
+only "oauth"/"admin" verification may unlock escrowed money.
 """
 from tipme_registry import oauth as oauth_module
 
@@ -213,33 +213,6 @@ def test_plain_registration_does_not_release_pending_tips(client):
     squatter = _signup(client, "squatter@example.com").json()
     register = _register(client, "instagram", "famous", token=squatter["session_token"])
     assert register.status_code == 201
-
-    squatter_me = client.get("/v1/me", headers=_headers(squatter["session_token"])).json()
-    assert {b["asset"]: b["balance_minor"] for b in squatter_me["balances"]}.get("bitcoin", 0) == 0
-
-
-def test_self_verify_does_not_release_pending_tips(client):
-    """Self-verify proves only "I know this record's claim token", not
-    platform identity -- see its own docstring. It must not be usable to
-    drain an escrow either."""
-    sender = _signup(client, "sender@example.com").json()
-    _seed(client, sender["user_id"])
-    client.post(
-        "/v1/tip/instagram/famous/pending",
-        json={"asset": "bitcoin", "amount_minor": 1500},
-        headers=_headers(sender["session_token"]),
-    )
-
-    squatter = _signup(client, "squatter@example.com").json()
-    register = _register(client, "instagram", "famous", token=squatter["session_token"]).json()
-
-    self_verify = client.post(
-        "/v1/creators/instagram/famous/self-verify",
-        json={"claim_token": register["claim_token"]},
-        headers=_headers(squatter["session_token"]),
-    )
-    assert self_verify.status_code == 200
-    assert self_verify.json()["verified_via"] == "self"
 
     squatter_me = client.get("/v1/me", headers=_headers(squatter["session_token"])).json()
     assert {b["asset"]: b["balance_minor"] for b in squatter_me["balances"]}.get("bitcoin", 0) == 0

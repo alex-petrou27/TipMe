@@ -27,8 +27,6 @@ struct CreatorSetupView: View {
     @State private var isUploadingPhoto = false
     @State private var photoUploadError: String?
 
-    @State private var isSelfVerifying = false
-    @State private var selfVerifyError: String?
     @State private var showingBusinessSignIn = false
 
     private enum Phase: Equatable {
@@ -352,7 +350,6 @@ struct CreatorSetupView: View {
             }
             .padding(.horizontal, Theme.spacing)
         } else if services.isSignedIn {
-            verifyDisclosure(registration)
         }
 
         Card {
@@ -387,54 +384,6 @@ struct CreatorSetupView: View {
         .font(Theme.body.weight(.semibold))
         .foregroundStyle(Theme.brand)
         .buttonStyle(.pressable)
-    }
-
-    private func verifyDisclosure(_ registration: CreatorRegistration) -> some View {
-        DisclosureGroup("Add a verified badge") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Add this to your \(registration.handle.platform.displayName) bio:")
-                    .font(Theme.caption)
-                    .foregroundStyle(Theme.textSecondary)
-
-                HStack {
-                    Text(registration.claimToken)
-                        .font(.footnote.monospaced())
-                        .textSelection(.enabled)
-                    Spacer()
-                    Button("Copy") {
-                        Haptics.tap()
-                        UIPasteboard.general.string = registration.claimToken
-                    }
-                    .font(Theme.caption.weight(.semibold))
-                    .foregroundStyle(Theme.brand)
-                }
-
-                Button {
-                    Task { await selfVerify(registration) }
-                } label: {
-                    HStack {
-                        Text(isSelfVerifying ? "Checking…" : "I've added it — Verify")
-                        if isSelfVerifying {
-                            Spacer()
-                            ProgressView()
-                        }
-                    }
-                }
-                .disabled(isSelfVerifying)
-                .font(Theme.body.weight(.semibold))
-                .foregroundStyle(Theme.brand)
-
-                if let selfVerifyError {
-                    Text(selfVerifyError).font(Theme.caption).foregroundStyle(Theme.negative)
-                }
-            }
-            .padding(.top, 6)
-        }
-        .font(Theme.body.weight(.semibold))
-        .foregroundStyle(Theme.textSecondary)
-        .padding(Theme.spacing)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
-        .padding(.horizontal, Theme.spacing)
     }
 
     // MARK: - Submitting
@@ -487,45 +436,11 @@ struct CreatorSetupView: View {
         }
     }
 
-    // MARK: - Self-verifying
-
-    private func selfVerify(_ registration: CreatorRegistration) async {
-        guard let session = try? services.accountKeychain.loadSession() else {
-            selfVerifyError = "Sign in to verify this handle."
-            return
-        }
-        selfVerifyError = nil
-        isSelfVerifying = true
-        defer { isSelfVerifying = false }
-
-        let registrar = CreatorRegistrar(baseURL: services.configuration.registryBaseURL)
-        do {
-            try await registrar.selfVerify(handle: registration.handle,
-                                           claimToken: registration.claimToken,
-                                           sessionToken: session.sessionToken)
-            Haptics.success()
-            phase = .done(CreatorRegistration(
-                handle: registration.handle,
-                lightningAddress: registration.lightningAddress,
-                verified: true,
-                verifiedVia: "self",
-                claimToken: registration.claimToken,
-                verificationInstructions: registration.verificationInstructions,
-                managementToken: registration.managementToken))
-        } catch let error as CreatorRegistrationError {
-            selfVerifyError = error.userFacingReason
-        } catch {
-            selfVerifyError = String(describing: error)
-        }
-    }
-
     // MARK: - Connecting
 
     /// Registers (or re-verifies) this handle by signing into the platform
-    /// itself, rather than the bio-code round trip `submit()` uses. One call
-    /// does what used to take two steps and a human: claim the handle, prove
-    /// it is really this creator's, and mark it verified, all in the same
-    /// sign-in.
+    /// itself: claim the handle, prove it is really this creator's, and mark
+    /// it verified, all in the same sign-in.
     private func connect() async {
         guard let handle = parsedHandle, let address = effectiveAddress else { return }
         errorMessage = nil
@@ -555,8 +470,6 @@ struct CreatorSetupView: View {
                 lightningAddress: session.lightningAddress,
                 verified: session.verified,
                 verifiedVia: session.verified ? "oauth" : nil,
-                claimToken: session.claimToken ?? "",
-                verificationInstructions: "",
                 managementToken: session.managementToken))
         } catch let error as SocialAccountConnector.ConnectorError {
             errorMessage = error.userFacingReason

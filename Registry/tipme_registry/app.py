@@ -170,7 +170,6 @@ class _OAuthSession:
     handle: Handle
     lightning_address: str
     management_token: str | None
-    claim_token: str | None
     created_at: float
     # Any pending tips this OAuth link just released -- see
     # `_maybe_claim_pending`. Empty unless this was a signed-in-user link
@@ -357,15 +356,9 @@ class RegisterResponse(BaseModel):
     username: str
     lightning_address: str
     verified: bool
-    claim_token: str
-    verification_instructions: str
     # Returned only when the handle is claimed for the first time. Required to
     # change the record afterwards, so the creator must keep it.
     management_token: str | None = None
-
-
-class SelfVerifyRequest(BaseModel):
-    claim_token: str
 
 
 class OAuthStartRequest(BaseModel):
@@ -393,7 +386,6 @@ class OAuthSessionResponse(BaseModel):
     username: str
     lightning_address: str
     verified: bool
-    claim_token: str | None
     management_token: str | None
     # Any tips that were sent to this handle before it was ever linked --
     # see `_maybe_claim_pending`. Empty on almost every call; when it isn't,
@@ -1351,9 +1343,7 @@ def _signed_payload(record: CreatorRecord, settings: Settings) -> dict:
         "minimum_tip_minor_units": record.minimum_tip_minor,
         "display_name": record.display_name,
         "verified": record.verified,
-        # "oauth"/"admin"/"self"/None -- see the self-verify endpoint's own
-        # docstring for why "self" is a real, distinct, lesser tier rather
-        # than something the client should treat the same as the other two.
+        # "oauth"/"admin"/None.
         "verified_via": record.verified_via,
         # Whether this handle is linked to a signed-in TipMe account -- lets
         # the client route the actual payment ledger-to-ledger (see
@@ -1441,14 +1431,13 @@ def register(
         _authorise_update(handle, storage, x_management_token, x_admin_token, settings)
         management_token = None  # preserved by the storage layer
 
-    token = f"tipme-verify-{secrets.token_urlsafe(8)}"
     record = storage.upsert(
         handle=handle,
         lightning_address=address,
         preferred_asset=request.preferred_asset,
         minimum_tip_minor=request.minimum_tip_minor_units,
         display_name=request.display_name,
-        claim_token=token,
+        claim_token=None,
         management_token=management_token,
         tipme_user_id=tipme_user_id,
     )
@@ -1458,19 +1447,9 @@ def register(
         username=record.username,
         lightning_address=record.lightning_address,
         verified=record.verified,
-        claim_token=token,
         # Shown once, on first claim only. Re-issuing it on every update would
         # let anyone who can read one response take the record over.
         management_token=management_token,
-        verification_instructions=(
-            f"Add '{token}' to your {handle.platform} bio, then tap Verify. "
-            "Neither platform offers a way for us to check that automatically for "
-            "a personal account -- as of Meta's April 2025 changes, none of "
-            "Instagram's APIs work for a personal account, full stop, not just the "
-            "OAuth sign-in above -- so this is a self-check rather than a "
-            "platform-confirmed badge. See the self-verify endpoint's own "
-            "docstring and docs/PHASE2.md."
-        ),
     )
 
 
@@ -1598,7 +1577,7 @@ async def oauth_callback(
         preferred_asset=pending.preferred_asset,
         minimum_tip_minor=pending.minimum_tip_minor,
         display_name=pending.display_name,
-        claim_token=f"tipme-verify-{secrets.token_urlsafe(8)}",
+        claim_token=None,
         management_token=management_token,
         tipme_user_id=pending.tipme_user_id,
     )
@@ -1612,7 +1591,6 @@ async def oauth_callback(
         handle=pending.handle,
         lightning_address=record.lightning_address,
         management_token=management_token or storage.management_token(pending.handle),
-        claim_token=storage.claim_token(pending.handle),
         created_at=time.monotonic(),
         claimed=claimed,
     )
@@ -1635,7 +1613,6 @@ def oauth_session(session_id: str) -> OAuthSessionResponse:
         username=session.handle.username,
         lightning_address=session.lightning_address,
         verified=True,
-        claim_token=session.claim_token,
         management_token=session.management_token,
         claimed=[
             ClaimedTipEntry(asset=tip.asset, amount_minor=tip.amount_minor, note=tip.note)
@@ -1651,7 +1628,7 @@ def oauth_identity_start(platform: str, settings: Settings = Depends(get_setting
     claiming a wallet. Nothing about a handle or a wallet is taken here; there
     is nothing to validate before starting, unlike `/oauth/{platform}/start`.
     """
-    config = oauth.config_for(platform)
+    config = oauth.config_for(platform, purpose="identity")
     if config is None:
         raise HTTPException(
             status_code=503,
@@ -1684,7 +1661,7 @@ async def oauth_identity_callback(
     if time.monotonic() - pending.created_at > _OAUTH_STATE_TTL:
         return _oauth_redirect(settings.app_url_scheme, platform, "error", reason="expired")
 
-    config = oauth.config_for(platform)
+    config = oauth.config_for(platform, purpose="identity")
     if config is None or not code:
         return _oauth_redirect(settings.app_url_scheme, platform, "error", reason="not_configured")
 
@@ -1756,10 +1733,8 @@ def _maybe_claim_pending(
     identity check meant to stop them.
 
     Still confirms the record's verification actually qualifies
-    (`verified_via` is `"oauth"` or `"admin"`; `"self"` and plain
-    registration do not, on purpose -- see `self_verify`'s own docstring
-    for why that tier was never meant to gate money it doesn't already
-    gate) before releasing anything, as a second, independent check.
+    (`verified_via` is `"oauth"` or `"admin"`; plain registration does not,
+    on purpose) before releasing anything, as a second, independent check.
     """
     if credit_to is None:
         return []
@@ -1915,61 +1890,6 @@ def verify(
         raise HTTPException(status_code=404, detail="creator not registered")
     _maybe_claim_pending(handle, storage, credit_to=record.tipme_user_id)
     return {"platform": record.platform, "username": record.username, "verified": True}
-
-
-@app.post("/v1/creators/{platform}/{username}/self-verify")
-def self_verify(
-    platform: str,
-    username: str,
-    request: SelfVerifyRequest,
-    user_id: str = Depends(get_current_user),
-    storage: Storage = Depends(get_storage),
-) -> dict:
-    """Lets whoever just registered a handle confirm it themselves -- no
-    admin, no platform OAuth.
-
-    This is deliberate, not a shortcut taken because the real thing is hard.
-    `verified` has never been what stands between a tip and the wrong
-    wallet: `register`'s own docstring already says clearing it "would warn
-    users but would not stop the payment" -- first-claim-wins plus the
-    management token are what actually decide where money goes, and both
-    are enforced before this endpoint is ever reached. What `verified` gates
-    is a trust *badge* next to a handle, and gating that specifically behind
-    Meta App Review is a mismatch of stakes: as of Meta's April 2025
-    changes, there is no API path -- OAuth, oEmbed, anything -- for a
-    personal Instagram account, and there will not be one later; it is not
-    "not configured yet", it is a permanent platform-wide exclusion of most
-    real users. A badge only a Business/Creator account can ever earn is not
-    a temporary limitation to work around, it is a badge most people will
-    never see.
-
-    So this marks the handle verified via `"self"` -- a real, distinct,
-    lesser tier from `"oauth"`/`"admin"` that the client badges differently
-    -- the instant two things hold: the caller has a live TipMe session
-    (they are *a* real account, not a script hitting this in a loop) and
-    they can produce the claim token this handle's own registration
-    returned (they are *the* registration that just happened, not a
-    stranger racing to confirm someone else's pending claim). Neither of
-    those reads Instagram or TikTok at all.
-    """
-    try:
-        handle = normalise_handle(platform, username)
-    except InvalidHandle as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-    record = storage.get(handle)
-    if record is None:
-        raise HTTPException(status_code=404, detail="creator not registered")
-    if record.tipme_user_id != user_id:
-        raise HTTPException(status_code=403, detail="this handle isn't linked to your account")
-
-    stored_token = storage.claim_token(handle)
-    if not stored_token or not secrets.compare_digest(request.claim_token, stored_token):
-        raise HTTPException(status_code=400, detail="that code doesn't match -- check your bio and try again")
-
-    record = storage.set_verified(handle, True, via="self")
-    return {"platform": record.platform, "username": record.username,
-            "verified": True, "verified_via": "self"}
 
 
 def _require_admin(token: str | None, settings: Settings) -> None:

@@ -143,15 +143,10 @@ Two ways to earn it back:
   code can route around:
   - **Instagram** OAuth login only exists for Business/Creator accounts (Meta
     retired it for personal accounts). A personal-account creator still needs
-    the bio-code path below.
+    the handle is simply registered without a verified badge.
   - **TikTok** works for any account, but a new app is capped to its own
     registered sandbox testers until TikTok approves it for production use of
-    `user.info.basic`.
-
-- **Reading a bio code** (`POST /v1/creators/{platform}/{username}/verify`) —
-  the fallback for personal Instagram accounts, or for either platform before
-  its developer app is approved. No third-party API can read a profile bio, so
-  a human checks the claim token and an admin flips the flag by hand.
+    `user.info.basic` and `user.info.profile`.
 
 ## Platform sign-in flow
 

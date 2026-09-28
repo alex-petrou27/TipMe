@@ -29,14 +29,14 @@ def test_identity_start_without_configured_platform_fails_closed(client):
 
 
 def test_identity_start_returns_authorize_url(client, monkeypatch):
-    monkeypatch.setattr(oauth_module, "config_for", lambda platform: _fake_config())
+    monkeypatch.setattr(oauth_module, "config_for", lambda platform, **_: _fake_config())
     response = client.post("/v1/oauth/tiktok/identity/start")
     assert response.status_code == 200
     assert response.json()["authorize_url"].startswith("https://www.tiktok.com/v2/auth/authorize/?")
 
 
 def test_identity_flow_never_touches_the_creator_directory(client, monkeypatch):
-    monkeypatch.setattr(oauth_module, "config_for", lambda platform: _fake_config())
+    monkeypatch.setattr(oauth_module, "config_for", lambda platform, **_: _fake_config())
     start = client.post("/v1/oauth/tiktok/identity/start")
     url = start.json()["authorize_url"]
     state = dict(part.split("=", 1) for part in url.split("?", 1)[1].split("&"))["state"]
@@ -65,7 +65,7 @@ def test_identity_flow_never_touches_the_creator_directory(client, monkeypatch):
 
 
 def test_identity_callback_rejects_unknown_state(client, monkeypatch):
-    monkeypatch.setattr(oauth_module, "config_for", lambda platform: _fake_config())
+    monkeypatch.setattr(oauth_module, "config_for", lambda platform, **_: _fake_config())
     response = client.get(
         "/v1/oauth/tiktok/identity/callback",
         params={"code": "auth-code", "state": "not-a-real-state"},
@@ -85,3 +85,16 @@ def test_identity_callback_passes_through_platform_denial(client):
     params = _redirect_params(response)
     assert params["status"] == "error"
     assert params["reason"] == "access_denied"
+
+
+def test_claim_and_identity_flows_use_their_own_redirect_uris(monkeypatch):
+    monkeypatch.setenv("TIKTOK_CLIENT_KEY", "key")
+    monkeypatch.setenv("TIKTOK_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("TIKTOK_REDIRECT_URI", "https://example.test/v1/oauth/tiktok/callback")
+    monkeypatch.setenv("TIKTOK_IDENTITY_REDIRECT_URI", "https://example.test/v1/oauth/tiktok/identity/callback")
+
+    claim = oauth_module.config_for("tiktok")
+    identity = oauth_module.config_for("tiktok", purpose="identity")
+    assert claim.redirect_uri.endswith("/v1/oauth/tiktok/callback")
+    assert identity.redirect_uri.endswith("/v1/oauth/tiktok/identity/callback")
+    assert claim.scope == "user.info.basic,user.info.profile"
